@@ -1,0 +1,17 @@
+# Assets
+*.jpg
+*.bin
+*.gltf
+*.hdr
+*.png
+*.obj
+assets/
+
+# Distribution / packaging
+*.spv
+*.bat
+*.vs
+*.pdb
+dependencies/
+build/
+.vscode/

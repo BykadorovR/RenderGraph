@@ -1,0 +1,15 @@
+# Format Style Options - Created with Clang Power Tools
+---
+AlignOperands: Align
+AllowAllArgumentsOnNextLine: false
+AllowAllConstructorInitializersOnNextLine: false
+AllowAllParametersOfDeclarationOnNextLine: false
+BasedOnStyle: Google
+BinPackArguments: true
+BinPackParameters: false
+ColumnLimit: 120
+DerivePointerAlignment: false
+ExperimentalAutoDetectBinPacking: false
+PenaltyBreakAssignment: 50
+SortIncludes: false
+...
