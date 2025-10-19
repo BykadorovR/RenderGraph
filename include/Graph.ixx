@@ -100,7 +100,7 @@ class GraphPassGraphic final : public GraphPass {
   const std::vector<std::string>& getColorTargets() const noexcept;
   std::optional<std::string> getDepthTarget() const noexcept;
   const std::vector<std::string>& getTextureInputs() const noexcept;
-  const PipelineGraphic& getPipelineGraphic(const GraphStorage& graphStorage) const noexcept;
+  PipelineGraphic& getPipelineGraphic(const GraphStorage& graphStorage) const noexcept;
   // set function that does render pass work
   void addExecution(std::function<void(const std::vector<VkRenderingAttachmentInfo>& colorAttachments,
                                        std::optional<VkRenderingAttachmentInfo> depthAttachment,

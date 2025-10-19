@@ -74,6 +74,14 @@ TEST(ScenarioTest, GraphOneQueue) {
     EXPECT_NE(renderPass.getCommandBuffers()[i], renderPass.getCommandBuffers()[i - 1]);
   }
 
+  auto& pipelineGraphic = renderPass.getPipelineGraphic(graph.getGraphStorage());  
+  // it should be modifiable
+  pipelineGraphic.setDepthTest(true);
+  pipelineGraphic.setDepthWrite(true);
+  pipelineGraphic.setTesselation(4);
+  pipelineGraphic.setTopology(VK_PRIMITIVE_TOPOLOGY_PATCH_LIST);
+  pipelineGraphic.setCullMode(VK_CULL_MODE_BACK_BIT);  
+
   EXPECT_EQ(renderPass.getPipelineGraphic(graph.getGraphStorage()).getColorAttachments().size(), 2);
   EXPECT_EQ(renderPass.getDepthTarget(), std::nullopt);
 
