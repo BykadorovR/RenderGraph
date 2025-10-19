@@ -23,20 +23,20 @@ concept Arithmetic = std::integral<T> || std::floating_point<T>;
 template <Arithmetic T>
 class ImageCPU final {
  private:
-  std::unique_ptr<T> _data;
+  T* _data;
   std::function<void(T*)> _deleter;
   glm::ivec2 _resolution;
   int _channels;
 
  public:
-  void setData(std::unique_ptr<T> data, std::function<void(T*)> deleter) {
-    _data = std::move(data);
+  void setData(T* data, std::function<void(T*)> deleter) {
+    _data = data;
     _deleter = deleter;
   }
   void setResolution(glm::ivec2 resolution) { _resolution = resolution; }
   void setChannels(int channels) { _channels = channels; }
 
-  const T* getData() const noexcept { return _data.get(); }
+  const T* getData() const noexcept { return _data; }
   glm::ivec2 getResolution() const noexcept { return _resolution; }
   int getChannels() const noexcept { return _channels; }
   ~ImageCPU() { _deleter(_data); }
