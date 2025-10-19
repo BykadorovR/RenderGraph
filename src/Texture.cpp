@@ -1,10 +1,8 @@
 module;
 #define VMA_STATIC_VULKAN_FUNCTIONS 0
 #define VMA_DYNAMIC_VULKAN_FUNCTIONS 0
-#include "vk_mem_alloc.h"
-#undef min
-#undef max
 module Texture;
+import <volk.h>;
 import <algorithm>;
 import <ranges>;
 using namespace RenderGraph;
@@ -276,14 +274,14 @@ void Sampler::createSampler(VkSamplerAddressMode mode, int mipMapLevels, int ani
                                   .addressModeV = mode,
                                   .addressModeW = mode,
                                   .mipLodBias = 0.0f,
-                                  .anisotropyEnable = anisotropicSamples > 0 ? VK_TRUE : VK_FALSE,
+                                  .anisotropyEnable = anisotropicSamples > 0 ? true : false,
                                   .maxAnisotropy = std::min(_device->getDeviceProperties().limits.maxSamplerAnisotropy,
                                                             static_cast<float>(anisotropicSamples)),
-                                  .compareEnable = VK_FALSE,
+                                  .compareEnable = false,
                                   .minLod = 0.0f,
                                   .maxLod = static_cast<float>(mipMapLevels),
                                   .borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE,
-                                  .unnormalizedCoordinates = VK_FALSE};
+                                  .unnormalizedCoordinates = false};
   if (mipMapLevels > 1) samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
 
   if (vkCreateSampler(_device->getLogicalDevice(), &samplerInfo, nullptr, &_sampler) != VK_SUCCESS) {
