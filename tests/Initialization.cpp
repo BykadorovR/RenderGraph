@@ -14,6 +14,7 @@ import Pipeline;
 import Swapchain;
 import Sync;
 import Texture;
+import <algorithm>;
 
 TEST(InstanceTest, CreateWithoutValidation) {
   RenderGraph::Instance instance("TestApp", false);
@@ -464,4 +465,33 @@ TEST(ImageCPUTest, AcceptsArithmeticTypes) {
 TEST(ImageCPUTest, RejectsNonArithmeticTypes) {
   EXPECT_FALSE(IsValidImageCPU<std::string>);
   EXPECT_FALSE(IsValidImageCPU<void*>);
+}
+
+TEST(ImageCPUTest, WithoutDeleter) {
+  std::vector<float> pixels(256 * 256, 0.5f);
+  {
+    RenderGraph::ImageCPU<float> imageCPU;    
+    imageCPU.setData(pixels.data(), [](float* data) {});
+    auto data = imageCPU.getData();
+    for (int i = 0; i < 256 * 256; i++) {
+      EXPECT_EQ(data[i], 0.5f);
+    }
+  }
+  for (int i = 0; i < 256 * 256; i++) {
+    EXPECT_EQ(pixels[i], 0.5f);
+  }
+}
+
+TEST(ImageCPUTest, WithDeleter) {
+  std::vector<float> pixels(256 * 256, 0.5f);
+  bool deleterCalled = false;
+  {
+    RenderGraph::ImageCPU<float> imageCPU;    
+    imageCPU.setData(pixels.data(), [&deleterCalled](float* data) { deleterCalled = true; });
+    auto data = imageCPU.getData();
+    for (int i = 0; i < 256 * 256; i++) {
+      EXPECT_EQ(data[i], 0.5f);
+    }
+  }
+  EXPECT_TRUE(deleterCalled);
 }
