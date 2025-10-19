@@ -95,7 +95,7 @@ std::optional<std::string> GraphPassGraphic::getDepthTarget() const noexcept { r
 
 const std::vector<std::string>& GraphPassGraphic::getTextureInputs() const noexcept { return _textureInputs; }
 
-const PipelineGraphic& GraphPassGraphic::getPipelineGraphic(const GraphStorage& graphStorage) const noexcept {
+PipelineGraphic& GraphPassGraphic::getPipelineGraphic(const GraphStorage& graphStorage) const noexcept {
   auto colorFormats = _colorTargets |
                       std::views::transform([&](auto& colorTarget) {
                         return graphStorage.getImageViewHolder(colorTarget).getImageView().getImage().getFormat();
