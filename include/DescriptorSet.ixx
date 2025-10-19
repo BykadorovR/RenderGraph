@@ -32,7 +32,7 @@ class DescriptorSet final {
   DescriptorPool* _descriptorPool;
   const Device* _device;
   VkDescriptorSet _descriptorSet;
-  std::vector<VkDescriptorSetLayoutBinding> _layoutInfo;
+  const DescriptorSetLayout* _layout;
 
  public:
   DescriptorSet(const DescriptorSetLayout& layout, DescriptorPool& descriptorPool, const Device& device);

@@ -305,8 +305,8 @@ TEST(PipelineTest, Create) {
                                 .offset = std::get<1>(fields[i])};
   }
 
-  std::vector<std::pair<std::string, RenderGraph::DescriptorSetLayout>> descriptorSetLayouts;
-  descriptorSetLayouts.emplace_back("test", std::move(layout));
+  std::vector<std::pair<std::string, RenderGraph::DescriptorSetLayout*>> descriptorSetLayouts;
+  descriptorSetLayouts.emplace_back("test", &layout);
 
   // validation error is expected because minimal shader does not have any input
   EXPECT_NO_THROW(pipeline.createGraphic(
