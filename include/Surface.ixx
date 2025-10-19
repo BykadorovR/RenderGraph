@@ -1,9 +1,8 @@
-module;
-#include <GLFW/glfw3.h>
 export module Surface;
 import Window;
 import Instance;
 import <volk.h>;
+import <GLFW/glfw3.h>;
 
 export namespace RenderGraph {
 class Surface final {

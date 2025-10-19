@@ -2,7 +2,9 @@ module;
 #define VMA_IMPLEMENTATION
 #define VMA_STATIC_VULKAN_FUNCTIONS 0
 #define VMA_DYNAMIC_VULKAN_FUNCTIONS 0
-#include "vk_mem_alloc.h"
+// it's mandatory to include here for VMA_IMPLEMENTATION, otherwise if we compile Allocator after some other module
+// it will be cached without VMA_IMPLEMENTATION defined and cause linker errors.
+#include <vk_mem_alloc.h>
 module Allocator;
 using namespace RenderGraph;
 

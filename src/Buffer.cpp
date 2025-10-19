@@ -1,8 +1,8 @@
 module;
 #define VMA_STATIC_VULKAN_FUNCTIONS 0
 #define VMA_DYNAMIC_VULKAN_FUNCTIONS 0
-#include "vk_mem_alloc.h"
 module Buffer;
+import <vk_mem_alloc.h>;
 using namespace RenderGraph;
 
 Buffer::Buffer(VkDeviceSize size,
