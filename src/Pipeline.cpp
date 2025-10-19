@@ -130,7 +130,7 @@ const std::optional<VkFormat>& PipelineGraphic::getDepthAttachment() const noexc
 
 Pipeline::Pipeline(const Device& device) noexcept : _device(&device) {}
 
-const std::vector<std::pair<std::string, DescriptorSetLayout>>& Pipeline::getDescriptorSetLayout() const noexcept {
+const std::vector<std::pair<std::string, DescriptorSetLayout*>>& Pipeline::getDescriptorSetLayout() const noexcept {
   return _descriptorSetLayout;
 }
 
@@ -147,18 +147,18 @@ Pipeline::~Pipeline() {
 
 void Pipeline::createGraphic(const PipelineGraphic& pipelineGraphic,
                              const std::vector<VkPipelineShaderStageCreateInfo>& shaderStages,
-                             std::vector<std::pair<std::string, DescriptorSetLayout>>& descriptorSetLayout,
+                             std::vector<std::pair<std::string, DescriptorSetLayout*>>& descriptorSetLayout,
                              const std::map<std::string, VkPushConstantRange>& pushConstants,
                              VkVertexInputBindingDescription bindingDescription,
                              const std::vector<VkVertexInputAttributeDescription>& attributeDescriptions) {
-  _descriptorSetLayout = std::move(descriptorSetLayout);
+  _descriptorSetLayout = descriptorSetLayout;
   _pushConstants = pushConstants;
 
   // create pipeline layout
   std::vector<VkDescriptorSetLayout> descriptorSetLayoutRaw;
   descriptorSetLayoutRaw.reserve(_descriptorSetLayout.size());
   for (auto&& layout : _descriptorSetLayout) {
-    descriptorSetLayoutRaw.push_back(layout.second.getDescriptorSetLayout());
+    descriptorSetLayoutRaw.push_back(layout.second->getDescriptorSetLayout());
   }
   VkPipelineLayoutCreateInfo pipelineLayoutInfo{.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
                                                 .setLayoutCount = static_cast<uint32_t>(descriptorSetLayoutRaw.size()),
@@ -221,16 +221,16 @@ void Pipeline::createGraphic(const PipelineGraphic& pipelineGraphic,
 }
 
 void Pipeline::createCompute(const VkPipelineShaderStageCreateInfo& shaderStage,
-                             std::vector<std::pair<std::string, DescriptorSetLayout>>& descriptorSetLayout,
+                             std::vector<std::pair<std::string, DescriptorSetLayout*>>& descriptorSetLayout,
                              const std::map<std::string, VkPushConstantRange>& pushConstants) {
-  _descriptorSetLayout = std::move(descriptorSetLayout);
+  _descriptorSetLayout = descriptorSetLayout;
   _pushConstants = pushConstants;
 
   // create pipeline layout
   std::vector<VkDescriptorSetLayout> descriptorSetLayoutRaw;
   descriptorSetLayoutRaw.reserve(_descriptorSetLayout.size());
   for (auto& layout : _descriptorSetLayout) {
-    descriptorSetLayoutRaw.push_back(layout.second.getDescriptorSetLayout());
+    descriptorSetLayoutRaw.push_back(layout.second->getDescriptorSetLayout());
   }
   VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
   pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
