@@ -252,8 +252,8 @@ TEST(DescriptorSetTest, Update) {
   layout.createCustom(layoutColor);
   RenderGraph::DescriptorSet descriptorSet(layout, descriptorPool, device);
   VkDescriptorBufferInfo bufferInfo{.buffer = buffer.getBuffer(), .offset = 0, .range = buffer.getSize()};
-  std::map<int, std::vector<VkDescriptorBufferInfo>> buffers;
-  buffers[0] = {bufferInfo};
+  std::map<int, VkDescriptorBufferInfo> buffers;
+  buffers[0] = bufferInfo;
   auto before = descriptorSet.getDescriptorSet();
   descriptorSet.updateCustom(buffers, {});
   auto after = descriptorSet.getDescriptorSet();
