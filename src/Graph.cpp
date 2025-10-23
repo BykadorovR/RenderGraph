@@ -142,15 +142,15 @@ void GraphPassGraphic::execute(const CommandBuffer& commandBuffer) {
       auto& target = _depthTarget.value();
       auto& imageViewHolder = _graphStorage->getImageViewHolder(target);
 
-      VkRenderingAttachmentInfo depthAttachment{
+      depthAttachment = VkRenderingAttachmentInfo{
           .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
           .imageView = imageViewHolder.getImageView().getImageView(),
           .imageLayout = imageViewHolder.getImageView().getImage().getImageLayout(),
           .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
           .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
       if (_clearTarget.contains(target) && _clearTarget.at(target)) {
-        depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        depthAttachment.clearValue.depthStencil = {1.f, 0};
+        depthAttachment->loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        depthAttachment->clearValue.depthStencil = {1.f, 0};
       }
     }
 

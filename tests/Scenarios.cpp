@@ -505,3 +505,91 @@ TEST(ScenarioTest, GraphReset) {
   // wait device idle before destroying resources
   vkDeviceWaitIdle(device.getLogicalDevice());
 }
+
+TEST(ScenarioTest, DepthExistance) {
+  glm::ivec2 resolution(1920, 1080);
+  RenderGraph::Instance instance("TestApp", true);
+  RenderGraph::Window window(resolution);
+  window.initialize();
+  RenderGraph::Surface surface(window, instance);
+  RenderGraph::Device device(surface, instance);
+  RenderGraph::MemoryAllocator allocator(device, instance);
+  RenderGraph::Swapchain swapchain(allocator, device);
+  int framesInFlight = 2;
+  RenderGraph::Graph graph(4, framesInFlight, swapchain, device);
+
+  auto commandPool = std::make_shared<RenderGraph::CommandPool>(vkb::QueueType::graphics, device);
+  std::vector<RenderGraph::CommandBuffer> commandBuffer;
+  commandBuffer.reserve(framesInFlight);
+  for (int i = 0; i < framesInFlight; i++) {
+    commandBuffer.emplace_back(*commandPool, device);
+  }
+
+  commandBuffer[graph.getFrameInFlight()].beginCommands();
+  swapchain.initialize(commandBuffer[graph.getFrameInFlight()]);
+  graph.initialize();
+
+  std::unique_ptr<RenderGraph::ImageViewHolder> swapchainHolder = std::make_unique<RenderGraph::ImageViewHolder>(
+      swapchain.getImageViews(), [&swapchain]() { return swapchain.getSwapchainIndex(); });
+
+  graph.getGraphStorage().add("Swapchain", std::move(swapchainHolder));
+
+  auto depthAttachment = std::make_unique<RenderGraph::Image>(allocator);
+  depthAttachment->createImage(VK_FORMAT_D32_SFLOAT, resolution, 1, 1,
+                               VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT);
+  // set layout to depth image
+  depthAttachment->changeLayout(depthAttachment->getImageLayout(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                                VK_ACCESS_NONE, VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, VK_IMAGE_ASPECT_DEPTH_BIT,
+                                commandBuffer[graph.getFrameInFlight()]);
+
+  auto depthAttachmentImageView = std::make_shared<RenderGraph::ImageView>(device);
+  depthAttachmentImageView->createImageView(std::move(depthAttachment), VK_IMAGE_VIEW_TYPE_2D,
+                                             VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0);
+  
+  graph.getGraphStorage().add("Depth", std::make_unique<RenderGraph::ImageViewHolder>(
+                                           std::vector{depthAttachmentImageView}, []() -> int { return 0; }));
+
+  auto& renderPass = graph.createPassGraphic("Render");
+  renderPass.addColorTarget("Swapchain");
+  renderPass.setDepthTarget("Depth");
+  renderPass.clearTarget("Swapchain");
+  renderPass.clearTarget("Depth");
+  renderPass.addExecution([&](std::vector<VkRenderingAttachmentInfo> colorAttachments,
+                              std::optional<VkRenderingAttachmentInfo> depthAttachment,
+                              const RenderGraph::CommandBuffer& commandBuffer) { EXPECT_NE(depthAttachment, std::nullopt); });
+  
+  graph.calculate();
+  commandBuffer[graph.getFrameInFlight()].endCommands();
+
+  auto loadSemaphore = RenderGraph::Semaphore(VK_SEMAPHORE_TYPE_TIMELINE, device);
+  uint64_t loadCounter = 1;
+  VkTimelineSemaphoreSubmitInfo timelineInfo = {
+      .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
+      .signalSemaphoreValueCount = 1,
+      .pSignalSemaphoreValues = &loadCounter,
+  };
+
+  auto semaphore = loadSemaphore.getSemaphore();
+  VkSubmitInfo submitInfo = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                             .pNext = &timelineInfo,
+                             .commandBufferCount = 1,
+                             .pCommandBuffers = &commandBuffer[graph.getFrameInFlight()].getCommandBuffer(),
+                             .signalSemaphoreCount = 1,
+                             .pSignalSemaphores = &semaphore};
+  vkQueueSubmit(device.getQueue(vkb::QueueType::graphics), 1, &submitInfo, nullptr);
+
+  VkSemaphoreWaitInfo waitInfo = {
+      .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
+      .flags = 0,
+      .semaphoreCount = 1,
+      .pSemaphores = &semaphore,
+      .pValues = &loadCounter,
+  };
+
+  vkWaitSemaphores(device.getLogicalDevice(), &waitInfo, UINT64_MAX);
+
+  graph.render();
+
+  // wait device idle before destroying resources
+  vkDeviceWaitIdle(device.getLogicalDevice());
+}
