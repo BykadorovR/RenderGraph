@@ -41,8 +41,8 @@ class DescriptorSet final {
   DescriptorSet(DescriptorSet&& other) = delete;
   DescriptorSet& operator=(DescriptorSet&& other) = delete;
 
-  void updateCustom(const std::map<int, VkDescriptorBufferInfo>& buffers,
-                    const std::map<int, VkDescriptorImageInfo>& images) noexcept;
+  void updateCustom(const std::map<int, std::vector<VkDescriptorBufferInfo>>& buffers,
+                    const std::map<int, std::vector<VkDescriptorImageInfo>>& images) noexcept;
   VkDescriptorSet getDescriptorSet() const noexcept;
   ~DescriptorSet();
 };
