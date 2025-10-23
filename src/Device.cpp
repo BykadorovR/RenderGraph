@@ -16,10 +16,6 @@ Device::Device(const Surface& surface, const Instance& instance) {
       .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES,
       .timelineSemaphore = true,
   };
-  VkPhysicalDeviceRobustness2FeaturesEXT robustness2Features = {
-      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT,
-      .nullDescriptor = true
-  };
   // for timestamps reset
   VkPhysicalDeviceHostQueryResetFeatures resetFeatures = {
       .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_HOST_QUERY_RESET_FEATURES,
@@ -38,7 +34,6 @@ Device::Device(const Surface& surface, const Instance& instance) {
   builder.add_pNext(&dynamicRenderingFeature);
   builder.add_pNext(&timelineFeatures);
   builder.add_pNext(&resetFeatures);
-  builder.add_pNext(&robustness2Features);
   auto builderResult = builder.build();
   if (!builderResult) {
     throw std::runtime_error(builderResult.error().message());
