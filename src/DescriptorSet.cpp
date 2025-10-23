@@ -55,8 +55,8 @@ DescriptorSet::DescriptorSet(const DescriptorSetLayout& layout, DescriptorPool& 
   }
 }
 
-void DescriptorSet::updateCustom(const std::map<int, VkDescriptorBufferInfo>& buffers,
-                                 const std::map<int, VkDescriptorImageInfo>& images) noexcept {
+void DescriptorSet::updateCustom(const std::map<int, std::vector<VkDescriptorBufferInfo>>& buffers,
+                                 const std::map<int, std::vector<VkDescriptorImageInfo>>& images) noexcept {
   std::vector<VkWriteDescriptorSet> descriptorWrites;
   descriptorWrites.reserve(buffers.size() + images.size());
   for (auto&& [key, value] : buffers) {
@@ -66,7 +66,7 @@ void DescriptorSet::updateCustom(const std::map<int, VkDescriptorBufferInfo>& bu
                                           .dstArrayElement = 0,
                                           .descriptorCount = _layout->getLayoutInfo()[key].descriptorCount,
                                           .descriptorType = _layout->getLayoutInfo()[key].descriptorType,
-                                          .pBufferInfo = &buffers.at(key)};
+                                          .pBufferInfo = buffers.at(key).data()};
     descriptorWrites.push_back(descriptorSet);
   }
   for (auto&& [key, value] : images) {
@@ -76,7 +76,7 @@ void DescriptorSet::updateCustom(const std::map<int, VkDescriptorBufferInfo>& bu
                                           .dstArrayElement = 0,
                                           .descriptorCount = _layout->getLayoutInfo()[key].descriptorCount,
                                           .descriptorType = _layout->getLayoutInfo()[key].descriptorType,
-                                          .pImageInfo = &images.at(key)};
+                                          .pImageInfo = images.at(key).data()};
     descriptorWrites.push_back(descriptorSet);
   }
 
