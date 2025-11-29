@@ -42,7 +42,6 @@ class DescriptorBuffer final {
   DescriptorBuffer(const MemoryAllocator& memoryAllocator, const Device& device);
   void add(VkDescriptorImageInfo info, VkDescriptorType descriptorType);
   void add(VkDescriptorAddressInfoEXT info, VkDescriptorType descriptorType);
-  void initialize(const CommandBuffer& commandBuffer);
-  const Buffer* getBuffer();
+  const Buffer* getBuffer(const CommandBuffer& commandBuffer);
 };
 }  // namespace RenderGraph

@@ -231,7 +231,7 @@ TEST(DescriptorBufferTest, Create) {
   RenderGraph::CommandPool commandPool(vkb::QueueType::graphics, device);
   RenderGraph::CommandBuffer commandBuffer(commandPool, device);
   commandBuffer.beginCommands();
-  EXPECT_THROW(descriptorBuffer.initialize(commandBuffer), std::runtime_error);
+  EXPECT_THROW(descriptorBuffer.getBuffer(commandBuffer), std::runtime_error);
   commandBuffer.endCommands();
 }
 
@@ -262,8 +262,7 @@ TEST(DescriptorSetTest, Update) {
   RenderGraph::CommandPool commandPool(vkb::QueueType::graphics, device);
   RenderGraph::CommandBuffer commandBuffer(commandPool, device);
   commandBuffer.beginCommands();
-  descriptorBuffer.initialize(commandBuffer);
-  EXPECT_NE(descriptorBuffer.getBuffer()->getDeviceAddress(device), 0);
+  EXPECT_NE(descriptorBuffer.getBuffer(commandBuffer)->getDeviceAddress(device), 0);
   EXPECT_THROW(descriptorBuffer.add(VkDescriptorAddressInfoEXT{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_ADDRESS_INFO_EXT,
                                                                .pNext = nullptr,
                                                                .address = buffer.getDeviceAddress(device),

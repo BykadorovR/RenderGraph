@@ -100,7 +100,7 @@ void DescriptorBuffer::add(VkDescriptorAddressInfoEXT info, VkDescriptorType des
   std::ranges::copy(descriptorCPU, std::back_inserter(_descriptors));
 }
 
-void DescriptorBuffer::initialize(const CommandBuffer& commandBuffer) {
+const Buffer* DescriptorBuffer::getBuffer(const CommandBuffer& commandBuffer) {
   if (_descriptorBuffer == nullptr) {
     // first need to allocate the buffer itself
     int size = _descriptors.size();
@@ -114,9 +114,6 @@ void DescriptorBuffer::initialize(const CommandBuffer& commandBuffer) {
     _descriptorBuffer->setData(std::span(reinterpret_cast<const std::byte*>(_descriptors.data()), _descriptors.size()),
                                commandBuffer);
   }
-}
-
-const Buffer* DescriptorBuffer::getBuffer() {
   return _descriptorBuffer.get();
 }
 
