@@ -9,6 +9,7 @@ class Device final {
  private:
   vkb::Device _device;
   VkPhysicalDeviceProperties _deviceProperties;
+  VkPhysicalDeviceDescriptorBufferPropertiesEXT _descriptorBufferProperties;
   std::vector<VkQueueFamilyProperties> _queueFamilyProperties;
 
  public:
@@ -26,6 +27,7 @@ class Device final {
 
   const vkb::Device& getDevice() const noexcept;
   const VkPhysicalDeviceProperties& getDeviceProperties() const noexcept;
+  const VkPhysicalDeviceDescriptorBufferPropertiesEXT& getDescriptorBufferProperties() const noexcept;
   const VkQueueFamilyProperties& getQueueFamilyProperties(vkb::QueueType type) const noexcept;
 
   ~Device();

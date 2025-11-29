@@ -20,9 +20,19 @@ Device::Device(const Surface& surface, const Instance& instance) {
   VkPhysicalDeviceHostQueryResetFeatures resetFeatures = {
       .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_HOST_QUERY_RESET_FEATURES,
       .hostQueryReset = true};
+  VkPhysicalDeviceDescriptorBufferFeaturesEXT descriptorBufferFeatures{
+      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT,
+      .descriptorBuffer = true};
+  VkPhysicalDeviceBufferDeviceAddressFeatures bufferDeviceAddressFeatures{
+      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES,
+      .bufferDeviceAddress = true
+  };
+
   vkb::PhysicalDeviceSelector deviceSelector(instance.getInstance());
   deviceSelector.set_required_features(deviceFeatures);
   deviceSelector.allow_any_gpu_device_type(false);
+  // not part of Vulkan 1.3 core
+  deviceSelector.add_desired_extension("VK_EXT_descriptor_buffer");
   // VK_KHR_SWAPCHAIN_EXTENSION_NAME is added by default
   auto deviceSelectorResult = deviceSelector.set_surface(surface.getSurface()).select();
   if (!deviceSelectorResult) {
@@ -34,6 +44,8 @@ Device::Device(const Surface& surface, const Instance& instance) {
   builder.add_pNext(&dynamicRenderingFeature);
   builder.add_pNext(&timelineFeatures);
   builder.add_pNext(&resetFeatures);
+  builder.add_pNext(&descriptorBufferFeatures);
+  builder.add_pNext(&bufferDeviceAddressFeatures);
   auto builderResult = builder.build();
   if (!builderResult) {
     throw std::runtime_error(builderResult.error().message());
@@ -42,7 +54,12 @@ Device::Device(const Surface& surface, const Instance& instance) {
   volkLoadDevice(_device.device);
 
   // request properties
-  vkGetPhysicalDeviceProperties(getPhysicalDevice(), &_deviceProperties);
+  _descriptorBufferProperties = VkPhysicalDeviceDescriptorBufferPropertiesEXT{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_PROPERTIES_EXT};
+  VkPhysicalDeviceProperties2 properties2{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+                                          .pNext = &_descriptorBufferProperties};
+  vkGetPhysicalDeviceProperties2(getPhysicalDevice(), &properties2);
+  _deviceProperties = properties2.properties;
 
   uint32_t queueFamilyCount = 0;
   vkGetPhysicalDeviceQueueFamilyProperties(getPhysicalDevice(), &queueFamilyCount, nullptr);
@@ -55,6 +72,10 @@ const VkQueueFamilyProperties& Device::getQueueFamilyProperties(vkb::QueueType t
 }
 
 const VkPhysicalDeviceProperties& Device::getDeviceProperties() const noexcept { return _deviceProperties; }
+
+const VkPhysicalDeviceDescriptorBufferPropertiesEXT& Device::getDescriptorBufferProperties() const noexcept {
+  return _descriptorBufferProperties;
+}
 
 bool Device::isFormatFeatureSupported(VkFormat format,
                                       VkImageTiling tiling,

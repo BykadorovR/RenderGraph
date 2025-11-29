@@ -8,7 +8,6 @@ import Buffer;
 import Command;
 import CommandPool;
 import Shader;
-import DescriptorPool;
 import DescriptorSet;
 import Pipeline;
 import Swapchain;
@@ -201,25 +200,26 @@ TEST(BufferTest, ShaderCreate) {
   EXPECT_NO_THROW(shader.add(spirvCode, VK_SHADER_STAGE_VERTEX_BIT));
 }
 
-TEST(DescriptorPoolTest, Create) {
+TEST(BufferTest, GetDeviceAddress) {
   RenderGraph::Instance instance("TestApp", true);
   RenderGraph::Window window({1920, 1080});
   window.initialize();
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(surface, instance);
-  RenderGraph::DescriptorPoolSize poolSize;
-  RenderGraph::DescriptorPool descriptorPool(poolSize, device);
-  EXPECT_NE(descriptorPool.getDescriptorPool(), nullptr);
+  RenderGraph::MemoryAllocator allocator(device, instance);
+  RenderGraph::Buffer buffer(1024, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                             VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+                             allocator);
+  EXPECT_NE(buffer.getDeviceAddress(device), 0);
 }
 
-TEST(DescriptorSetTest, Create) {
+TEST(DescriptorBufferTest, Create) {
   RenderGraph::Instance instance("TestApp", true);
   RenderGraph::Window window({1920, 1080});
   window.initialize();
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(surface, instance);
-  RenderGraph::DescriptorPoolSize poolSize;
-  RenderGraph::DescriptorPool descriptorPool(poolSize, device);
+  RenderGraph::MemoryAllocator allocator(device, instance);
   RenderGraph::DescriptorSetLayout layout(device);
   std::vector<VkDescriptorSetLayoutBinding> layoutColor{{.binding = 0,
                                                          .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
@@ -227,8 +227,12 @@ TEST(DescriptorSetTest, Create) {
                                                          .stageFlags = VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT,
                                                          .pImmutableSamplers = nullptr}};
   layout.createCustom(layoutColor);
-  RenderGraph::DescriptorSet descriptorSet(layout, descriptorPool, device);
-  EXPECT_NE(descriptorSet.getDescriptorSet(), nullptr);
+  RenderGraph::DescriptorBuffer descriptorBuffer(allocator, device);
+  RenderGraph::CommandPool commandPool(vkb::QueueType::graphics, device);
+  RenderGraph::CommandBuffer commandBuffer(commandPool, device);
+  commandBuffer.beginCommands();
+  EXPECT_THROW(descriptorBuffer.initialize(commandBuffer), std::runtime_error);
+  commandBuffer.endCommands();
 }
 
 TEST(DescriptorSetTest, Update) {
@@ -238,11 +242,10 @@ TEST(DescriptorSetTest, Update) {
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(surface, instance);
   RenderGraph::MemoryAllocator allocator(device, instance);
-  RenderGraph::Buffer buffer(1024, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+  RenderGraph::Buffer buffer(1024, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
                              VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
                              allocator);
-  RenderGraph::DescriptorPoolSize poolSize;
-  RenderGraph::DescriptorPool descriptorPool(poolSize, device);
+  RenderGraph::DescriptorBuffer descriptorBuffer(allocator, device);
   RenderGraph::DescriptorSetLayout layout(device);
   std::vector<VkDescriptorSetLayoutBinding> layoutColor{{.binding = 0,
                                                          .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
@@ -250,14 +253,24 @@ TEST(DescriptorSetTest, Update) {
                                                          .stageFlags = VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT,
                                                          .pImmutableSamplers = nullptr}};
   layout.createCustom(layoutColor);
-  RenderGraph::DescriptorSet descriptorSet(layout, descriptorPool, device);
-  VkDescriptorBufferInfo bufferInfo{.buffer = buffer.getBuffer(), .offset = 0, .range = buffer.getSize()};
-  std::map<int, std::vector<VkDescriptorBufferInfo>> buffers;
-  buffers[0] = {bufferInfo};
-  auto before = descriptorSet.getDescriptorSet();
-  descriptorSet.updateCustom(buffers, {});
-  auto after = descriptorSet.getDescriptorSet();
-  EXPECT_EQ(before, after);
+  descriptorBuffer.add(VkDescriptorAddressInfoEXT{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_ADDRESS_INFO_EXT,
+                                                  .pNext = nullptr,
+                                                  .address = buffer.getDeviceAddress(device),
+                                                  .range = buffer.getSize(),
+                                                  .format = VK_FORMAT_UNDEFINED},
+                       VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
+  RenderGraph::CommandPool commandPool(vkb::QueueType::graphics, device);
+  RenderGraph::CommandBuffer commandBuffer(commandPool, device);
+  commandBuffer.beginCommands();
+  descriptorBuffer.initialize(commandBuffer);
+  EXPECT_NE(descriptorBuffer.getBuffer()->getDeviceAddress(device), 0);
+  EXPECT_THROW(descriptorBuffer.add(VkDescriptorAddressInfoEXT{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_ADDRESS_INFO_EXT,
+                                                               .pNext = nullptr,
+                                                               .address = buffer.getDeviceAddress(device),
+                                                               .range = buffer.getSize(),
+                                                               .format = VK_FORMAT_UNDEFINED},
+                                    VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER), std::runtime_error);
+  commandBuffer.endCommands();
 }
 
 TEST(PipelineTest, Create) {
@@ -281,9 +294,7 @@ TEST(PipelineTest, Create) {
 
   RenderGraph::PipelineGraphic pipelineGraphic;
   RenderGraph::Pipeline pipeline(device);
-
-  RenderGraph::DescriptorPoolSize poolSize;
-  RenderGraph::DescriptorPool descriptorPool(poolSize, device);
+  
   RenderGraph::DescriptorSetLayout layout(device);
   std::vector<VkDescriptorSetLayoutBinding> layoutColor{{.binding = 0,
                                                          .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
@@ -291,8 +302,6 @@ TEST(PipelineTest, Create) {
                                                          .stageFlags = VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT,
                                                          .pImmutableSamplers = nullptr}};
   layout.createCustom(layoutColor);
-  RenderGraph::DescriptorSet descriptorSet(layout, descriptorPool, device);
-
   VkVertexInputBindingDescription bindingDescription{.binding = 0,
                                                      .stride = sizeof(glm::vec4),
                                                      .inputRate = VK_VERTEX_INPUT_RATE_VERTEX};

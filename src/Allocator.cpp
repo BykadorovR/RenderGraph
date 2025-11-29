@@ -27,6 +27,7 @@ MemoryAllocator::MemoryAllocator(const Device& device, const Instance& instance)
       vkGetPhysicalDeviceMemoryProperties2KHR
   };
   VmaAllocatorCreateInfo createInfo{
+      .flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT,
       .physicalDevice = device.getPhysicalDevice(),
       .device = device.getLogicalDevice(),
       .pVulkanFunctions = &vmaVulkanFunctions,

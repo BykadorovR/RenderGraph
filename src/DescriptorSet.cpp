@@ -1,5 +1,7 @@
 module DescriptorSet;
 import <sstream>;
+import <ranges>;
+import <algorithm>;
 using namespace RenderGraph;
 
 DescriptorSetLayout::DescriptorSetLayout(const Device& device) noexcept : _device(&device) {}
@@ -31,58 +33,101 @@ DescriptorSetLayout::~DescriptorSetLayout() {
   vkDestroyDescriptorSetLayout(_device->getLogicalDevice(), _descriptorSetLayout, nullptr);
 }
 
-DescriptorSet::DescriptorSet(const DescriptorSetLayout& layout, DescriptorPool& descriptorPool, const Device& device)
-    : _descriptorPool(&descriptorPool),
-      _device(&device) {
-  _layout = &layout;
+DescriptorBuffer::DescriptorBuffer(const MemoryAllocator& memoryAllocator, const Device& device) { _memoryAllocator = &memoryAllocator; _device = &device; }
 
-  _descriptorPool->notify(_layout->getLayoutInfo(), 1);
-
-  auto descriptorLayout = _layout->getDescriptorSetLayout();
-  VkDescriptorSetAllocateInfo allocInfo{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-                                        .descriptorPool = _descriptorPool->getDescriptorPool(),
-                                        .descriptorSetCount = 1,
-                                        .pSetLayouts = &descriptorLayout};
-  auto sts = vkAllocateDescriptorSets(device.getLogicalDevice(), &allocInfo, &_descriptorSet);
-  if (sts != VK_SUCCESS) {
-    std::ostringstream descriptors;
-    descriptors << "failed to allocate descriptor sets: allocated sets: " << descriptorPool.getDescriptorSetsNumber()
-                << ", descriptors: ";
-    for (auto&& [key, value] : descriptorPool.getDescriptorsNumber()) {
-      descriptors << key << ":" << value << " ";
+int DescriptorBuffer::_getDescriptorSize(VkDescriptorType descriptorType) {
+  const auto& _bufferProperties = &_device->getDescriptorBufferProperties();
+    switch (descriptorType) {
+    case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+      return _bufferProperties->combinedImageSamplerDescriptorSize;
+    case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
+      return _bufferProperties->sampledImageDescriptorSize;
+    case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+      return _bufferProperties->storageImageDescriptorSize;    
+    case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
+      return _bufferProperties->uniformBufferDescriptorSize;
+    case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
+      return _bufferProperties->storageBufferDescriptorSize;    
+    default:
+      throw std::runtime_error("Unsupported descriptor type for descriptor buffer");
     }
-    throw std::runtime_error(descriptors.str());
+}
+
+void DescriptorBuffer::add(VkDescriptorImageInfo info, VkDescriptorType descriptorType) {
+  if (_descriptorBuffer != nullptr) {
+    throw std::runtime_error("Cannot add descriptors after initialization");
+  }
+  VkDescriptorGetInfoEXT getInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT};
+  getInfo.type = descriptorType;
+  switch (descriptorType) {
+    case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
+      getInfo.data.pSampledImage = &info;
+      break;
+    case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+      getInfo.data.pCombinedImageSampler = &info;
+      break;
+    case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+      getInfo.data.pStorageImage = &info;
+      break;
+    default:
+      throw std::runtime_error("Unsupported descriptor type for descriptor buffer");
+  }
+  auto descSize = _getDescriptorSize(descriptorType);
+  std::vector<uint8_t> descriptorCPU(descSize);
+  vkGetDescriptorEXT(_device->getLogicalDevice(), &getInfo, descSize, descriptorCPU.data());
+  std::ranges::copy(descriptorCPU, std::back_inserter(_descriptors));  
+}
+
+void DescriptorBuffer::add(VkDescriptorAddressInfoEXT info, VkDescriptorType descriptorType) {
+  if (_descriptorBuffer != nullptr) {
+    throw std::runtime_error("Cannot add descriptors after initialization");
+  }
+  VkDescriptorGetInfoEXT getInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT};
+  getInfo.type = descriptorType;
+  switch (descriptorType) {
+    case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
+      getInfo.data.pUniformBuffer = &info;
+      break;
+    case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
+      getInfo.data.pStorageBuffer = &info;
+      break;
+    default:
+      throw std::runtime_error("Unsupported descriptor type for descriptor buffer");
+  }
+  auto descSize = _getDescriptorSize(descriptorType);
+  std::vector<uint8_t> descriptorCPU(descSize);
+  vkGetDescriptorEXT(_device->getLogicalDevice(), &getInfo, descSize, descriptorCPU.data());
+  std::ranges::copy(descriptorCPU, std::back_inserter(_descriptors));
+}
+
+void DescriptorBuffer::initialize(const CommandBuffer& commandBuffer) {
+  if (_descriptorBuffer == nullptr) {
+    // first need to allocate the buffer itself
+    int size = _descriptors.size();
+    _descriptorBuffer = std::make_unique<Buffer>(
+        size,
+        VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+            VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT, *_memoryAllocator);
+
+    // and bind all descriptors to it
+    _descriptorBuffer->setData(std::span(reinterpret_cast<const std::byte*>(_descriptors.data()), _descriptors.size()),
+                               commandBuffer);
   }
 }
 
-void DescriptorSet::updateCustom(const std::map<int, std::vector<VkDescriptorBufferInfo>>& buffers,
-                                 const std::map<int, std::vector<VkDescriptorImageInfo>>& images) noexcept {
-  std::vector<VkWriteDescriptorSet> descriptorWrites;
-  descriptorWrites.reserve(buffers.size() + images.size());
-  for (auto&& [key, value] : buffers) {
-    VkWriteDescriptorSet descriptorSet = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                                          .dstSet = _descriptorSet,
-                                          .dstBinding = _layout->getLayoutInfo()[key].binding,
-                                          .dstArrayElement = 0,
-                                          .descriptorCount = _layout->getLayoutInfo()[key].descriptorCount,
-                                          .descriptorType = _layout->getLayoutInfo()[key].descriptorType,
-                                          .pBufferInfo = buffers.at(key).data()};
-    descriptorWrites.push_back(descriptorSet);
-  }
-  for (auto&& [key, value] : images) {
-    VkWriteDescriptorSet descriptorSet = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                                          .dstSet = _descriptorSet,
-                                          .dstBinding = _layout->getLayoutInfo()[key].binding,
-                                          .dstArrayElement = 0,
-                                          .descriptorCount = _layout->getLayoutInfo()[key].descriptorCount,
-                                          .descriptorType = _layout->getLayoutInfo()[key].descriptorType,
-                                          .pImageInfo = images.at(key).data()};
-    descriptorWrites.push_back(descriptorSet);
-  }
-
-  vkUpdateDescriptorSets(_device->getLogicalDevice(), descriptorWrites.size(), descriptorWrites.data(), 0, nullptr);
+const Buffer* DescriptorBuffer::getBuffer() {
+  return _descriptorBuffer.get();
 }
 
-VkDescriptorSet DescriptorSet::getDescriptorSet() const noexcept { return _descriptorSet; }
+#if 0
+auto bufferBinding = VkDescriptorBufferBindingInfoEXT{
+    VK_STRUCTURE_TYPE_DESCRIPTOR_BUFFER_BINDING_INFO_EXT, nullptr, _address,
+    VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT | VK_BUFFER_USAGE_SAMPLER_DESCRIPTOR_BUFFER_BIT_EXT |
+        VK_BUFFER_USAGE_PUSH_DESCRIPTORS_DESCRIPTOR_BUFFER_BIT_EXT};
 
-DescriptorSet::~DescriptorSet() { _descriptorPool->notify(_layout->getLayoutInfo(), -1); }
+VkDeviceSize offset = 0;
+uint32_t bufIndex = 0;
+vkCmdBindDescriptorBuffersEXT(commandBuffer.getCommandBuffer(), 1, &bufferBinding);
+vkCmdSetDescriptorBufferOffsetsEXT(commandBuffer.getCommandBuffer(), stage, pipelineLayout, 0, 1, &bufIndex, &offset);
+#endif

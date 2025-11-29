@@ -1,10 +1,12 @@
 export module DescriptorSet;
 import Device;
 import Buffer;
-import DescriptorPool;
+import Allocator;
+import Command;
 import <vector>;
 import <map>;
 import <volk.h>;
+import <memory>;
 
 export namespace RenderGraph {
 class DescriptorSetLayout final {
@@ -27,23 +29,20 @@ class DescriptorSetLayout final {
   ~DescriptorSetLayout();
 };
 
-class DescriptorSet final {
+class DescriptorBuffer final {
  private:
-  DescriptorPool* _descriptorPool;
   const Device* _device;
-  VkDescriptorSet _descriptorSet;
-  const DescriptorSetLayout* _layout;
+  const MemoryAllocator* _memoryAllocator;
 
+  std::unique_ptr<Buffer> _descriptorBuffer = nullptr;
+  VkDeviceAddress _address = 0;
+  std::vector<uint8_t> _descriptors;
+  int _getDescriptorSize(VkDescriptorType descriptorType);
  public:
-  DescriptorSet(const DescriptorSetLayout& layout, DescriptorPool& descriptorPool, const Device& device);
-  DescriptorSet(const DescriptorSet&) = delete;
-  DescriptorSet& operator=(const DescriptorSet&) = delete;
-  DescriptorSet(DescriptorSet&& other) = delete;
-  DescriptorSet& operator=(DescriptorSet&& other) = delete;
-
-  void updateCustom(const std::map<int, std::vector<VkDescriptorBufferInfo>>& buffers,
-                    const std::map<int, std::vector<VkDescriptorImageInfo>>& images) noexcept;
-  VkDescriptorSet getDescriptorSet() const noexcept;
-  ~DescriptorSet();
+  DescriptorBuffer(const MemoryAllocator& memoryAllocator, const Device& device);
+  void add(VkDescriptorImageInfo info, VkDescriptorType descriptorType);
+  void add(VkDescriptorAddressInfoEXT info, VkDescriptorType descriptorType);
+  void initialize(const CommandBuffer& commandBuffer);
+  const Buffer* getBuffer();
 };
 }  // namespace RenderGraph
