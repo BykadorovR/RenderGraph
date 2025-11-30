@@ -3,6 +3,7 @@ import Device;
 import Buffer;
 import Allocator;
 import Command;
+import DescriptorPool;
 import <vector>;
 import <map>;
 import <volk.h>;
@@ -27,6 +28,26 @@ class DescriptorSetLayout final {
   const std::vector<VkDescriptorSetLayoutBinding>& getLayoutInfo() const noexcept;
   VkDescriptorSetLayout getDescriptorSetLayout() const noexcept;
   ~DescriptorSetLayout();
+};
+
+class DescriptorSet final {
+ private:
+  DescriptorPool* _descriptorPool;
+  const Device* _device;
+  VkDescriptorSet _descriptorSet;
+  std::vector<VkDescriptorSetLayoutBinding> _layoutInfo;
+
+ public:
+  DescriptorSet(const DescriptorSetLayout& layout, DescriptorPool& descriptorPool, const Device& device);
+  DescriptorSet(const DescriptorSet&) = delete;
+  DescriptorSet& operator=(const DescriptorSet&) = delete;
+  DescriptorSet(DescriptorSet&& other) = delete;
+  DescriptorSet& operator=(DescriptorSet&& other) = delete;
+
+  void updateCustom(const std::map<int, std::vector<VkDescriptorBufferInfo>>& buffers,
+                    const std::map<int, std::vector<VkDescriptorImageInfo>>& images) noexcept;
+  VkDescriptorSet getDescriptorSet() const noexcept;
+  ~DescriptorSet();
 };
 
 class DescriptorBuffer final {
