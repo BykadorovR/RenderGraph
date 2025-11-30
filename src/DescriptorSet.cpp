@@ -17,6 +17,7 @@ void DescriptorSetLayout::createCustom(const std::vector<VkDescriptorSetLayoutBi
   _info = info;
 
   auto layoutInfo = VkDescriptorSetLayoutCreateInfo{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+      .flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT,
                                                     .bindingCount = static_cast<uint32_t>(_info.size()),
                                                     .pBindings = _info.data()};
   if (vkCreateDescriptorSetLayout(_device->getLogicalDevice(), &layoutInfo, nullptr, &_descriptorSetLayout) !=
@@ -162,8 +163,7 @@ const Buffer* DescriptorBuffer::getBuffer(const CommandBuffer& commandBuffer) {
     int size = _descriptors.size();
     _descriptorBuffer = std::make_unique<Buffer>(
         size,
-        VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
-            VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
         VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT, *_memoryAllocator);
 
     // and bind all descriptors to it
@@ -172,15 +172,3 @@ const Buffer* DescriptorBuffer::getBuffer(const CommandBuffer& commandBuffer) {
   }
   return _descriptorBuffer.get();
 }
-
-#if 0
-auto bufferBinding = VkDescriptorBufferBindingInfoEXT{
-    VK_STRUCTURE_TYPE_DESCRIPTOR_BUFFER_BINDING_INFO_EXT, nullptr, _address,
-    VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT | VK_BUFFER_USAGE_SAMPLER_DESCRIPTOR_BUFFER_BIT_EXT |
-        VK_BUFFER_USAGE_PUSH_DESCRIPTORS_DESCRIPTOR_BUFFER_BIT_EXT};
-
-VkDeviceSize offset = 0;
-uint32_t bufIndex = 0;
-vkCmdBindDescriptorBuffersEXT(commandBuffer.getCommandBuffer(), 1, &bufferBinding);
-vkCmdSetDescriptorBufferOffsetsEXT(commandBuffer.getCommandBuffer(), stage, pipelineLayout, 0, 1, &bufIndex, &offset);
-#endif
