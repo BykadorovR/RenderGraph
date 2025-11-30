@@ -148,7 +148,7 @@ void DescriptorBuffer::add(VkDescriptorImageInfo info, VkDescriptorType descript
   }
 
   auto descSize = _getDescriptorSize(descriptorType);
-  std::vector<uint8_t> descriptorCPU(_offsets[descSize]);
+  std::vector<uint8_t> descriptorCPU(descSize);
   vkGetDescriptorEXT(_device->getLogicalDevice(), &getInfo, descSize, descriptorCPU.data());
   std::ranges::copy(descriptorCPU, std::back_inserter(_descriptors));
   _number++;
