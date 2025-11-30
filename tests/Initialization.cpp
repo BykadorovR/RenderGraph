@@ -227,11 +227,13 @@ TEST(DescriptorBufferTest, Create) {
                                                          .stageFlags = VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT,
                                                          .pImmutableSamplers = nullptr}};
   layout.createCustom(layoutColor);
-  RenderGraph::DescriptorBuffer descriptorBuffer(allocator, device);
+  RenderGraph::DescriptorBuffer descriptorBuffer(layout, allocator, device);
   RenderGraph::CommandPool commandPool(vkb::QueueType::graphics, device);
   RenderGraph::CommandBuffer commandBuffer(commandPool, device);
   commandBuffer.beginCommands();
   EXPECT_THROW(descriptorBuffer.getBuffer(commandBuffer), std::runtime_error);
+  EXPECT_EQ(descriptorBuffer.getOffsets().size(), 1);
+  EXPECT_EQ(descriptorBuffer.getOffsets()[0], 0);
   commandBuffer.endCommands();
 }
 
@@ -244,8 +246,7 @@ TEST(DescriptorSetTest, Update) {
   RenderGraph::MemoryAllocator allocator(device, instance);
   RenderGraph::Buffer buffer(1024, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
                              VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
-                             allocator);
-  RenderGraph::DescriptorBuffer descriptorBuffer(allocator, device);
+                             allocator);  
   RenderGraph::DescriptorSetLayout layout(device);
   std::vector<VkDescriptorSetLayoutBinding> layoutColor{{.binding = 0,
                                                          .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
@@ -253,6 +254,7 @@ TEST(DescriptorSetTest, Update) {
                                                          .stageFlags = VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT,
                                                          .pImmutableSamplers = nullptr}};
   layout.createCustom(layoutColor);
+  RenderGraph::DescriptorBuffer descriptorBuffer(layout, allocator, device);
   descriptorBuffer.add(VkDescriptorAddressInfoEXT{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_ADDRESS_INFO_EXT,
                                                   .pNext = nullptr,
                                                   .address = buffer.getDeviceAddress(device),

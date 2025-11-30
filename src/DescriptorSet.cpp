@@ -2,6 +2,7 @@ module DescriptorSet;
 import <sstream>;
 import <ranges>;
 import <algorithm>;
+import <numeric>;
 using namespace RenderGraph;
 
 DescriptorSetLayout::DescriptorSetLayout(const Device& device) noexcept : _device(&device) {}
@@ -90,7 +91,18 @@ VkDescriptorSet DescriptorSet::getDescriptorSet() const noexcept { return _descr
 
 DescriptorSet::~DescriptorSet() { _descriptorPool->notify(_layoutInfo, -1); }
 
-DescriptorBuffer::DescriptorBuffer(const MemoryAllocator& memoryAllocator, const Device& device) { _memoryAllocator = &memoryAllocator; _device = &device; }
+DescriptorBuffer::DescriptorBuffer(const DescriptorSetLayout& layout, 
+                                   const MemoryAllocator& memoryAllocator,
+                                   const Device& device) {
+  _memoryAllocator = &memoryAllocator;
+  _device = &device;
+  
+  for (int i = 0; i < layout.getLayoutInfo().size(); i++) {
+    VkDeviceSize offset;
+    vkGetDescriptorSetLayoutBindingOffsetEXT(device.getLogicalDevice(), layout.getDescriptorSetLayout(), i, &offset);
+    _offsets.push_back(offset);
+  }
+}
 
 int DescriptorBuffer::_getDescriptorSize(VkDescriptorType descriptorType) {
   const auto& _bufferProperties = &_device->getDescriptorBufferProperties();
@@ -129,10 +141,17 @@ void DescriptorBuffer::add(VkDescriptorImageInfo info, VkDescriptorType descript
     default:
       throw std::runtime_error("Unsupported descriptor type for descriptor buffer");
   }
+
+  if (_offsets[_number] > _descriptors.size()) {
+    std::vector<uint8_t> allignment(_offsets[_number] - _descriptors.size(), 0);
+    std::ranges::copy(allignment, std::back_inserter(_descriptors));
+  }
+
   auto descSize = _getDescriptorSize(descriptorType);
-  std::vector<uint8_t> descriptorCPU(descSize);
+  std::vector<uint8_t> descriptorCPU(_offsets[descSize]);
   vkGetDescriptorEXT(_device->getLogicalDevice(), &getInfo, descSize, descriptorCPU.data());
-  std::ranges::copy(descriptorCPU, std::back_inserter(_descriptors));  
+  std::ranges::copy(descriptorCPU, std::back_inserter(_descriptors));
+  _number++;
 }
 
 void DescriptorBuffer::add(VkDescriptorAddressInfoEXT info, VkDescriptorType descriptorType) {
@@ -151,10 +170,17 @@ void DescriptorBuffer::add(VkDescriptorAddressInfoEXT info, VkDescriptorType des
     default:
       throw std::runtime_error("Unsupported descriptor type for descriptor buffer");
   }
+
+  if (_offsets[_number] > _descriptors.size()) {
+    std::vector<uint8_t> allignment(_offsets[_number] - _descriptors.size(), 0);
+    std::ranges::copy(allignment, std::back_inserter(_descriptors));
+  }
+
   auto descSize = _getDescriptorSize(descriptorType);
   std::vector<uint8_t> descriptorCPU(descSize);
   vkGetDescriptorEXT(_device->getLogicalDevice(), &getInfo, descSize, descriptorCPU.data());
   std::ranges::copy(descriptorCPU, std::back_inserter(_descriptors));
+  _number++;
 }
 
 const Buffer* DescriptorBuffer::getBuffer(const CommandBuffer& commandBuffer) {
@@ -172,3 +198,5 @@ const Buffer* DescriptorBuffer::getBuffer(const CommandBuffer& commandBuffer) {
   }
   return _descriptorBuffer.get();
 }
+
+std::vector<VkDeviceSize> DescriptorBuffer::getOffsets() const noexcept { return _offsets; }
