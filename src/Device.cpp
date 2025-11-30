@@ -32,7 +32,7 @@ Device::Device(const Surface& surface, const Instance& instance) {
   deviceSelector.set_required_features(deviceFeatures);
   deviceSelector.allow_any_gpu_device_type(false);
   // not part of Vulkan 1.3 core
-  deviceSelector.add_desired_extension("VK_EXT_descriptor_buffer");
+  deviceSelector.add_required_extension("VK_EXT_descriptor_buffer");
   // VK_KHR_SWAPCHAIN_EXTENSION_NAME is added by default
   auto deviceSelectorResult = deviceSelector.set_surface(surface.getSurface()).select();
   if (!deviceSelectorResult) {
@@ -41,10 +41,10 @@ Device::Device(const Surface& surface, const Instance& instance) {
   auto devicePhysical = deviceSelectorResult.value();
 
   vkb::DeviceBuilder builder{devicePhysical};
+  builder.add_pNext(&descriptorBufferFeatures);
   builder.add_pNext(&dynamicRenderingFeature);
   builder.add_pNext(&timelineFeatures);
   builder.add_pNext(&resetFeatures);
-  builder.add_pNext(&descriptorBufferFeatures);
   builder.add_pNext(&bufferDeviceAddressFeatures);
   auto builderResult = builder.build();
   if (!builderResult) {

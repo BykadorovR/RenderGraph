@@ -58,14 +58,18 @@ class DescriptorBuffer final {
   std::unique_ptr<Buffer> _descriptorBuffer = nullptr;
   VkDeviceAddress _address = 0;
   std::vector<VkDeviceSize> _offsets;
+  VkDeviceSize _layoutSize;
   std::vector<uint8_t> _descriptors;
   int _number = 0;
+  int _sizeWithin = 0;
   int _getDescriptorSize(VkDescriptorType descriptorType);
+  void _add(VkDescriptorGetInfoEXT info, VkDescriptorType descriptorType);
  public:
   DescriptorBuffer(const DescriptorSetLayout& layout, const MemoryAllocator& memoryAllocator, const Device& device);
   void add(VkDescriptorImageInfo info, VkDescriptorType descriptorType);
   void add(VkDescriptorAddressInfoEXT info, VkDescriptorType descriptorType);
   const Buffer* getBuffer(const CommandBuffer& commandBuffer);
   std::vector<VkDeviceSize> getOffsets() const noexcept;
+  VkDeviceSize getLayoutSize() const noexcept;
 };
 }  // namespace RenderGraph

@@ -234,6 +234,8 @@ TEST(DescriptorBufferTest, Create) {
   EXPECT_THROW(descriptorBuffer.getBuffer(commandBuffer), std::runtime_error);
   EXPECT_EQ(descriptorBuffer.getOffsets().size(), 1);
   EXPECT_EQ(descriptorBuffer.getOffsets()[0], 0);
+  EXPECT_GT(descriptorBuffer.getLayoutSize(), 0);
+  EXPECT_GT(descriptorBuffer.getLayoutSize(), descriptorBuffer.getOffsets().back());
   commandBuffer.endCommands();
 }
 
