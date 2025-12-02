@@ -253,7 +253,7 @@ void Pipeline::createCompute(const VkPipelineShaderStageCreateInfo& shaderStage,
   VkComputePipelineCreateInfo computePipelineCreateInfo{};
   computePipelineCreateInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
   computePipelineCreateInfo.layout = _pipelineLayout;
-  computePipelineCreateInfo.flags = VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
+  computePipelineCreateInfo.flags = 0;
   //
   computePipelineCreateInfo.stage = shaderStage;
   if (vkCreateComputePipelines(_device->getLogicalDevice(), nullptr, 1, &computePipelineCreateInfo, nullptr,
