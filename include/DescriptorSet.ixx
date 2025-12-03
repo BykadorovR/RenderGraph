@@ -68,7 +68,8 @@ class DescriptorBuffer final {
   DescriptorBuffer(const DescriptorSetLayout& layout, const MemoryAllocator& memoryAllocator, const Device& device);
   void add(VkDescriptorImageInfo info, VkDescriptorType descriptorType);
   void add(VkDescriptorAddressInfoEXT info, VkDescriptorType descriptorType);
-  const Buffer* getBuffer(const CommandBuffer& commandBuffer);
+  void initialize(const CommandBuffer& commandBuffer);
+  const Buffer* getBuffer();
   std::vector<VkDeviceSize> getOffsets() const noexcept;
   VkDeviceSize getLayoutSize() const noexcept;
 };

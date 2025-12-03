@@ -191,19 +191,20 @@ void DescriptorBuffer::add(VkDescriptorAddressInfoEXT info, VkDescriptorType des
   _add(getInfo, descriptorType);
 }
 
-const Buffer* DescriptorBuffer::getBuffer(const CommandBuffer& commandBuffer) {
-  if (_descriptorBuffer == nullptr) {
-    // first need to allocate the buffer itself
-    int size = _descriptors.size();
-    _descriptorBuffer = std::make_unique<Buffer>(
-        size,
-        VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-        VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT, *_memoryAllocator);
+void DescriptorBuffer::initialize(const CommandBuffer& commandBuffer) {
+  if (_descriptorBuffer != nullptr) throw std::runtime_error("Descriptor buffer is already initialized");
+  // first need to allocate the buffer itself
+  int size = _descriptors.size();
+  _descriptorBuffer = std::make_unique<Buffer>(
+      size, VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+      VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT, *_memoryAllocator);
 
-    // and bind all descriptors to it
-    _descriptorBuffer->setData(std::span(reinterpret_cast<const std::byte*>(_descriptors.data()), _descriptors.size()),
-                               commandBuffer);
-  }
+  // and bind all descriptors to it
+  _descriptorBuffer->setData(std::span(reinterpret_cast<const std::byte*>(_descriptors.data()), _descriptors.size()),
+                             commandBuffer);
+}
+
+const Buffer* DescriptorBuffer::getBuffer() {  
   return _descriptorBuffer.get();
 }
 
