@@ -63,6 +63,9 @@ class DescriptorBuffer final {
   int _number = 0;
   int _sizeWithin = 0;
   int _getDescriptorSize(VkDescriptorType descriptorType);
+  VkBufferUsageFlags _usage = VK_BUFFER_USAGE_SAMPLER_DESCRIPTOR_BUFFER_BIT_EXT |
+                              VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT |
+                              VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
   void _add(VkDescriptorGetInfoEXT info, VkDescriptorType descriptorType);
  public:
   DescriptorBuffer(const DescriptorSetLayout& layout, const MemoryAllocator& memoryAllocator, const Device& device);
@@ -70,6 +73,7 @@ class DescriptorBuffer final {
   void add(VkDescriptorAddressInfoEXT info, VkDescriptorType descriptorType);
   void initialize(const CommandBuffer& commandBuffer);
   const Buffer* getBuffer();
+  VkDescriptorBufferBindingInfoEXT getBufferBindingInfo() const noexcept;
   std::vector<VkDeviceSize> getOffsets() const noexcept;
   VkDeviceSize getLayoutSize() const noexcept;
 };

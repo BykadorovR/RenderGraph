@@ -239,6 +239,34 @@ TEST(DescriptorBufferTest, Create) {
   commandBuffer.endCommands();
 }
 
+TEST(DescriptorBufferTest, DifferentDescriptors) {
+  RenderGraph::Instance instance("TestApp", true);
+  RenderGraph::Window window({1920, 1080});
+  window.initialize();
+  RenderGraph::Surface surface(window, instance);
+  RenderGraph::Device device(surface, instance);
+  RenderGraph::MemoryAllocator allocator(device, instance);
+  RenderGraph::DescriptorSetLayout layout(device);  
+  std::vector<VkDescriptorSetLayoutBinding> layoutBinding{{.binding = 0,
+                                                           .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                                           .descriptorCount = 1,
+                                                           .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+                                                           .pImmutableSamplers = nullptr},
+                                                          {.binding = 1,
+                                                           .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                                           .descriptorCount = 1,
+                                                           .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+                                                           .pImmutableSamplers = nullptr}};
+  layout.createCustom(layoutBinding);
+  RenderGraph::DescriptorBuffer descriptorBuffer(layout, allocator, device);
+  EXPECT_EQ(descriptorBuffer.getOffsets().size(), 2);
+  bool offset = false;
+  if ((descriptorBuffer.getOffsets()[0] == 0 && descriptorBuffer.getOffsets()[1] != 0) ||
+      (descriptorBuffer.getOffsets()[1] == 0 && descriptorBuffer.getOffsets()[0] != 0))
+    offset = true;
+  EXPECT_EQ(offset, true);
+}
+
 TEST(DescriptorSetTest, Update) {
   RenderGraph::Instance instance("TestApp", true);
   RenderGraph::Window window({1920, 1080});

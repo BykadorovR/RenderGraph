@@ -19,7 +19,7 @@ void DescriptorSetLayout::createCustom(const std::vector<VkDescriptorSetLayoutBi
   _info = info;
 
   auto layoutInfo = VkDescriptorSetLayoutCreateInfo{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-      .flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT,
+                                                    .flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT,
                                                     .bindingCount = static_cast<uint32_t>(_info.size()),
                                                     .pBindings = _info.data()};
   if (vkCreateDescriptorSetLayout(_device->getLogicalDevice(), &layoutInfo, nullptr, &_descriptorSetLayout) !=
@@ -129,17 +129,13 @@ void DescriptorBuffer::_add(VkDescriptorGetInfoEXT info, VkDescriptorType descri
   auto descSize = _getDescriptorSize(descriptorType);
   std::vector<uint8_t> descriptorCPU(descSize);
   vkGetDescriptorEXT(_device->getLogicalDevice(), &info, descSize, descriptorCPU.data());
-  std::ranges::copy(descriptorCPU, std::back_inserter(_descriptors));
+  size_t end = _offsets[_number] + descriptorCPU.size();
+  if (_descriptors.size() < end) _descriptors.resize(end);
+  std::copy(descriptorCPU.begin(), descriptorCPU.end(), _descriptors.begin() + _offsets[_number]);
   _sizeWithin += descSize;
   _number++;
 
-  // allign between elements within one set
-  if (_number < _offsets.size() && _offsets[_number] > _sizeWithin) {
-    std::vector<uint8_t> allignment(_offsets[_number] - _sizeWithin, 0);
-    std::ranges::copy(allignment, std::back_inserter(_descriptors));
-  }
-
-  // allign for the whole set
+  // allign for the whole set (for frames in flight)
   if ((_number % _offsets.size()) == 0 && _layoutSize > _sizeWithin) {
     std::vector<uint8_t> allignment(_layoutSize - _sizeWithin, 0);
     std::ranges::copy(allignment, std::back_inserter(_descriptors));
@@ -196,8 +192,8 @@ void DescriptorBuffer::initialize(const CommandBuffer& commandBuffer) {
   // first need to allocate the buffer itself
   int size = _descriptors.size();
   _descriptorBuffer = std::make_unique<Buffer>(
-      size, VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-      VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT, *_memoryAllocator);
+      size, _usage, VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+      *_memoryAllocator);
 
   // and bind all descriptors to it
   _descriptorBuffer->setData(std::span(reinterpret_cast<const std::byte*>(_descriptors.data()), _descriptors.size()),
@@ -206,6 +202,11 @@ void DescriptorBuffer::initialize(const CommandBuffer& commandBuffer) {
 
 const Buffer* DescriptorBuffer::getBuffer() {  
   return _descriptorBuffer.get();
+}
+
+VkDescriptorBufferBindingInfoEXT DescriptorBuffer::getBufferBindingInfo() const noexcept {
+  return VkDescriptorBufferBindingInfoEXT{VK_STRUCTURE_TYPE_DESCRIPTOR_BUFFER_BINDING_INFO_EXT, nullptr,
+                                          _descriptorBuffer->getDeviceAddress(*_device), _usage};
 }
 
 std::vector<VkDeviceSize> DescriptorBuffer::getOffsets() const noexcept { return _offsets; }
