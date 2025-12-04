@@ -126,22 +126,15 @@ int DescriptorBuffer::_getDescriptorSize(VkDescriptorType descriptorType) {
 }
 
 void DescriptorBuffer::_add(VkDescriptorGetInfoEXT info, VkDescriptorType descriptorType) {
+  // allign for the whole set (for frames in flight)
+  int frame = _number / _offsets.size();
+  if ((_number % _offsets.size()) == 0) _descriptors.resize(_layoutSize * (frame + 1));
+
   auto descSize = _getDescriptorSize(descriptorType);
   std::vector<uint8_t> descriptorCPU(descSize);
   vkGetDescriptorEXT(_device->getLogicalDevice(), &info, descSize, descriptorCPU.data());
-  size_t end = _offsets[_number] + descriptorCPU.size();
-  if (_descriptors.size() < end) _descriptors.resize(end);
-  std::copy(descriptorCPU.begin(), descriptorCPU.end(), _descriptors.begin() + _offsets[_number]);
-  _sizeWithin += descSize;
-  _number++;
-
-  // allign for the whole set (for frames in flight)
-  if ((_number % _offsets.size()) == 0 && _layoutSize > _sizeWithin) {
-    std::vector<uint8_t> allignment(_layoutSize - _sizeWithin, 0);
-    std::ranges::copy(allignment, std::back_inserter(_descriptors));
-    _number = 0;
-    _sizeWithin = 0;
-  }
+  std::copy(descriptorCPU.begin(), descriptorCPU.end(), _descriptors.begin() + _offsets[_number]);  
+  _number++;  
 }
 
 void DescriptorBuffer::add(VkDescriptorImageInfo info, VkDescriptorType descriptorType) {

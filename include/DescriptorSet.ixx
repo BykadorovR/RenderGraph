@@ -60,8 +60,7 @@ class DescriptorBuffer final {
   std::vector<VkDeviceSize> _offsets;
   VkDeviceSize _layoutSize;
   std::vector<uint8_t> _descriptors;
-  int _number = 0;
-  int _sizeWithin = 0;
+  int _number = 0;  
   int _getDescriptorSize(VkDescriptorType descriptorType);
   VkBufferUsageFlags _usage = VK_BUFFER_USAGE_SAMPLER_DESCRIPTOR_BUFFER_BIT_EXT |
                               VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT |

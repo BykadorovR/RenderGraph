@@ -267,7 +267,7 @@ TEST(DescriptorBufferTest, DifferentDescriptors) {
   EXPECT_EQ(offset, true);
 }
 
-TEST(DescriptorSetTest, Update) {
+TEST(DescriptorBufferTest, Update) {
   RenderGraph::Instance instance("TestApp", true);
   RenderGraph::Window window({1920, 1080});
   window.initialize();
