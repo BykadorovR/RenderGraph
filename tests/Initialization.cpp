@@ -239,6 +239,29 @@ TEST(DescriptorBufferTest, Create) {
   commandBuffer.endCommands();
 }
 
+TEST(DescriptorBufferTest, BigDescriptorCount) {
+  RenderGraph::Instance instance("TestApp", true);
+  RenderGraph::Window window({1920, 1080});
+  window.initialize();
+  RenderGraph::Surface surface(window, instance);
+  RenderGraph::Device device(surface, instance);
+  RenderGraph::MemoryAllocator allocator(device, instance);
+  RenderGraph::DescriptorSetLayout layout(device);
+  std::vector<VkDescriptorSetLayoutBinding> layoutColor{{.binding = 0,
+                                                         .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                                         .descriptorCount = 4,
+                                                         .stageFlags = VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT,
+                                                         .pImmutableSamplers = nullptr}};
+  layout.createCustom(layoutColor);
+  RenderGraph::DescriptorBuffer descriptorBuffer({&layout}, allocator, device);
+  RenderGraph::CommandPool commandPool(vkb::QueueType::graphics, device);
+  RenderGraph::CommandBuffer commandBuffer(commandPool, device);
+  commandBuffer.beginCommands();
+  EXPECT_THROW(descriptorBuffer.initialize(commandBuffer), std::runtime_error);
+  EXPECT_EQ(descriptorBuffer.getOffsets().size(), 4);
+  commandBuffer.endCommands();
+}
+
 TEST(DescriptorBufferTest, DifferentDescriptors) {
   RenderGraph::Instance instance("TestApp", true);
   RenderGraph::Window window({1920, 1080});
