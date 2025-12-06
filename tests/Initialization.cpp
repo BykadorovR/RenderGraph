@@ -8,7 +8,7 @@ import Buffer;
 import Command;
 import CommandPool;
 import Shader;
-import DescriptorSet;
+import DescriptorBuffer;
 import Pipeline;
 import Swapchain;
 import Sync;
