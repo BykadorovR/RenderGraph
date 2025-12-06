@@ -58,16 +58,18 @@ class DescriptorBuffer final {
   std::unique_ptr<Buffer> _descriptorBuffer = nullptr;
   VkDeviceAddress _address = 0;
   std::vector<VkDeviceSize> _offsets;
-  VkDeviceSize _layoutSize;
+  VkDeviceSize _layoutSize = 0;
   std::vector<uint8_t> _descriptors;
-  int _number = 0;  
+  int _number = 0;
   int _getDescriptorSize(VkDescriptorType descriptorType);
   VkBufferUsageFlags _usage = VK_BUFFER_USAGE_SAMPLER_DESCRIPTOR_BUFFER_BIT_EXT |
                               VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT |
                               VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
   void _add(VkDescriptorGetInfoEXT info, VkDescriptorType descriptorType);
  public:
-  DescriptorBuffer(const DescriptorSetLayout& layout, const MemoryAllocator& memoryAllocator, const Device& device);
+  DescriptorBuffer(std::initializer_list<const DescriptorSetLayout*> layouts,
+                   const MemoryAllocator& memoryAllocator,
+                   const Device& device);
   void add(VkDescriptorImageInfo info, VkDescriptorType descriptorType);
   void add(VkDescriptorAddressInfoEXT info, VkDescriptorType descriptorType);
   void initialize(const CommandBuffer& commandBuffer);

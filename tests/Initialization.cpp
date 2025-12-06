@@ -227,7 +227,7 @@ TEST(DescriptorBufferTest, Create) {
                                                          .stageFlags = VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT,
                                                          .pImmutableSamplers = nullptr}};
   layout.createCustom(layoutColor);
-  RenderGraph::DescriptorBuffer descriptorBuffer(layout, allocator, device);
+  RenderGraph::DescriptorBuffer descriptorBuffer({&layout}, allocator, device);
   RenderGraph::CommandPool commandPool(vkb::QueueType::graphics, device);
   RenderGraph::CommandBuffer commandBuffer(commandPool, device);
   commandBuffer.beginCommands();
@@ -258,7 +258,7 @@ TEST(DescriptorBufferTest, DifferentDescriptors) {
                                                            .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
                                                            .pImmutableSamplers = nullptr}};
   layout.createCustom(layoutBinding);
-  RenderGraph::DescriptorBuffer descriptorBuffer(layout, allocator, device);
+  RenderGraph::DescriptorBuffer descriptorBuffer({&layout}, allocator, device);
   EXPECT_EQ(descriptorBuffer.getOffsets().size(), 2);
   bool offset = false;
   if ((descriptorBuffer.getOffsets()[0] == 0 && descriptorBuffer.getOffsets()[1] != 0) ||
@@ -284,7 +284,7 @@ TEST(DescriptorBufferTest, Update) {
                                                          .stageFlags = VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT,
                                                          .pImmutableSamplers = nullptr}};
   layout.createCustom(layoutColor);
-  RenderGraph::DescriptorBuffer descriptorBuffer(layout, allocator, device);
+  RenderGraph::DescriptorBuffer descriptorBuffer({&layout}, allocator, device);
   descriptorBuffer.add(VkDescriptorAddressInfoEXT{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_ADDRESS_INFO_EXT,
                                                   .pNext = nullptr,
                                                   .address = buffer.getDeviceAddress(device),

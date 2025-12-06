@@ -92,19 +92,23 @@ VkDescriptorSet DescriptorSet::getDescriptorSet() const noexcept { return _descr
 
 DescriptorSet::~DescriptorSet() { _descriptorPool->notify(_layoutInfo, -1); }
 
-DescriptorBuffer::DescriptorBuffer(const DescriptorSetLayout& layout, 
+DescriptorBuffer::DescriptorBuffer(std::initializer_list<const DescriptorSetLayout*> layouts,
                                    const MemoryAllocator& memoryAllocator,
                                    const Device& device) {
   _memoryAllocator = &memoryAllocator;
   _device = &device;
   
-  for (int i = 0; i < layout.getLayoutInfo().size(); i++) {
-    VkDeviceSize offset;
-    vkGetDescriptorSetLayoutBindingOffsetEXT(device.getLogicalDevice(), layout.getDescriptorSetLayout(), i, &offset);
-    _offsets.push_back(offset);
+  for (auto&& layout : layouts) {
+    for (int i = 0; i < layout->getLayoutInfo().size(); i++) {
+      VkDeviceSize offset;
+      vkGetDescriptorSetLayoutBindingOffsetEXT(device.getLogicalDevice(), layout->getDescriptorSetLayout(), i, &offset);
+      _offsets.push_back(offset);
+    }
+
+    VkDeviceSize layoutSize;
+    vkGetDescriptorSetLayoutSizeEXT(device.getLogicalDevice(), layout->getDescriptorSetLayout(), &layoutSize);
+    _layoutSize += layoutSize;
   }
-  
-  vkGetDescriptorSetLayoutSizeEXT(device.getLogicalDevice(), layout.getDescriptorSetLayout(), &_layoutSize);
 }
 
 int DescriptorBuffer::_getDescriptorSize(VkDescriptorType descriptorType) {
