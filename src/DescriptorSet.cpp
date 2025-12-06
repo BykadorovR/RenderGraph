@@ -100,11 +100,11 @@ DescriptorBuffer::DescriptorBuffer(std::initializer_list<const DescriptorSetLayo
   
   for (auto&& layout : layouts) {
     for (int i = 0; i < layout->getLayoutInfo().size(); i++) {
-      for (int j = 0; j < layout->getLayoutInfo()[i].descriptorCount; j++) {
+      for (int j = 0; j < layout->getLayoutInfo()[i].descriptorCount; j++) {        
         VkDeviceSize offset;
         vkGetDescriptorSetLayoutBindingOffsetEXT(device.getLogicalDevice(), layout->getDescriptorSetLayout(), i,
                                                  &offset);
-        _offsets.push_back(offset);
+        _offsets.push_back(offset + _getDescriptorSize(layout->getLayoutInfo()[i].descriptorType) * j);
       }
     }
 

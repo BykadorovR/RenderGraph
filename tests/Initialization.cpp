@@ -259,6 +259,9 @@ TEST(DescriptorBufferTest, BigDescriptorCount) {
   commandBuffer.beginCommands();
   EXPECT_THROW(descriptorBuffer.initialize(commandBuffer), std::runtime_error);
   EXPECT_EQ(descriptorBuffer.getOffsets().size(), 4);
+  EXPECT_GT(descriptorBuffer.getOffsets()[1], descriptorBuffer.getOffsets()[0]);
+  EXPECT_GT(descriptorBuffer.getOffsets()[2], descriptorBuffer.getOffsets()[1]);
+  EXPECT_GT(descriptorBuffer.getOffsets()[3], descriptorBuffer.getOffsets()[2]);
   commandBuffer.endCommands();
 }
 
