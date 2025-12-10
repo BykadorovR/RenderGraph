@@ -5,6 +5,7 @@ export module Buffer;
 import <vk_mem_alloc.h>;
 import Allocator;
 import Command;
+import Device;
 import <span>;
 import <memory>;
 import <stdexcept>;
@@ -40,6 +41,7 @@ class Buffer final {
   VkDeviceSize getSize() const noexcept;
   const VmaAllocationInfo& getAllocationInfo() const noexcept;
   VmaAllocation getAllocation() const noexcept;
+  VkDeviceAddress getDeviceAddress(const Device& device) const noexcept;
   ~Buffer();
 };
 }  // namespace RenderGraph
