@@ -198,6 +198,7 @@ void Pipeline::createGraphic(const PipelineGraphic& pipelineGraphic,
 
   VkGraphicsPipelineCreateInfo pipelineInfo{.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
                                             .pNext = &renderingInfo,
+                                            .flags = VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT,
                                             .stageCount = static_cast<uint32_t>(shaderStages.size()),
                                             .pStages = shaderStages.data(),
                                             .pVertexInputState = &vertexInputInfo,
@@ -252,7 +253,7 @@ void Pipeline::createCompute(const VkPipelineShaderStageCreateInfo& shaderStage,
   VkComputePipelineCreateInfo computePipelineCreateInfo{};
   computePipelineCreateInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
   computePipelineCreateInfo.layout = _pipelineLayout;
-  computePipelineCreateInfo.flags = 0;
+  computePipelineCreateInfo.flags = VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
   //
   computePipelineCreateInfo.stage = shaderStage;
   if (vkCreateComputePipelines(_device->getLogicalDevice(), nullptr, 1, &computePipelineCreateInfo, nullptr,

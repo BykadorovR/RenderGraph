@@ -1,6 +1,6 @@
 export module Pipeline;
 import Buffer;
-import DescriptorSet;
+import DescriptorBuffer;
 import Device;
 import <volk.h>;
 import <vector>;
