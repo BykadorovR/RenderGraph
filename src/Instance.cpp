@@ -5,7 +5,12 @@ VkBool32 debugCallbackUtils(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeveri
                             VkDebugUtilsMessageTypeFlagsEXT messageType,
                             const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
                             void* pUserData) {
-  std::cerr << "validation layer: " << pCallbackData->pMessage << std::endl;
+  if (messageType & VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT)
+    printf("\033[32m[Validation layer] %s\033[0m\n", pCallbackData->pMessage);
+  else if (messageType & VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT)
+    printf("\033[33m[Validation layer] %s\033[0m\n", pCallbackData->pMessage);
+  else
+    printf("\033[31m[Validation layer] %s\033[0m\n", pCallbackData->pMessage);
   return false;
 }
 
@@ -22,7 +27,15 @@ Instance::Instance(std::string_view name, bool validation) {
   // debug report is deprecated, includes only validation layers.
   if (validation && systemInfo.validation_layers_available) {
     builder.enable_validation_layers();
+    builder.add_validation_feature_enable(VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT);
+    builder.add_validation_feature_enable(VK_VALIDATION_FEATURE_ENABLE_BEST_PRACTICES_EXT);    
     if (systemInfo.debug_utils_available) {
+      builder.set_debug_messenger_type(VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
+                                       VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
+                                       VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT);
+      builder.set_debug_messenger_severity(VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT |
+                                           VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
+                                           VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT);
       builder.set_debug_callback(debugCallbackUtils);
       _debugUtils = true;
     }
