@@ -16,21 +16,49 @@ VkShaderModule Shader::_createShaderModule(const std::vector<char>& code) {
 
 Shader::Shader(const Device& device) noexcept : _device(&device) {}
 
-void Shader::add(const std::vector<char>& shaderCode, VkShaderStageFlagBits type) {
-  VkShaderModule shaderModule = _createShaderModule(shaderCode);
-  _shaders[type] = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                    .stage = type,
-                    .module = shaderModule,
-                    .pName = "main"};
-}
+void Shader::add(const std::vector<char>& shaderCode, const VkSpecializationInfo* info) {
+  // parse spirv code
+  SpvReflectShaderModule module;
+  SpvReflectResult r = spvReflectCreateShaderModule(shaderCode.size() * sizeof(uint32_t), shaderCode.data(), &module);
+  if (r != SPV_REFLECT_RESULT_SUCCESS) {
+    throw std::runtime_error("Failed to reflect shader module");
+  }
+  uint32_t count = 0;
+  spvReflectEnumerateDescriptorBindings(&module, &count, nullptr);
+  std::vector<SpvReflectDescriptorBinding*> bindings(count);
+  spvReflectEnumerateDescriptorBindings(&module, &count, bindings.data());
 
-void Shader::setSpecializationInfo(const VkSpecializationInfo& info, VkShaderStageFlagBits type) {
-  _specializationInfo = info;
-  _shaders[type].pSpecializationInfo = &_specializationInfo;
+  for (uint32_t i = 0; i < count; ++i) {
+    SpvReflectDescriptorBinding* b = bindings[i];
+    VkDescriptorSetLayoutBinding layoutBinding{};
+    layoutBinding.binding = b->binding;
+    layoutBinding.descriptorType = static_cast<VkDescriptorType>(b->descriptor_type);
+    layoutBinding.descriptorCount = b->count;
+    layoutBinding.stageFlags = static_cast<VkShaderStageFlagBits>(module.shader_stage);
+    layoutBinding.pImmutableSamplers = nullptr;
+
+    auto it = std::lower_bound(_descriptorSetLayoutBindings.begin(), _descriptorSetLayoutBindings.end(), layoutBinding,
+                               [](auto const& x, auto const& v) { return x.binding < v.binding; });
+    _descriptorSetLayoutBindings.insert(it, layoutBinding);
+  }
+
+  VkShaderModule shaderModule = _createShaderModule(shaderCode);
+  _shaders[static_cast<VkShaderStageFlagBits>(module.shader_stage)] = {
+      .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+      .stage = static_cast<VkShaderStageFlagBits>(module.shader_stage),
+      .module = shaderModule,
+      .pName = "main",
+      .pSpecializationInfo = info};
+
+  _specializationInfo[static_cast<VkShaderStageFlagBits>(module.shader_stage)] = info;
 }
 
 const VkPipelineShaderStageCreateInfo& Shader::getShaderStageInfo(VkShaderStageFlagBits type) const noexcept {
   return _shaders.at(type);
+}
+
+const std::vector<VkDescriptorSetLayoutBinding>& Shader::getDescriptorSetLayoutBindings() const {
+  return _descriptorSetLayoutBindings;
 }
 
 Shader::~Shader() {
