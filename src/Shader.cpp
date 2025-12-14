@@ -20,7 +20,7 @@ Shader::Shader(const Device& device) noexcept : _device(&device) {}
 void Shader::add(const std::vector<char>& shaderCode, const VkSpecializationInfo* info) {
   // parse spirv code
   SpvReflectShaderModule module;
-  SpvReflectResult r = spvReflectCreateShaderModule(shaderCode.size() * sizeof(uint32_t), shaderCode.data(), &module);
+  SpvReflectResult r = spvReflectCreateShaderModule(shaderCode.size(), shaderCode.data(), &module);
   if (r != SPV_REFLECT_RESULT_SUCCESS) {
     throw std::runtime_error("Failed to reflect shader module");
   }
