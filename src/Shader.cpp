@@ -1,4 +1,5 @@
 module Shader;
+import <ranges>;
 using namespace RenderGraph;
 
 VkShaderModule Shader::_createShaderModule(const std::vector<char>& code) {
@@ -53,8 +54,8 @@ void Shader::add(const std::vector<char>& shaderCode, const VkSpecializationInfo
   _specializationInfo[static_cast<VkShaderStageFlagBits>(module.shader_stage)] = info;
 }
 
-const VkPipelineShaderStageCreateInfo& Shader::getShaderStageInfo(VkShaderStageFlagBits type) const noexcept {
-  return _shaders.at(type);
+std::vector<VkPipelineShaderStageCreateInfo> Shader::getShaderStageInfo() const noexcept {
+  return _shaders | std::views::values | std::ranges::to<std::vector>();
 }
 
 const std::vector<VkDescriptorSetLayoutBinding>& Shader::getDescriptorSetLayoutBindings() const {

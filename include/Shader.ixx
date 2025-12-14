@@ -10,7 +10,7 @@ class Shader final {
  private:
   const Device* _device;
   std::map<VkShaderStageFlagBits, VkPipelineShaderStageCreateInfo> _shaders;
-  std::map < VkShaderStageFlagBits, const VkSpecializationInfo*> _specializationInfo;
+  std::map<VkShaderStageFlagBits, const VkSpecializationInfo*> _specializationInfo;
   std::vector<VkDescriptorSetLayoutBinding> _descriptorSetLayoutBindings;
   VkShaderModule _createShaderModule(const std::vector<char>& code);
  public:
@@ -21,7 +21,7 @@ class Shader final {
   Shader& operator=(Shader&&) = delete;
   
   void add(const std::vector<char>& shaderCode, const VkSpecializationInfo* info = nullptr);
-  const VkPipelineShaderStageCreateInfo& getShaderStageInfo(VkShaderStageFlagBits type) const noexcept;
+  std::vector<VkPipelineShaderStageCreateInfo> getShaderStageInfo() const noexcept;
   const std::vector<VkDescriptorSetLayoutBinding>& getDescriptorSetLayoutBindings() const;  
   ~Shader();
 };

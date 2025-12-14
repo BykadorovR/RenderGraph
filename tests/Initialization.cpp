@@ -381,7 +381,7 @@ TEST(PipelineTest, Create) {
   // validation error is expected because minimal shader does not have any input
   EXPECT_NO_THROW(pipeline.createGraphic(
       pipelineGraphic,
-      {shader.getShaderStageInfo(VK_SHADER_STAGE_VERTEX_BIT)},
+      shader.getShaderStageInfo(),
       descriptorSetLayouts,
       {}, bindingDescription,
       attributeDescriptions));
