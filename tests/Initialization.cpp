@@ -608,7 +608,7 @@ TEST(ShaderTest, Reflection) {
   EXPECT_EQ(vertexAttributes[2].binding, 0);
   EXPECT_EQ(vertexAttributes[2].location, 2);
   EXPECT_EQ(vertexAttributes[2].offset, 16);
-  EXPECT_EQ(vertexAttributes[2].format, VK_FORMAT_R32G32B32A32_SFLOAT);
+  EXPECT_EQ(vertexAttributes[2].format, VK_FORMAT_R32_UINT);
   auto bindingDescription = vertexInfo->pVertexBindingDescriptions;
-  EXPECT_GE(bindingDescription->stride, vertexAttributes[2].offset);
+  EXPECT_EQ(bindingDescription->stride, 20);
 }

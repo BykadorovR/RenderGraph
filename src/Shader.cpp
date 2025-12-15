@@ -72,7 +72,7 @@ void Shader::add(const std::vector<char>& shaderCode, const VkSpecializationInfo
       if (v->decoration_flags & SPV_REFLECT_DECORATION_BUILT_IN) continue;  // skip builtins      
       uint32_t loc = v->location;
       VkFormat fmt = static_cast<VkFormat>(v->format);
-      auto size = (v->numeric.scalar.width / 8) * v->numeric.vector.component_count;
+      auto size = (v->numeric.scalar.width / 8) * std::max(1u, v->numeric.vector.component_count);
 
       VkVertexInputAttributeDescription attributes{};
       attributes.location = loc;
