@@ -3,6 +3,7 @@ import Device;
 import <volk.h>;
 import <map>;
 import <vector>;
+import <memory>;
 import <spirv_reflect.h>;
 
 export namespace RenderGraph {
@@ -12,6 +13,9 @@ class Shader final {
   std::map<VkShaderStageFlagBits, VkPipelineShaderStageCreateInfo> _shaders;
   std::map<VkShaderStageFlagBits, const VkSpecializationInfo*> _specializationInfo;
   std::vector<VkDescriptorSetLayoutBinding> _descriptorSetLayoutBindings;
+  std::vector<VkVertexInputAttributeDescription> _vertexInputAttributes;
+  VkVertexInputBindingDescription _bindingDescription;
+  std::unique_ptr<VkPipelineVertexInputStateCreateInfo> _vertexInputInfo;
   VkShaderModule _createShaderModule(const std::vector<char>& code);
  public:
   Shader(const Device& device) noexcept;
@@ -22,7 +26,8 @@ class Shader final {
   
   void add(const std::vector<char>& shaderCode, const VkSpecializationInfo* info = nullptr);
   std::vector<VkPipelineShaderStageCreateInfo> getShaderStageInfo() const noexcept;
-  const std::vector<VkDescriptorSetLayoutBinding>& getDescriptorSetLayoutBindings() const;  
+  const std::vector<VkDescriptorSetLayoutBinding>& getDescriptorSetLayoutBindings() const;
+  const VkPipelineVertexInputStateCreateInfo* getVertexInputInfo() const;
   ~Shader();
 };
 }  // namespace RenderGraph

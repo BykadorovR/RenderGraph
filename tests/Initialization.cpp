@@ -597,4 +597,20 @@ TEST(ShaderTest, Reflection) {
   EXPECT_EQ(resultVertex[1].binding, 1);
   EXPECT_EQ(resultVertex[0].stageFlags, VK_SHADER_STAGE_VERTEX_BIT);
   EXPECT_EQ(resultVertex[1].stageFlags, VK_SHADER_STAGE_FRAGMENT_BIT);
+  auto vertexInfo = shader.getVertexInputInfo();
+  auto vertexAttributes = vertexInfo->pVertexAttributeDescriptions;
+  EXPECT_EQ(vertexAttributes[0].binding, 0);
+  EXPECT_EQ(vertexAttributes[0].location, 0);
+  EXPECT_EQ(vertexAttributes[0].offset, 0);
+  EXPECT_EQ(vertexAttributes[0].format, VK_FORMAT_R32G32_SFLOAT);
+  EXPECT_EQ(vertexAttributes[1].binding, 0);
+  EXPECT_EQ(vertexAttributes[1].location, 1);
+  EXPECT_EQ(vertexAttributes[1].offset, 8);
+  EXPECT_EQ(vertexAttributes[1].format, VK_FORMAT_R32G32_SFLOAT);
+  EXPECT_EQ(vertexAttributes[2].binding, 0);
+  EXPECT_EQ(vertexAttributes[2].location, 2);
+  EXPECT_EQ(vertexAttributes[2].offset, 16);
+  EXPECT_EQ(vertexAttributes[2].format, VK_FORMAT_R32G32B32A32_SFLOAT);
+  auto bindingDescription = vertexInfo->pVertexBindingDescriptions;
+  EXPECT_GE(bindingDescription->stride, vertexAttributes[2].offset);
 }
