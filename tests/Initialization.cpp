@@ -382,9 +382,7 @@ TEST(PipelineTest, Create) {
   EXPECT_NO_THROW(pipeline.createGraphic(
       pipelineGraphic,
       shader.getShaderStageInfo(),
-      descriptorSetLayouts,
-      {}, bindingDescription,
-      attributeDescriptions));
+      descriptorSetLayouts, {}, *shader.getVertexInputInfo()));
 }
 
 TEST(SwapchainTest, CreateWithoutInitialization) {
