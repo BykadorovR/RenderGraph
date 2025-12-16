@@ -14,7 +14,7 @@ class Shader final {
   std::map<VkShaderStageFlagBits, const VkSpecializationInfo*> _specializationInfo;
   std::vector<VkDescriptorSetLayoutBinding> _descriptorSetLayoutBindings;
   std::vector<VkVertexInputAttributeDescription> _vertexInputAttributes;
-  VkVertexInputBindingDescription _bindingDescription;
+  std::vector<VkVertexInputBindingDescription> _bindingDescription;
   std::unique_ptr<VkPipelineVertexInputStateCreateInfo> _vertexInputInfo;
   VkShaderModule _createShaderModule(const std::vector<char>& code);
  public:
@@ -27,7 +27,10 @@ class Shader final {
   void add(const std::vector<char>& shaderCode, const VkSpecializationInfo* info = nullptr);
   std::vector<VkPipelineShaderStageCreateInfo> getShaderStageInfo() const noexcept;
   const std::vector<VkDescriptorSetLayoutBinding>& getDescriptorSetLayoutBindings() const;
-  const VkPipelineVertexInputStateCreateInfo* getVertexInputInfo() const;
+  // for instancing
+  const VkPipelineVertexInputStateCreateInfo* getVertexInputInfo(
+      std::vector<std::pair<VkVertexInputRate, int>> typeSize);
+  const VkPipelineVertexInputStateCreateInfo* getVertexInputInfo();
   ~Shader();
 };
 }  // namespace RenderGraph

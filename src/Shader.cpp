@@ -72,24 +72,21 @@ void Shader::add(const std::vector<char>& shaderCode, const VkSpecializationInfo
       if (v->decoration_flags & SPV_REFLECT_DECORATION_BUILT_IN) continue;  // skip builtins      
       uint32_t loc = v->location;
       VkFormat fmt = static_cast<VkFormat>(v->format);
-      auto size = (v->numeric.scalar.width / 8) * std::max(1u, v->numeric.vector.component_count);
+
+      auto elements = v->numeric.matrix.column_count * v->numeric.matrix.row_count;
+      elements = std::max(elements, v->numeric.vector.component_count);
+      elements = std::max(elements, 1u);
+      auto size = (v->numeric.scalar.width / 8) * elements;
 
       VkVertexInputAttributeDescription attributes{};
       attributes.location = loc;
-      attributes.binding = 0;
       attributes.format = fmt;
+      attributes.binding = 0;
       attributes.offset = offset;
       _vertexInputAttributes[loc] = attributes;
 
       offset += size;
-    }
-
-    _bindingDescription =
-        VkVertexInputBindingDescription{.binding = 0, .stride = offset, .inputRate = VK_VERTEX_INPUT_RATE_VERTEX};
-      
-    _vertexInputInfo = std::make_unique<VkPipelineVertexInputStateCreateInfo>(
-        VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO, nullptr, 0, 1, &_bindingDescription,
-        static_cast<uint32_t>(_vertexInputAttributes.size()), _vertexInputAttributes.data());
+    }    
   }
   spvReflectDestroyShaderModule(&module);
 }
@@ -102,7 +99,49 @@ const std::vector<VkDescriptorSetLayoutBinding>& Shader::getDescriptorSetLayoutB
   return _descriptorSetLayoutBindings;
 }
 
-const VkPipelineVertexInputStateCreateInfo* Shader::getVertexInputInfo() const { return _vertexInputInfo.get(); }
+const VkPipelineVertexInputStateCreateInfo* Shader::getVertexInputInfo() {
+  if (_vertexInputInfo == nullptr) {
+    if (_vertexInputAttributes.size() > 0) {
+      _bindingDescription = {{
+          .binding = 0,
+          .stride = _vertexInputAttributes.back().offset,
+          .inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
+      }};
+    }
+
+    _vertexInputInfo = std::make_unique<VkPipelineVertexInputStateCreateInfo>(
+        VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO, nullptr, 0, _bindingDescription.size(),
+        _bindingDescription.data(), static_cast<uint32_t>(_vertexInputAttributes.size()),
+        _vertexInputAttributes.data());
+  }
+
+  return _vertexInputInfo.get();
+}
+
+const VkPipelineVertexInputStateCreateInfo* Shader::getVertexInputInfo(
+    std::vector<std::pair<VkVertexInputRate, int>> typeSize) {
+  if (_vertexInputInfo == nullptr) {
+    _bindingDescription.resize(typeSize.size());
+    for (int binding = 0; binding < typeSize.size(); binding++) {
+      auto [type, size] = typeSize[binding];
+      int index = 0;
+      while (_vertexInputAttributes[index].offset < size) {
+        _vertexInputAttributes[index].binding = binding;
+        index++;
+      }
+
+      _bindingDescription[binding] = VkVertexInputBindingDescription{.binding = static_cast<uint32_t>(binding),
+                                                                     .stride = _vertexInputAttributes[index].offset,
+                                                                     .inputRate = type};
+    }
+
+    _vertexInputInfo = std::make_unique<VkPipelineVertexInputStateCreateInfo>(
+        VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO, nullptr, 0, _bindingDescription.size(),
+        _bindingDescription.data(), static_cast<uint32_t>(_vertexInputAttributes.size()),
+        _vertexInputAttributes.data());
+  }
+  return _vertexInputInfo.get();
+}
 
 Shader::~Shader() {
   for (auto&& [type, shader] : _shaders) vkDestroyShaderModule(_device->getLogicalDevice(), shader.module, nullptr);
