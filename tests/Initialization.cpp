@@ -596,6 +596,7 @@ TEST(ShaderTest, Reflection) {
   EXPECT_EQ(resultVertex[0].stageFlags, VK_SHADER_STAGE_VERTEX_BIT);
   EXPECT_EQ(resultVertex[1].stageFlags, VK_SHADER_STAGE_FRAGMENT_BIT);
   auto vertexInfo = shader.getVertexInputInfo();
+  EXPECT_EQ(vertexInfo->vertexAttributeDescriptionCount, 4);
   auto vertexAttributes = vertexInfo->pVertexAttributeDescriptions;
   EXPECT_EQ(vertexAttributes[0].binding, 0);
   EXPECT_EQ(vertexAttributes[0].location, 0);
@@ -610,5 +611,5 @@ TEST(ShaderTest, Reflection) {
   EXPECT_EQ(vertexAttributes[2].offset, 16);
   EXPECT_EQ(vertexAttributes[2].format, VK_FORMAT_R32_UINT);
   auto bindingDescription = vertexInfo->pVertexBindingDescriptions;
-  EXPECT_EQ(bindingDescription->stride, 20);
+  EXPECT_EQ(bindingDescription->stride, 84);
 }

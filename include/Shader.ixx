@@ -16,6 +16,7 @@ class Shader final {
   std::vector<VkVertexInputAttributeDescription> _vertexInputAttributes;
   std::vector<VkVertexInputBindingDescription> _bindingDescription;
   std::unique_ptr<VkPipelineVertexInputStateCreateInfo> _vertexInputInfo;
+  uint32_t _attributesSize = 0;
   VkShaderModule _createShaderModule(const std::vector<char>& code);
  public:
   Shader(const Device& device) noexcept;
