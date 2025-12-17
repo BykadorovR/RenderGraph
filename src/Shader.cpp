@@ -60,8 +60,6 @@ void Shader::add(const std::vector<char>& shaderCode, const VkSpecializationInfo
     std::vector<SpvReflectInterfaceVariable*> vars(count);
     spvReflectEnumerateInputVariables(&module, &count, vars.data());
     
-    _vertexInputAttributes.resize(count);
-
     std::sort(vars.begin(), vars.end(),
               [&](const SpvReflectInterfaceVariable* left, const SpvReflectInterfaceVariable* right) {
                 return left->location < right->location;
@@ -75,16 +73,28 @@ void Shader::add(const std::vector<char>& shaderCode, const VkSpecializationInfo
       auto elements = v->numeric.matrix.column_count * v->numeric.matrix.row_count;
       elements = std::max(elements, v->numeric.vector.component_count);
       elements = std::max(elements, 1u);
-      auto size = (v->numeric.scalar.width / 8) * elements;
 
-      VkVertexInputAttributeDescription attributes{};
-      attributes.location = loc;
-      attributes.format = fmt;
-      attributes.binding = 0;
-      attributes.offset = _attributesSize;
-      _vertexInputAttributes[loc] = attributes;
+      // split attributes larger than vec4
+      std::vector<int> components;
+      while ((elements / 4) > 0) {
+        components.push_back(4);
+        elements -= 4;
+      }
+      if (elements) components.push_back(elements % 4);
+      
+      for (auto component : components) {
+        auto size = (v->numeric.scalar.width / 8) * component;
 
-      _attributesSize += size;
+        VkVertexInputAttributeDescription attributes{};
+        attributes.location = loc;
+        attributes.format = fmt;
+        attributes.binding = 0;
+        attributes.offset = _attributesSize;
+        _vertexInputAttributes.push_back(attributes);
+        
+        loc++;
+        _attributesSize += size;
+      }
     }    
   }
   spvReflectDestroyShaderModule(&module);
@@ -121,12 +131,14 @@ const VkPipelineVertexInputStateCreateInfo* Shader::getVertexInputInfo(
     std::vector<std::pair<VkVertexInputRate, int>> typeSize) {
   if (_vertexInputInfo == nullptr) {
     _bindingDescription.resize(typeSize.size());
+    int index = 0;
     for (int binding = 0; binding < typeSize.size(); binding++) {
       auto [type, size] = typeSize[binding];
-      int index = 0;
-      while (_vertexInputAttributes[index].offset < size) {
+      size += _vertexInputAttributes[index].offset;
+
+      while (index < _vertexInputAttributes.size() && _vertexInputAttributes[index].offset < size) {
         _vertexInputAttributes[index].binding = binding;
-        index++;
+        index++;        
       }
 
       uint32_t stride = _attributesSize;

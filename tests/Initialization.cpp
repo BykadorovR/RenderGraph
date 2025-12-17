@@ -595,8 +595,9 @@ TEST(ShaderTest, Reflection) {
   EXPECT_EQ(resultVertex[1].binding, 1);
   EXPECT_EQ(resultVertex[0].stageFlags, VK_SHADER_STAGE_VERTEX_BIT);
   EXPECT_EQ(resultVertex[1].stageFlags, VK_SHADER_STAGE_FRAGMENT_BIT);
-  auto vertexInfo = shader.getVertexInputInfo();
-  EXPECT_EQ(vertexInfo->vertexAttributeDescriptionCount, 4);
+  auto vertexInfo = shader.getVertexInputInfo(
+      {{VK_VERTEX_INPUT_RATE_VERTEX, 8 + 8 + 4}, {VK_VERTEX_INPUT_RATE_INSTANCE, 4 * 16 + 16}});
+  EXPECT_EQ(vertexInfo->vertexAttributeDescriptionCount, 8);
   auto vertexAttributes = vertexInfo->pVertexAttributeDescriptions;
   EXPECT_EQ(vertexAttributes[0].binding, 0);
   EXPECT_EQ(vertexAttributes[0].location, 0);
@@ -610,6 +611,33 @@ TEST(ShaderTest, Reflection) {
   EXPECT_EQ(vertexAttributes[2].location, 2);
   EXPECT_EQ(vertexAttributes[2].offset, 16);
   EXPECT_EQ(vertexAttributes[2].format, VK_FORMAT_R32_UINT);
+  EXPECT_EQ(vertexAttributes[3].binding, 1);
+  EXPECT_EQ(vertexAttributes[3].location, 3);
+  EXPECT_EQ(vertexAttributes[3].offset, 20);
+  EXPECT_EQ(vertexAttributes[3].format, VK_FORMAT_R32G32B32A32_SFLOAT);
+  EXPECT_EQ(vertexAttributes[4].binding, 1);
+  EXPECT_EQ(vertexAttributes[4].location, 4);
+  EXPECT_EQ(vertexAttributes[4].offset, 36);
+  EXPECT_EQ(vertexAttributes[4].format, VK_FORMAT_R32G32B32A32_SFLOAT);
+  EXPECT_EQ(vertexAttributes[5].binding, 1);
+  EXPECT_EQ(vertexAttributes[5].location, 5);
+  EXPECT_EQ(vertexAttributes[5].offset, 52);
+  EXPECT_EQ(vertexAttributes[5].format, VK_FORMAT_R32G32B32A32_SFLOAT);
+  EXPECT_EQ(vertexAttributes[6].binding, 1);
+  EXPECT_EQ(vertexAttributes[6].location, 6);
+  EXPECT_EQ(vertexAttributes[6].offset, 68);
+  EXPECT_EQ(vertexAttributes[6].format, VK_FORMAT_R32G32B32A32_SFLOAT);
+  EXPECT_EQ(vertexAttributes[7].binding, 1);
+  EXPECT_EQ(vertexAttributes[7].location, 7);
+  EXPECT_EQ(vertexAttributes[7].offset, 84);
+  EXPECT_EQ(vertexAttributes[7].format, VK_FORMAT_R32G32B32A32_SFLOAT);
+
+  EXPECT_EQ(vertexInfo->vertexBindingDescriptionCount, 2);
   auto bindingDescription = vertexInfo->pVertexBindingDescriptions;
-  EXPECT_EQ(bindingDescription->stride, 84);
+  EXPECT_EQ(bindingDescription[0].stride, 20);
+  EXPECT_EQ(bindingDescription[0].binding, 0);
+  EXPECT_EQ(bindingDescription[0].inputRate, VK_VERTEX_INPUT_RATE_VERTEX);
+  EXPECT_EQ(bindingDescription[1].stride, 100);
+  EXPECT_EQ(bindingDescription[1].binding, 1);
+  EXPECT_EQ(bindingDescription[1].inputRate, VK_VERTEX_INPUT_RATE_INSTANCE);
 }
