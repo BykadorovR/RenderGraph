@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 3.28)
 
 project(RenderGraph LANGUAGES CXX)
 
+OPTION(RENDER_GRAPH_BUILD_TESTS "Build the RenderGraph test suite" ON)
+
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}")
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}")
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_DEBUG ${CMAKE_BINARY_DIR})
@@ -55,7 +57,15 @@ FetchContent_Declare(
   GIT_TAG v1.17.0
 )
 
-FetchContent_MakeAvailable(glfw glm thread-pool vk-bootstrap volk vulkan-memory-allocator googletest)
+set(SPIRV_REFLECT_EXECUTABLE OFF CACHE BOOL "Build spirv-reflect executable")
+set(SPIRV_REFLECT_STATIC_LIB "Build a SPIRV-Reflect static library" ON)
+FetchContent_Declare(
+  spirv-reflect
+  GIT_REPOSITORY https://github.com/KhronosGroup/SPIRV-Reflect.git
+  GIT_TAG ef913b3ab3da1becca3cf46b15a10667c67bebe5
+)
+
+FetchContent_MakeAvailable(glfw glm thread-pool vk-bootstrap volk vulkan-memory-allocator googletest spirv-reflect)
 
 # need to build as module
 add_library(glm-module)
@@ -117,21 +127,24 @@ target_include_directories(RenderGraph
         ${thread-pool_SOURCE_DIR}/include
 )
 
-target_link_libraries(${PROJECT_NAME} PUBLIC glfw vk-bootstrap::vk-bootstrap volk::volk GPUOpen::VulkanMemoryAllocator glm-module)
+target_link_libraries(${PROJECT_NAME} PUBLIC glfw vk-bootstrap::vk-bootstrap volk::volk GPUOpen::VulkanMemoryAllocator glm-module spirv-reflect-static)
+# should be defined on this level so preprocessor code is handled correctly
 target_compile_definitions(${PROJECT_NAME} PRIVATE VK_NO_PROTOTYPES GLFW_INCLUDE_VULKAN)
 set_target_properties(${PROJECT_NAME} PROPERTIES CXX_SCAN_FOR_MODULES ON)
 
-enable_testing()
-
-file(GLOB_RECURSE tests_source "tests/*.c*")
-add_executable(${PROJECT_NAME}Tests ${tests_source})
-target_link_libraries(${PROJECT_NAME}Tests PRIVATE gtest_main ${PROJECT_NAME})
-target_compile_features(${PROJECT_NAME}Tests PRIVATE cxx_std_23)
-set_target_properties(${PROJECT_NAME}Tests PROPERTIES CXX_SCAN_FOR_MODULES ON)
-if (MSVC)
-  #enable multiple cores compilation for VS
-  target_compile_options(${PROJECT_NAME}Tests PRIVATE "/MP")
+if (RENDER_GRAPH_BUILD_TESTS)
+  enable_testing()
+  
+  file(GLOB_RECURSE tests_source "tests/*.c*")
+  add_executable(${PROJECT_NAME}Tests ${tests_source})
+  target_link_libraries(${PROJECT_NAME}Tests PRIVATE gtest_main ${PROJECT_NAME})
+  target_compile_features(${PROJECT_NAME}Tests PRIVATE cxx_std_23)
+  set_target_properties(${PROJECT_NAME}Tests PROPERTIES CXX_SCAN_FOR_MODULES ON)
+  if (MSVC)
+    #enable multiple cores compilation for VS
+    target_compile_options(${PROJECT_NAME}Tests PRIVATE "/MP")
+  endif()
+  
+  include(GoogleTest)
+  gtest_discover_tests(${PROJECT_NAME}Tests)
 endif()
-
-include(GoogleTest)
-gtest_discover_tests(${PROJECT_NAME}Tests)

@@ -80,8 +80,7 @@ class Pipeline final {
                      const std::vector<VkPipelineShaderStageCreateInfo>& shaderStages,
                      std::vector<std::pair<std::string, DescriptorSetLayout*>>& descriptorSetLayout,
                      const std::map<std::string, VkPushConstantRange>& pushConstants,
-                     VkVertexInputBindingDescription bindingDescription,
-                     const std::vector<VkVertexInputAttributeDescription>& attributeDescriptions);
+                     const VkPipelineVertexInputStateCreateInfo& vertexInputInfo);
 
   const std::vector<std::pair<std::string, DescriptorSetLayout*>>& getDescriptorSetLayout() const noexcept;
   const std::map<std::string, VkPushConstantRange>& getPushConstants() const noexcept;

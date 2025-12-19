@@ -12,7 +12,7 @@ import glm;
 
 TEST(ScenarioTest, GraphOneQueue) {
   glm::ivec2 resolution(1920, 1080);
-  RenderGraph::Instance instance("TestApp", true);
+  RenderGraph::Instance instance("TestApp", false);
   RenderGraph::Window window(resolution);
   window.initialize();
   RenderGraph::Surface surface(window, instance);
@@ -200,7 +200,7 @@ TEST(ScenarioTest, GraphOneQueue) {
 
 TEST(ScenarioTest, GraphSeparateQueues) {
   glm::ivec2 resolution(1920, 1080);
-  RenderGraph::Instance instance("TestApp", true);
+  RenderGraph::Instance instance("TestApp", false);
   RenderGraph::Window window(resolution);
   window.initialize();
   RenderGraph::Surface surface(window, instance);
@@ -380,7 +380,7 @@ TEST(ScenarioTest, GraphSeparateQueues) {
 
 TEST(ScenarioTest, GraphReset) {
   glm::ivec2 resolution(1920, 1080);
-  RenderGraph::Instance instance("TestApp", true);
+  RenderGraph::Instance instance("TestApp", false);
   RenderGraph::Window window(resolution);
   window.initialize();
   RenderGraph::Surface surface(window, instance);
@@ -508,7 +508,7 @@ TEST(ScenarioTest, GraphReset) {
 
 TEST(ScenarioTest, DepthExistance) {
   glm::ivec2 resolution(1920, 1080);
-  RenderGraph::Instance instance("TestApp", true);
+  RenderGraph::Instance instance("TestApp", false);
   RenderGraph::Window window(resolution);
   window.initialize();
   RenderGraph::Surface surface(window, instance);
