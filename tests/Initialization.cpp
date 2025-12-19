@@ -14,6 +14,7 @@ import Swapchain;
 import Sync;
 import Texture;
 import <algorithm>;
+import <fstream>;
 
 TEST(InstanceTest, CreateWithoutValidation) {
   RenderGraph::Instance instance("TestApp", false);
@@ -45,7 +46,7 @@ TEST(WindowTest, ResizedFlag) {
 }
 
 TEST(SurfaceTest, Create) {
-  RenderGraph::Instance instance("TestApp", true);
+  RenderGraph::Instance instance("TestApp", false);
   RenderGraph::Window window({1920, 1080});
   window.initialize();
   RenderGraph::Surface surface(window, instance);
@@ -53,7 +54,7 @@ TEST(SurfaceTest, Create) {
 }
 
 TEST(DeviceTest, Create) {
-  RenderGraph::Instance instance("TestApp", true);
+  RenderGraph::Instance instance("TestApp", false);
   RenderGraph::Window window({1920, 1080});
   window.initialize();
   RenderGraph::Surface surface(window, instance);
@@ -64,7 +65,7 @@ TEST(DeviceTest, Create) {
 }
 
 TEST(DeviceTest, SupportedFormatFeature) {
-  RenderGraph::Instance instance("TestApp", true);
+  RenderGraph::Instance instance("TestApp", false);
   RenderGraph::Window window({1920, 1080});
   window.initialize();
   RenderGraph::Surface surface(window, instance);
@@ -74,7 +75,7 @@ TEST(DeviceTest, SupportedFormatFeature) {
 }
 
 TEST(DeviceTest, QueueFamilyProperties) {
-  RenderGraph::Instance instance("TestApp", true);
+  RenderGraph::Instance instance("TestApp", false);
   RenderGraph::Window window({1920, 1080});
   window.initialize();
   RenderGraph::Surface surface(window, instance);
@@ -84,7 +85,7 @@ TEST(DeviceTest, QueueFamilyProperties) {
 }
 
 TEST(DeviceTest, DeviceProperties) {
-  RenderGraph::Instance instance("TestApp", true);
+  RenderGraph::Instance instance("TestApp", false);
   RenderGraph::Window window({1920, 1080});
   window.initialize();
   RenderGraph::Surface surface(window, instance);
@@ -94,7 +95,7 @@ TEST(DeviceTest, DeviceProperties) {
 }
 
 TEST(AllocatorTest, Create) {
-  RenderGraph::Instance instance("TestApp", true);
+  RenderGraph::Instance instance("TestApp", false);
   RenderGraph::Window window({1920, 1080});
   window.initialize();
   RenderGraph::Surface surface(window, instance);
@@ -104,7 +105,7 @@ TEST(AllocatorTest, Create) {
 }
 
 TEST(BufferTest, Create) {
-  RenderGraph::Instance instance("TestApp", true);
+  RenderGraph::Instance instance("TestApp", false);
   RenderGraph::Window window({1920, 1080});
   window.initialize();
   RenderGraph::Surface surface(window, instance);
@@ -117,7 +118,7 @@ TEST(BufferTest, Create) {
 }
 
 TEST(CommandTest, Create) {
-  RenderGraph::Instance instance("TestApp", true);
+  RenderGraph::Instance instance("TestApp", false);
   RenderGraph::Window window({1920, 1080});
   window.initialize();
   RenderGraph::Surface surface(window, instance);
@@ -129,7 +130,7 @@ TEST(CommandTest, Create) {
 }
 
 TEST(CommandTest, BeginEnd) {
-  RenderGraph::Instance instance("TestApp", true);
+  RenderGraph::Instance instance("TestApp", false);
   RenderGraph::Window window({1920, 1080});
   window.initialize();
   RenderGraph::Surface surface(window, instance);
@@ -144,7 +145,7 @@ TEST(CommandTest, BeginEnd) {
 }
 
 TEST(BufferTest, SetDataCPU) {
-  RenderGraph::Instance instance("TestApp", true);
+  RenderGraph::Instance instance("TestApp", false);
   RenderGraph::Window window({1920, 1080});
   window.initialize();
   RenderGraph::Surface surface(window, instance);
@@ -162,7 +163,7 @@ TEST(BufferTest, SetDataCPU) {
 }
 
 TEST(BufferTest, SetDataPotentiallyStaging) {
-  RenderGraph::Instance instance("TestApp", true);
+  RenderGraph::Instance instance("TestApp", false);
   RenderGraph::Window window({1920, 1080});
   window.initialize();
   RenderGraph::Surface surface(window, instance);
@@ -181,7 +182,7 @@ TEST(BufferTest, SetDataPotentiallyStaging) {
 }
 
 TEST(BufferTest, ShaderCreate) {
-  RenderGraph::Instance instance("TestApp", true);
+  RenderGraph::Instance instance("TestApp", false);
   RenderGraph::Window window({1920, 1080});
   window.initialize();
   RenderGraph::Surface surface(window, instance);
@@ -197,11 +198,11 @@ TEST(BufferTest, ShaderCreate) {
                                    0x00000004, 0x00000000, 0x00000003, 0x000200f8, 0x00000005, 0x000100fd, 0x00010038};
   std::vector<char> spirvCode(reinterpret_cast<const char*>(minimalSPIRv),
                               reinterpret_cast<const char*>(minimalSPIRv) + sizeof(minimalSPIRv));
-  EXPECT_NO_THROW(shader.add(spirvCode, VK_SHADER_STAGE_VERTEX_BIT));
+  EXPECT_NO_THROW(shader.add(spirvCode));
 }
 
 TEST(BufferTest, GetDeviceAddress) {
-  RenderGraph::Instance instance("TestApp", true);
+  RenderGraph::Instance instance("TestApp", false);
   RenderGraph::Window window({1920, 1080});
   window.initialize();
   RenderGraph::Surface surface(window, instance);
@@ -214,7 +215,7 @@ TEST(BufferTest, GetDeviceAddress) {
 }
 
 TEST(DescriptorBufferTest, Create) {
-  RenderGraph::Instance instance("TestApp", true);
+  RenderGraph::Instance instance("TestApp", false);
   RenderGraph::Window window({1920, 1080});
   window.initialize();
   RenderGraph::Surface surface(window, instance);
@@ -240,7 +241,7 @@ TEST(DescriptorBufferTest, Create) {
 }
 
 TEST(DescriptorBufferTest, BigDescriptorCount) {
-  RenderGraph::Instance instance("TestApp", true);
+  RenderGraph::Instance instance("TestApp", false);
   RenderGraph::Window window({1920, 1080});
   window.initialize();
   RenderGraph::Surface surface(window, instance);
@@ -266,7 +267,7 @@ TEST(DescriptorBufferTest, BigDescriptorCount) {
 }
 
 TEST(DescriptorBufferTest, DifferentDescriptors) {
-  RenderGraph::Instance instance("TestApp", true);
+  RenderGraph::Instance instance("TestApp", false);
   RenderGraph::Window window({1920, 1080});
   window.initialize();
   RenderGraph::Surface surface(window, instance);
@@ -294,7 +295,7 @@ TEST(DescriptorBufferTest, DifferentDescriptors) {
 }
 
 TEST(DescriptorBufferTest, Update) {
-  RenderGraph::Instance instance("TestApp", true);
+  RenderGraph::Instance instance("TestApp", false);
   RenderGraph::Window window({1920, 1080});
   window.initialize();
   RenderGraph::Surface surface(window, instance);
@@ -333,7 +334,7 @@ TEST(DescriptorBufferTest, Update) {
 }
 
 TEST(PipelineTest, Create) {
-  RenderGraph::Instance instance("TestApp", true);
+  RenderGraph::Instance instance("TestApp", false);
   RenderGraph::Window window({1920, 1080});
   window.initialize();
   RenderGraph::Surface surface(window, instance);
@@ -349,7 +350,7 @@ TEST(PipelineTest, Create) {
                                    0x00000004, 0x00000000, 0x00000003, 0x000200f8, 0x00000005, 0x000100fd, 0x00010038};
   std::vector<char> spirvCode(reinterpret_cast<const char*>(minimalSPIRv),
                               reinterpret_cast<const char*>(minimalSPIRv) + sizeof(minimalSPIRv));
-  shader.add(spirvCode, VK_SHADER_STAGE_VERTEX_BIT);
+  shader.add(spirvCode);
 
   RenderGraph::PipelineGraphic pipelineGraphic;
   RenderGraph::Pipeline pipeline(device);
@@ -380,14 +381,12 @@ TEST(PipelineTest, Create) {
   // validation error is expected because minimal shader does not have any input
   EXPECT_NO_THROW(pipeline.createGraphic(
       pipelineGraphic,
-      {shader.getShaderStageInfo(VK_SHADER_STAGE_VERTEX_BIT)},
-      descriptorSetLayouts,
-      {}, bindingDescription,
-      attributeDescriptions));
+      shader.getShaderStageInfo(),
+      descriptorSetLayouts, {}, *shader.getVertexInputInfo()));
 }
 
 TEST(SwapchainTest, CreateWithoutInitialization) {
-  RenderGraph::Instance instance("TestApp", true);
+  RenderGraph::Instance instance("TestApp", false);
   RenderGraph::Window window({1920, 1080});
   window.initialize();
   RenderGraph::Surface surface(window, instance);
@@ -400,7 +399,7 @@ TEST(SwapchainTest, CreateWithoutInitialization) {
 }
 
 TEST(SwapchainTest, CreateWithInitialization) {
-  RenderGraph::Instance instance("TestApp", true);
+  RenderGraph::Instance instance("TestApp", false);
   RenderGraph::Window window({1920, 1080});
   window.initialize();
   RenderGraph::Surface surface(window, instance);
@@ -417,7 +416,7 @@ TEST(SwapchainTest, CreateWithInitialization) {
 }
 
 TEST(SyncTest, Create) {
-  RenderGraph::Instance instance("TestApp", true);
+  RenderGraph::Instance instance("TestApp", false);
   RenderGraph::Window window({1920, 1080});
   window.initialize();
   RenderGraph::Surface surface(window, instance);
@@ -429,7 +428,7 @@ TEST(SyncTest, Create) {
 }
 
 TEST(ImageTest, Create) {
-  RenderGraph::Instance instance("TestApp", true);
+  RenderGraph::Instance instance("TestApp", false);
   RenderGraph::Window window({1920, 1080});
   window.initialize();
   RenderGraph::Surface surface(window, instance);
@@ -446,7 +445,7 @@ TEST(ImageTest, Create) {
 }
 
 TEST(ImageViewTest, Create) {
-  RenderGraph::Instance instance("TestApp", true);
+  RenderGraph::Instance instance("TestApp", false);
   RenderGraph::Window window({1920, 1080});
   window.initialize();
   RenderGraph::Surface surface(window, instance);
@@ -465,7 +464,7 @@ TEST(ImageViewTest, Create) {
 }
 
 TEST(ImageViewHolderTest, Create) {
-  RenderGraph::Instance instance("TestApp", true);
+  RenderGraph::Instance instance("TestApp", false);
   RenderGraph::Window window({1920, 1080});
   window.initialize();
   RenderGraph::Surface surface(window, instance);
@@ -493,7 +492,7 @@ TEST(ImageViewHolderTest, Create) {
 }
 
 TEST(SamplerTest, Create) {
-  RenderGraph::Instance instance("TestApp", true);
+  RenderGraph::Instance instance("TestApp", false);
   RenderGraph::Window window({1920, 1080});
   window.initialize();
   RenderGraph::Surface surface(window, instance);
@@ -504,7 +503,7 @@ TEST(SamplerTest, Create) {
 }
 
 TEST(TextureTest, Create) {
-  RenderGraph::Instance instance("TestApp", true);
+  RenderGraph::Instance instance("TestApp", false);
   RenderGraph::Window window({1920, 1080});
   window.initialize();
   RenderGraph::Surface surface(window, instance);
@@ -562,4 +561,83 @@ TEST(ImageCPUTest, WithDeleter) {
     }
   }
   EXPECT_TRUE(deleterCalled);
+}
+
+TEST(ShaderTest, Reflection) {
+  auto readFileDesktop = [&](const std::string& filename) {
+    std::ifstream file(filename, std::ios::ate | std::ios::binary);
+    if (!file.is_open()) throw std::runtime_error("failed to open file " + filename);
+    size_t fileSize = (size_t)file.tellg();
+    std::vector<char> buffer(fileSize);
+    file.seekg(0);
+    file.read(buffer.data(), fileSize);
+    file.close();
+    return buffer;
+  };
+  auto vertexSpirv = readFileDesktop("../resources/vertex.spv");
+  auto fragmentSpirv = readFileDesktop("../resources/fragment.spv");
+
+  RenderGraph::Instance instance("TestApp", false);
+  RenderGraph::Window window({1920, 1080});
+  window.initialize();
+  RenderGraph::Surface surface(window, instance);
+  RenderGraph::Device device(surface, instance);
+  RenderGraph::Shader shader(device);
+  shader.add(fragmentSpirv);
+  auto resultFragment = shader.getDescriptorSetLayoutBindings();
+  EXPECT_EQ(resultFragment.size(), 1);
+  EXPECT_EQ(resultFragment[0].binding, 1);
+  EXPECT_EQ(resultFragment[0].stageFlags, VK_SHADER_STAGE_FRAGMENT_BIT);
+  shader.add(vertexSpirv);
+  auto resultVertex = shader.getDescriptorSetLayoutBindings();
+  EXPECT_EQ(resultVertex.size(), 2);
+  EXPECT_EQ(resultVertex[0].binding, 0);
+  EXPECT_EQ(resultVertex[1].binding, 1);
+  EXPECT_EQ(resultVertex[0].stageFlags, VK_SHADER_STAGE_VERTEX_BIT);
+  EXPECT_EQ(resultVertex[1].stageFlags, VK_SHADER_STAGE_FRAGMENT_BIT);
+  auto vertexInfo = shader.getVertexInputInfo(
+      {{VK_VERTEX_INPUT_RATE_VERTEX, 8 + 8 + 4}, {VK_VERTEX_INPUT_RATE_INSTANCE, 4 * 16 + 16}});
+  EXPECT_EQ(vertexInfo->vertexAttributeDescriptionCount, 8);
+  auto vertexAttributes = vertexInfo->pVertexAttributeDescriptions;
+  EXPECT_EQ(vertexAttributes[0].binding, 0);
+  EXPECT_EQ(vertexAttributes[0].location, 0);
+  EXPECT_EQ(vertexAttributes[0].offset, 0);
+  EXPECT_EQ(vertexAttributes[0].format, VK_FORMAT_R32G32_SFLOAT);
+  EXPECT_EQ(vertexAttributes[1].binding, 0);
+  EXPECT_EQ(vertexAttributes[1].location, 1);
+  EXPECT_EQ(vertexAttributes[1].offset, 8);
+  EXPECT_EQ(vertexAttributes[1].format, VK_FORMAT_R32G32_SFLOAT);
+  EXPECT_EQ(vertexAttributes[2].binding, 0);
+  EXPECT_EQ(vertexAttributes[2].location, 2);
+  EXPECT_EQ(vertexAttributes[2].offset, 16);
+  EXPECT_EQ(vertexAttributes[2].format, VK_FORMAT_R32_UINT);
+  EXPECT_EQ(vertexAttributes[3].binding, 1);
+  EXPECT_EQ(vertexAttributes[3].location, 3);
+  EXPECT_EQ(vertexAttributes[3].offset, 20);
+  EXPECT_EQ(vertexAttributes[3].format, VK_FORMAT_R32G32B32A32_SFLOAT);
+  EXPECT_EQ(vertexAttributes[4].binding, 1);
+  EXPECT_EQ(vertexAttributes[4].location, 4);
+  EXPECT_EQ(vertexAttributes[4].offset, 36);
+  EXPECT_EQ(vertexAttributes[4].format, VK_FORMAT_R32G32B32A32_SFLOAT);
+  EXPECT_EQ(vertexAttributes[5].binding, 1);
+  EXPECT_EQ(vertexAttributes[5].location, 5);
+  EXPECT_EQ(vertexAttributes[5].offset, 52);
+  EXPECT_EQ(vertexAttributes[5].format, VK_FORMAT_R32G32B32A32_SFLOAT);
+  EXPECT_EQ(vertexAttributes[6].binding, 1);
+  EXPECT_EQ(vertexAttributes[6].location, 6);
+  EXPECT_EQ(vertexAttributes[6].offset, 68);
+  EXPECT_EQ(vertexAttributes[6].format, VK_FORMAT_R32G32B32A32_SFLOAT);
+  EXPECT_EQ(vertexAttributes[7].binding, 1);
+  EXPECT_EQ(vertexAttributes[7].location, 7);
+  EXPECT_EQ(vertexAttributes[7].offset, 84);
+  EXPECT_EQ(vertexAttributes[7].format, VK_FORMAT_R32G32B32A32_SFLOAT);
+
+  EXPECT_EQ(vertexInfo->vertexBindingDescriptionCount, 2);
+  auto bindingDescription = vertexInfo->pVertexBindingDescriptions;
+  EXPECT_EQ(bindingDescription[0].stride, 20);
+  EXPECT_EQ(bindingDescription[0].binding, 0);
+  EXPECT_EQ(bindingDescription[0].inputRate, VK_VERTEX_INPUT_RATE_VERTEX);
+  EXPECT_EQ(bindingDescription[1].stride, 100);
+  EXPECT_EQ(bindingDescription[1].binding, 1);
+  EXPECT_EQ(bindingDescription[1].inputRate, VK_VERTEX_INPUT_RATE_INSTANCE);
 }

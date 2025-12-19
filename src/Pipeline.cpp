@@ -149,8 +149,7 @@ void Pipeline::createGraphic(const PipelineGraphic& pipelineGraphic,
                              const std::vector<VkPipelineShaderStageCreateInfo>& shaderStages,
                              std::vector<std::pair<std::string, DescriptorSetLayout*>>& descriptorSetLayout,
                              const std::map<std::string, VkPushConstantRange>& pushConstants,
-                             VkVertexInputBindingDescription bindingDescription,
-                             const std::vector<VkVertexInputAttributeDescription>& attributeDescriptions) {
+                             const VkPipelineVertexInputStateCreateInfo& vertexInputInfo) {
   _descriptorSetLayout = descriptorSetLayout;
   _pushConstants = pushConstants;
 
@@ -175,14 +174,7 @@ void Pipeline::createGraphic(const PipelineGraphic& pipelineGraphic,
     throw std::runtime_error("failed to create pipeline layout!");
   }
 
-  // create pipeline
-  VkPipelineVertexInputStateCreateInfo vertexInputInfo{
-      .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-      .vertexBindingDescriptionCount = 1,
-      .pVertexBindingDescriptions = &bindingDescription,
-      .vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size()),
-      .pVertexAttributeDescriptions = attributeDescriptions.data()};
-
+  // create pipeline  
   VkPipelineRenderingCreateInfo renderingInfo = {};
   renderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
   auto colorAttachments = pipelineGraphic.getColorAttachments();
