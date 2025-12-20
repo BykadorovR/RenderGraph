@@ -26,15 +26,13 @@ Swapchain::Swapchain(const MemoryAllocator& allocator, const Device& device)
   _swapchain = swapchainResult.value();
 }
 
-void Swapchain::initialize(const CommandBuffer& commandBuffer) {
+void Swapchain::initialize() {
   // image views are created during this call, so need to assign to a variable
   auto images = _swapchain.get_images().value();
   auto imageViews = _swapchain.get_image_views().value();
   for (auto&& [image, imageView] : std::views::zip(images, imageViews)) {
     auto imageWrap = std::make_unique<Image>(*_allocator);
-    imageWrap->wrapImage(image, _swapchainFormat, {_swapchain.extent.width, _swapchain.extent.height}, 1, 1);
-    imageWrap->changeLayout(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_ACCESS_NONE, VK_ACCESS_NONE,
-                            VK_IMAGE_ASPECT_COLOR_BIT, commandBuffer);
+    imageWrap->wrapImage(image, _swapchainFormat, {_swapchain.extent.width, _swapchain.extent.height}, 1, 1);    
     auto imageViewWrap = std::make_unique<ImageView>(*_device);
     imageViewWrap->wrapImageView(imageView, std::move(imageWrap));
     _imageViews.push_back(std::move(imageViewWrap));
@@ -68,7 +66,7 @@ const vkb::Swapchain& Swapchain::getSwapchain() const noexcept { return _swapcha
 
 uint32_t Swapchain::getSwapchainIndex() const noexcept { return _swapchainIndex; }
 
-std::vector<std::shared_ptr<ImageView>> Swapchain::reset(const CommandBuffer& commandBuffer) {
+std::vector<std::shared_ptr<ImageView>> Swapchain::reset() {
   if (vkDeviceWaitIdle(_device->getDevice().device) != VK_SUCCESS)
     throw std::runtime_error("failed to create reset swap chain!");
 
@@ -91,7 +89,7 @@ std::vector<std::shared_ptr<ImageView>> Swapchain::reset(const CommandBuffer& co
   // Get the new swapchain and place it in our variable
   _swapchain = swapchainResult.value();
 
-  initialize(commandBuffer);
+  initialize();
 
   return imageViewsOld;
 }

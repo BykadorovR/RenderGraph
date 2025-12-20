@@ -510,19 +510,18 @@ bool Graph::render() {
   }
 
   auto swapchainIndex = _swapchain->getSwapchainIndex();
-  _timestamps->resetQueryPool();
-
+  _timestamps->resetQueryPool();  
   // run all passes' execution functions
   std::vector<std::future<void>> futureTasks =
       _passesOrdered | 
       std::views::transform([this, swapchainIndex](auto& pass) {
         auto commandBuffer = pass->getCommandBuffers()[_frameInFlight];
         if (commandBuffer->getActive() == false) commandBuffer->beginCommands();
-        // first we change swapchain layout to GENERAL if needed, so we can work with it
+        // first pass changes swapchain layout to GENERAL, because by default it's UNDEFINED
         if (_swapchain->getImage(swapchainIndex).getImageLayout() != VK_IMAGE_LAYOUT_GENERAL) {
           _swapchain->getImage(swapchainIndex)
               .changeLayout(_swapchain->getImage(swapchainIndex).getImageLayout(), VK_IMAGE_LAYOUT_GENERAL,
-                            VK_ACCESS_NONE, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_ASPECT_COLOR_BIT,
+                            VK_ACCESS_NONE, VK_ACCESS_NONE, VK_IMAGE_ASPECT_COLOR_BIT,
                             *pass->getCommandBuffers()[_frameInFlight]);
         }
 
@@ -570,6 +569,7 @@ bool Graph::render() {
     vkQueueSubmit(_device->getQueue(queueType), 1, &submitInfo, nullptr);
   };
 
+  // command buffer from passes
   std::vector<CommandBuffer*> commandBufferSubmit;
   std::vector<VkSemaphore> signalSemaphores;
   std::vector<VkSemaphore> waitSemaphores;
@@ -689,8 +689,8 @@ bool Graph::render() {
   return false;
 }
 
-void Graph::reset(const CommandBuffer& commandBuffer) {
-  auto oldSwapchain = _swapchain->reset(commandBuffer);
+void Graph::reset() {
+  auto oldSwapchain = _swapchain->reset();
   auto swapchainHolder = std::make_unique<ImageViewHolder>(_swapchain->getImageViews(),
                                                            [this]() { return _swapchain->getSwapchainIndex(); });
   auto name = _graphStorage->find(oldSwapchain);

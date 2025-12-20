@@ -409,7 +409,7 @@ TEST(SwapchainTest, CreateWithInitialization) {
   RenderGraph::CommandPool commandPool(vkb::QueueType::graphics, device);
   RenderGraph::CommandBuffer commandBuffer(commandPool, device);
   commandBuffer.beginCommands();
-  swapchain.initialize(commandBuffer);
+  swapchain.initialize();
   commandBuffer.endCommands();
   EXPECT_GE(swapchain.getImageCount(), 2);
   EXPECT_GE(swapchain.getImageViews().size(), 2);

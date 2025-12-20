@@ -27,9 +27,9 @@ export namespace RenderGraph{class Swapchain {
   Swapchain(Swapchain&&) = delete;
   Swapchain& operator=(Swapchain&&) = delete;
 
-  void initialize(const CommandBuffer& commandBuffer);
+  void initialize();
   VkResult acquireNextImage(const Semaphore& semaphore) noexcept;
-  std::vector<std::shared_ptr<ImageView>> reset(const CommandBuffer& commandBuffer);
+  std::vector<std::shared_ptr<ImageView>> reset();
 
   // to be able change layout
   Image& getImage(int index) const noexcept;

@@ -8,6 +8,7 @@ import Device;
 import Graph;
 import Texture;
 import CommandPool;
+import Command;
 import glm;
 
 TEST(ScenarioTest, GraphOneQueue) {
@@ -30,7 +31,7 @@ TEST(ScenarioTest, GraphOneQueue) {
   }
 
   commandBuffer[graph.getFrameInFlight()].beginCommands();
-  swapchain.initialize(commandBuffer[graph.getFrameInFlight()]);
+  swapchain.initialize();
   graph.initialize();
 
   EXPECT_EQ(graph.getFrameInFlight(), 0);
@@ -218,7 +219,7 @@ TEST(ScenarioTest, GraphSeparateQueues) {
   }
 
   commandBuffer[graph.getFrameInFlight()].beginCommands();
-  swapchain.initialize(commandBuffer[graph.getFrameInFlight()]);
+  swapchain.initialize();
   graph.initialize();
 
   EXPECT_EQ(graph.getFrameInFlight(), 0);
@@ -398,7 +399,7 @@ TEST(ScenarioTest, GraphReset) {
   }
 
   commandBuffer[graph.getFrameInFlight()].beginCommands();
-  swapchain.initialize(commandBuffer[graph.getFrameInFlight()]);
+  swapchain.initialize();
   graph.initialize();
 
   auto swapchainOldImages = swapchain.getImageViews();
@@ -489,10 +490,8 @@ TEST(ScenarioTest, GraphReset) {
               swapchainOldImages[i]->getImage().getImage());
   }
 
-  commandBuffer[graph.getFrameInFlight()].beginCommands();
   // call reset explicitly, usually it should be called if render() returns true
-  graph.reset(commandBuffer[graph.getFrameInFlight()]);
-  commandBuffer[graph.getFrameInFlight()].endCommands();
+  graph.reset();
   
   // NEED TO CHECK that all swapchain images have been changed in all passes
   for (int i = 0; i < swapchainOldImages.size(); i++) {
@@ -526,7 +525,7 @@ TEST(ScenarioTest, DepthExistance) {
   }
 
   commandBuffer[graph.getFrameInFlight()].beginCommands();
-  swapchain.initialize(commandBuffer[graph.getFrameInFlight()]);
+  swapchain.initialize();
   graph.initialize();
 
   std::unique_ptr<RenderGraph::ImageViewHolder> swapchainHolder = std::make_unique<RenderGraph::ImageViewHolder>(

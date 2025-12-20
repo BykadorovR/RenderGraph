@@ -185,7 +185,7 @@ class Graph final {
   void calculate();
   // true -> need to call reset
   bool render();
-  void reset(const CommandBuffer& commandBuffer);
+  void reset();
 
   void print() const noexcept;
 };
