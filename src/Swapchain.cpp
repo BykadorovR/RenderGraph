@@ -1,6 +1,7 @@
 module Swapchain;
 import <limits>;
 import <ranges>;
+import <iostream>;
 using namespace RenderGraph;
 
 Swapchain::Swapchain(const MemoryAllocator& allocator, const Device& device)
@@ -51,6 +52,7 @@ Swapchain::~Swapchain() { _destroy(); }
 
 void Swapchain::_destroy() {
   _imageViews.clear();
+  _imageViews.shrink_to_fit();
   vkb::destroy_swapchain(_swapchain);
 }
 

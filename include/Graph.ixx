@@ -36,6 +36,14 @@ class GraphStorage final {
   std::vector<Buffer*> getBuffer(std::string_view name) const noexcept;
 };
 
+class GraphElement {
+ public:
+  virtual void draw(int currentFrame, const CommandBuffer& commandBuffer) = 0;
+  virtual void update(int currentFrame, const CommandBuffer& commandBuffer) = 0;
+  virtual void reset(const CommandBuffer& commandBuffer) = 0;
+  virtual ~GraphElement() = default;
+};
+
 enum class GraphPassType { GRAPHIC, COMPUTE };
 
 class GraphPass {
@@ -47,6 +55,7 @@ class GraphPass {
   std::vector<std::unique_ptr<CommandBuffer>> _commandBuffers;
   std::vector<std::pair<std::vector<std::shared_ptr<Semaphore>>, std::function<int()>>> _signalSemaphores,
       _waitSemaphores;
+  std::vector<std::shared_ptr<GraphElement>> _graphElements;
 
  public:
   GraphPass(std::string_view name, GraphPassType graphPassType, const GraphStorage& graphStorage) noexcept;
@@ -55,6 +64,7 @@ class GraphPass {
   GraphPass(GraphPass&&) = delete;
   GraphPass& operator=(GraphPass&&) = delete;
 
+  void registerGraphElement(std::shared_ptr<GraphElement> graphElement) noexcept;
   // not const because will do std::move
   void addSignalSemaphore(std::vector<std::shared_ptr<Semaphore>>& signalSemaphore,
                           std::function<int()> index) noexcept;
@@ -65,7 +75,8 @@ class GraphPass {
   std::vector<Semaphore*> getWaitSemaphores() const noexcept;
   std::vector<CommandBuffer*> getCommandBuffers() const noexcept;
   std::string getName() const noexcept;
-  virtual void execute(const CommandBuffer& commandBuffer) = 0;
+  virtual void execute(int currentFrame, const CommandBuffer& commandBuffer) = 0;
+  void reset(CommandBuffer& commandBuffer);
   virtual ~GraphPass() = default;
 };
 
@@ -73,10 +84,6 @@ class GraphPassGraphic final : public GraphPass {
  private:
   std::vector<std::string> _colorTargets, _textureInputs;
   std::optional<std::string> _depthTarget;
-  std::vector<std::function<void(const std::vector<VkRenderingAttachmentInfo>& colorAttachments,
-                                 std::optional<VkRenderingAttachmentInfo> depthAttachment,
-                                 const CommandBuffer& commandBuffer)>>
-      _executions;
 
   std::map<std::string, bool> _clearTarget;
   std::unique_ptr<PipelineGraphic> _pipelineGraphic;
@@ -101,18 +108,13 @@ class GraphPassGraphic final : public GraphPass {
   std::optional<std::string> getDepthTarget() const noexcept;
   const std::vector<std::string>& getTextureInputs() const noexcept;
   PipelineGraphic& getPipelineGraphic(const GraphStorage& graphStorage) const noexcept;
-  // set function that does render pass work
-  void addExecution(std::function<void(const std::vector<VkRenderingAttachmentInfo>& colorAttachments,
-                                       std::optional<VkRenderingAttachmentInfo> depthAttachment,
-                                       const CommandBuffer& commandBuffer)> execution) noexcept;
-  void execute(const CommandBuffer& commandBuffer) override;
+  void execute(int currentFrame, const CommandBuffer& commandBuffer) override;
 };
 
 class GraphPassCompute final : public GraphPass {
  private:
   std::vector<std::string> _storageBufferInputs, _storageBufferOutputs;
-  std::vector<std::string> _storageTextureInputs, _storageTextureOutputs;
-  std::vector<std::function<void(const CommandBuffer& commandBuffer)>> _executions;
+  std::vector<std::string> _storageTextureInputs, _storageTextureOutputs;  
   bool _separate = false;
   const Device* _device;
  public:
@@ -137,10 +139,8 @@ class GraphPassCompute final : public GraphPass {
   const std::vector<std::string>& getStorageBufferOutputs() const noexcept;
   const std::vector<std::string>& getStorageTextureInputs() const noexcept;
   const std::vector<std::string>& getStorageTextureOutputs() const noexcept;
-  bool isSeparate() const noexcept;
-  // set function that does render pass work
-  void addExecution(std::function<void(const CommandBuffer&)> execution) noexcept;
-  void execute(const CommandBuffer& commandBuffer) override;
+  bool isSeparate() const noexcept;  
+  void execute(int currentFrame, const CommandBuffer& commandBuffer) override;
 };
 
 class Graph final {
@@ -166,6 +166,8 @@ class Graph final {
 
   std::map<GraphPass*, Cache> _cache;
 
+  //flag for resetting each pass
+  bool _resetPasses = false;  
  public:
   Graph(int threadsNumber, int maxFramesInFlight, Swapchain& swapchain, const Device& device) noexcept;
   Graph(const Graph&) = delete;

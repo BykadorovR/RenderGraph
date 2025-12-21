@@ -32,7 +32,17 @@ std::vector<Buffer*> GraphStorage::getBuffer(std::string_view name) const noexce
 GraphPass::GraphPass(std::string_view name, GraphPassType graphPassType, const GraphStorage& graphStorage) noexcept
     : _name(name), _graphPassType(graphPassType), _graphStorage(&graphStorage) {}
 
+void GraphPass::registerGraphElement(std::shared_ptr<GraphElement> graphElement) noexcept {
+  _graphElements.push_back(graphElement);
+}
+
 std::string GraphPass::getName() const noexcept { return _name; }
+
+void GraphPass::reset(CommandBuffer& commandBuffer) {
+  for (auto&& graphElement : _graphElements) {
+    graphElement->reset(commandBuffer);
+  }
+}
 
 void GraphPass::addSignalSemaphore(std::vector<std::shared_ptr<Semaphore>>& signalSemaphore,
                                    std::function<int()> index) noexcept {
@@ -111,13 +121,7 @@ PipelineGraphic& GraphPassGraphic::getPipelineGraphic(const GraphStorage& graphS
   return *_pipelineGraphic;
 }
 
-void GraphPassGraphic::addExecution(std::function<void(const std::vector<VkRenderingAttachmentInfo>& colorAttachments,
-                                                       std::optional<VkRenderingAttachmentInfo> depthAttachment,
-                                                       const CommandBuffer& commandBuffer)> execution) noexcept {
-  _executions.push_back(execution);
-}
-
-void GraphPassGraphic::execute(const CommandBuffer& commandBuffer) {
+void GraphPassGraphic::execute(int currentFrame, const CommandBuffer& commandBuffer) {
   auto createColorAttachment = [this](const auto& colorTarget) {
     auto& imageViewHolder = _graphStorage->getImageViewHolder(colorTarget);
     VkRenderingAttachmentInfo info{.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
@@ -132,7 +136,7 @@ void GraphPassGraphic::execute(const CommandBuffer& commandBuffer) {
     return info;
   };
 
-  for (auto&& execution : _executions) {
+  for (auto&& graphElement : _graphElements) {
     std::vector<VkRenderingAttachmentInfo> colorAttachments = _colorTargets |
                                                               std::views::transform(createColorAttachment) |
                                                               std::ranges::to<std::vector>();
@@ -154,7 +158,20 @@ void GraphPassGraphic::execute(const CommandBuffer& commandBuffer) {
       }
     }
 
-    execution(colorAttachments, depthAttachment, commandBuffer);
+    VkRenderingInfo renderingInfo = {};
+    renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+    renderingInfo.renderArea.offset = {0, 0};
+    // take image resolution, it's safe
+    auto resolution = _graphStorage->getImageViewHolder(_colorTargets.front()).getImageView().getImage().getResolution();    
+    renderingInfo.renderArea.extent = VkExtent2D(resolution.x, resolution.y);
+    renderingInfo.layerCount = 1;
+    renderingInfo.colorAttachmentCount = colorAttachments.size();
+    renderingInfo.pColorAttachments = colorAttachments.data();
+
+    graphElement->update(currentFrame, commandBuffer);
+    vkCmdBeginRendering(commandBuffer.getCommandBuffer(), &renderingInfo);
+    graphElement->draw(currentFrame, commandBuffer);
+    vkCmdEndRendering(commandBuffer.getCommandBuffer());    
   }
 }
 
@@ -206,13 +223,9 @@ const std::vector<std::string>& GraphPassCompute::getStorageTextureOutputs() con
 
 bool GraphPassCompute::isSeparate() const noexcept { return _separate; }
 
-void GraphPassCompute::addExecution(std::function<void(const CommandBuffer&)> execution) noexcept {
-  _executions.push_back(execution);
-}
-
-void GraphPassCompute::execute(const CommandBuffer& commandBuffer) {
-  for (auto&& runCommand : _executions) {
-    runCommand(commandBuffer);
+void GraphPassCompute::execute(int currentFrame, const CommandBuffer& commandBuffer) {
+  for (auto&& graphElement : _graphElements) {
+    graphElement->draw(currentFrame, commandBuffer);
   }
 }
 
@@ -503,7 +516,8 @@ bool Graph::render() {
 
   auto status = _swapchain->acquireNextImage(*_semaphoreImageAvailable[_frameInFlight]);
   // notify about reset needed
-  if (status == VK_ERROR_OUT_OF_DATE_KHR) {    
+  if (status == VK_ERROR_OUT_OF_DATE_KHR) {
+    reset();
     return true;
   } else if (status != VK_SUCCESS && status != VK_SUBOPTIMAL_KHR) {
     throw std::runtime_error("failed to acquire swap chain image");
@@ -527,12 +541,14 @@ bool Graph::render() {
 
         return _threadPool->submit([this, pass, commandBuffer]() {
           _timestamps->pushTimestamp(pass->getName(), *commandBuffer);
-          pass->execute(*commandBuffer);
+          if (_resetPasses) pass->reset(*commandBuffer);
+          pass->execute(_frameInFlight, * commandBuffer);
           _timestamps->popTimestamp(pass->getName(), *commandBuffer);
         });
       }) |
       std::ranges::to<std::vector<std::future<void>>>();  
 
+  _resetPasses = false;
 
   auto submitPassToQueue = [this](GraphPass* previousPass, const std::vector<CommandBuffer*>& commandBufferSubmit,
                                   const std::vector<VkSemaphore>& waitSemaphores,
@@ -683,6 +699,7 @@ bool Graph::render() {
 
   auto result = vkQueuePresentKHR(_device->getQueue(vkb::QueueType::present), &presentInfo);
   if (result != VK_SUCCESS) {
+    reset();
     return true;
   }  
 
@@ -697,4 +714,6 @@ void Graph::reset() {
   if (name.empty() == false) {
     _graphStorage->add(name, std::move(swapchainHolder));
   }
+
+  _resetPasses = true;
 }
