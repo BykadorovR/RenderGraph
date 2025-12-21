@@ -545,9 +545,7 @@ bool Graph::render() {
           _timestamps->popTimestamp(pass->getName(), *commandBuffer);
         });
       }) |
-      std::ranges::to<std::vector<std::future<void>>>();  
-
-  _resetPasses = false;
+      std::ranges::to<std::vector<std::future<void>>>();    
 
   auto submitPassToQueue = [this](GraphPass* previousPass, const std::vector<CommandBuffer*>& commandBufferSubmit,
                                   const std::vector<VkSemaphore>& waitSemaphores,
@@ -695,6 +693,7 @@ bool Graph::render() {
 
   _valueSemaphoreInFlight++;
   _frameInFlight = (_valueSemaphoreInFlight - 1) % _maxFramesInFlight;
+  _resetPasses = false;
 
   auto result = vkQueuePresentKHR(_device->getQueue(vkb::QueueType::present), &presentInfo);
   if (result != VK_SUCCESS) {
