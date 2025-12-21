@@ -517,7 +517,6 @@ bool Graph::render() {
   auto status = _swapchain->acquireNextImage(*_semaphoreImageAvailable[_frameInFlight]);
   // notify about reset needed
   if (status == VK_ERROR_OUT_OF_DATE_KHR) {
-    reset();
     return true;
   } else if (status != VK_SUCCESS && status != VK_SUBOPTIMAL_KHR) {
     throw std::runtime_error("failed to acquire swap chain image");
@@ -699,7 +698,6 @@ bool Graph::render() {
 
   auto result = vkQueuePresentKHR(_device->getQueue(vkb::QueueType::present), &presentInfo);
   if (result != VK_SUCCESS) {
-    reset();
     return true;
   }  
 
