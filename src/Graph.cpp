@@ -38,9 +38,10 @@ void GraphPass::registerGraphElement(std::shared_ptr<GraphElement> graphElement)
 
 std::string GraphPass::getName() const noexcept { return _name; }
 
-void GraphPass::reset(CommandBuffer& commandBuffer) {
+void GraphPass::reset(const std::vector<std::shared_ptr<RenderGraph::ImageView>>& swapchain,
+                      CommandBuffer& commandBuffer) {
   for (auto&& graphElement : _graphElements) {
-    graphElement->reset(commandBuffer);
+    graphElement->reset(swapchain, commandBuffer);
   }
 }
 
@@ -540,7 +541,7 @@ bool Graph::render() {
 
         return _threadPool->submit([this, pass, commandBuffer]() {
           _timestamps->pushTimestamp(pass->getName(), *commandBuffer);
-          if (_resetPasses) pass->reset(*commandBuffer);
+          if (_resetPasses) pass->reset(_swapchain->getImageViews(), *commandBuffer);
           pass->execute(_frameInFlight, * commandBuffer);
           _timestamps->popTimestamp(pass->getName(), *commandBuffer);
         });

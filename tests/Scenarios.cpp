@@ -19,7 +19,10 @@ class GraphElementMock : public RenderGraph::GraphElement {
  public:
   void draw(int currentFrame, const RenderGraph::CommandBuffer& commandBuffer) override { _drawCount++; }
   void update(int currentFrame, const RenderGraph::CommandBuffer& commandBuffer) override { _updateCount++; }
-  void reset(const RenderGraph::CommandBuffer& commandBuffer) override { _resetCount++; }
+  void reset(const std::vector<std::shared_ptr<RenderGraph::ImageView>>& swapchain,
+             const RenderGraph::CommandBuffer& commandBuffer) override {
+    _resetCount++;
+  }
 
   int getDrawCount() const noexcept { return _drawCount; }
   int getUpdateCount() const noexcept { return _updateCount; }
@@ -473,9 +476,11 @@ TEST(ScenarioTest, GraphReset) {
               nullptr);
   }
 
+  EXPECT_EQ(elementMock->getResetCount(), 0);
   // call reset explicitly, usually it should be called if render() returns true
   graph.reset();
-  
+  EXPECT_EQ(elementMock->getResetCount(), 0);
+
   // we can't guarantee that swapchain images are different after reset, but they should be valid
   for (int i = 0; i < swapchainOldImages.size(); i++) {
     EXPECT_NE(graph.getGraphStorage().getImageViewHolder("Swapchain").getImageViews()[i]->getImageView(),
@@ -483,6 +488,10 @@ TEST(ScenarioTest, GraphReset) {
     EXPECT_NE(graph.getGraphStorage().getImageViewHolder("Swapchain").getImageViews()[i]->getImage().getImage(),
               nullptr);
   }
+
+  // in reality reset is called during next render
+  graph.render();
+  EXPECT_EQ(elementMock->getResetCount(), 3);
 
   // wait device idle before destroying resources
   vkDeviceWaitIdle(device.getLogicalDevice());
