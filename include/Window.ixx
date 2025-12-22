@@ -11,6 +11,7 @@ class Window final {
 
  public:
   Window(glm::ivec2 resolution) noexcept;
+  glm::ivec2 getResolution() const noexcept;
   void initialize();
   // glfw API expects non-const window pointer
   GLFWwindow* getWindow() const noexcept;

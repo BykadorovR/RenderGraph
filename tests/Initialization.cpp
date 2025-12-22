@@ -38,11 +38,12 @@ TEST(WindowTest, CreateWithoutInitialization) {
   EXPECT_EQ(window.getWindow(), nullptr);
 }
 
-TEST(WindowTest, ResizedFlag) {
+TEST(WindowTest, GetResolution) {
   RenderGraph::Window window({1920, 1080});
-  EXPECT_FALSE(window.getResized());
-  window.setResized(true);
-  EXPECT_TRUE(window.getResized());
+  window.initialize();
+  auto resolution = window.getResolution();
+  EXPECT_EQ(resolution.x, 1920);
+  EXPECT_EQ(resolution.y, 1080);
 }
 
 TEST(SurfaceTest, Create) {

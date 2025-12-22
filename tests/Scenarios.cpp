@@ -477,9 +477,14 @@ TEST(ScenarioTest, GraphReset) {
   }
 
   EXPECT_EQ(elementMock->getResetCount(), 0);
+  EXPECT_EQ(window.getResolution().x, 1920);
+  EXPECT_EQ(window.getResolution().y, 1080);
   // call reset explicitly, usually it should be called if render() returns true
   graph.reset();
   EXPECT_EQ(elementMock->getResetCount(), 0);
+  // we don't change window resolution here
+  EXPECT_EQ(window.getResolution().x, 1920);
+  EXPECT_EQ(window.getResolution().y, 1080);
 
   // we can't guarantee that swapchain images are different after reset, but they should be valid
   for (int i = 0; i < swapchainOldImages.size(); i++) {

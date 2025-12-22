@@ -6,6 +6,14 @@ GLFWwindow* Window::getWindow() const noexcept { return _window; }
 
 Window::Window(glm::ivec2 resolution) noexcept { _resolution = resolution; }
 
+glm::ivec2 Window::getResolution() const noexcept {
+  glm::ivec2 resolution = {0, 0};
+  if (_window) {
+    glfwGetFramebufferSize(_window, &resolution.x, &resolution.y);
+  }
+  return resolution;
+}
+
 void Window::setFullScreen(bool fullScreen) {
   if (fullScreen) {
     auto monitor = glfwGetPrimaryMonitor();
