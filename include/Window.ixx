@@ -14,8 +14,6 @@ class Window final {
   void initialize();
   // glfw API expects non-const window pointer
   GLFWwindow* getWindow() const noexcept;
-  bool getResized() const noexcept;
-  void setResized(bool resized) noexcept;
   void setFullScreen(bool fullScreen);
   ~Window();
 };
