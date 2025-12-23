@@ -33,9 +33,9 @@ void Swapchain::initialize() {
   auto imageViews = _swapchain.get_image_views().value();
   for (auto&& [image, imageView] : std::views::zip(images, imageViews)) {
     auto imageWrap = std::make_unique<Image>(*_allocator);
-    imageWrap->wrapImage(image, _swapchainFormat, {_swapchain.extent.width, _swapchain.extent.height}, 1, 1);    
-    auto imageViewWrap = std::make_unique<ImageView>(*_device);
-    imageViewWrap->wrapImageView(imageView, std::move(imageWrap));
+    imageWrap->wrapImage(image, _swapchainFormat, {_swapchain.extent.width, _swapchain.extent.height}, 1, 1);
+    auto imageViewWrap = std::make_unique<ImageView>(std::move(imageWrap), *_device);
+    imageViewWrap->wrapImageView(imageView);
     _imageViews.push_back(std::move(imageViewWrap));
   }
 }
@@ -43,9 +43,8 @@ void Swapchain::initialize() {
 VkResult Swapchain::acquireNextImage(const Semaphore& semaphore) noexcept {
   // RETURNS ONLY INDEX, NOT IMAGE
   // semaphore to signal, once image is available
-  return vkAcquireNextImageKHR(_device->getLogicalDevice(), _swapchain,
-                                      std::numeric_limits<std::uint64_t>::max(), semaphore.getSemaphore(),
-                                      nullptr, &_swapchainIndex);
+  return vkAcquireNextImageKHR(_device->getLogicalDevice(), _swapchain, std::numeric_limits<std::uint64_t>::max(),
+                               semaphore.getSemaphore(), nullptr, &_swapchainIndex);
 }
 
 Swapchain::~Swapchain() { _destroy(); }
@@ -57,8 +56,6 @@ void Swapchain::_destroy() {
 }
 
 Image& Swapchain::getImage(int index) const noexcept { return _imageViews[index]->getImage(); }
-
-const ImageView& Swapchain::getImageView(int index) const noexcept { return *_imageViews.at(index); }
 
 std::vector<std::shared_ptr<ImageView>> Swapchain::getImageViews() const noexcept { return _imageViews; };
 

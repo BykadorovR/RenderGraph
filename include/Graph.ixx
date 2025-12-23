@@ -30,6 +30,7 @@ class GraphStorage final {
   void add(std::string_view name, std::unique_ptr<ImageViewHolder> imageViewHolder) noexcept;
   // not const because will do std::move
   void add(std::string_view name, std::vector<std::unique_ptr<Buffer>>& buffers) noexcept;
+  void reset(glm::ivec2 resolution, const CommandBuffer& commandBuffer) noexcept;
   std::string find(const std::vector<std::shared_ptr<ImageView>>& imageViews) noexcept;
   const ImageViewHolder& getImageViewHolder(std::string_view name) const noexcept;
   // NVRO
@@ -40,7 +41,8 @@ class GraphElement {
  public:
   virtual void draw(int currentFrame, const CommandBuffer& commandBuffer) = 0;
   virtual void update(int currentFrame, const CommandBuffer& commandBuffer) = 0;
-  virtual void reset(const std::vector<std::shared_ptr<RenderGraph::ImageView>>& swapchain,
+  virtual void reset(int currentFrame,
+                     const RenderGraph::ImageView& swapchain,
                      const CommandBuffer& commandBuffer) = 0;
   virtual ~GraphElement() = default;
 };
@@ -77,7 +79,7 @@ class GraphPass {
   std::vector<CommandBuffer*> getCommandBuffers() const noexcept;
   std::string getName() const noexcept;
   virtual void execute(int currentFrame, const CommandBuffer& commandBuffer) = 0;
-  void reset(const std::vector<std::shared_ptr<RenderGraph::ImageView>>& swapchain, CommandBuffer& commandBuffer);
+  void reset(int frameInFlight, const RenderGraph::ImageView& swapchain, CommandBuffer& commandBuffer);
   virtual ~GraphPass() = default;
 };
 
@@ -89,8 +91,12 @@ class GraphPassGraphic final : public GraphPass {
   std::map<std::string, bool> _clearTarget;
   std::unique_ptr<PipelineGraphic> _pipelineGraphic;
   const Device* _device;
+
  public:
-  GraphPassGraphic(std::string_view name, int maxFramesInFlight, const GraphStorage& graphStorage, const Device& device) noexcept;
+  GraphPassGraphic(std::string_view name,
+                   int maxFramesInFlight,
+                   const GraphStorage& graphStorage,
+                   const Device& device) noexcept;
   GraphPassGraphic(const GraphPassGraphic&) = delete;
   GraphPassGraphic& operator=(const GraphPassGraphic&) = delete;
   GraphPassGraphic(GraphPassGraphic&&) = delete;
@@ -115,9 +121,10 @@ class GraphPassGraphic final : public GraphPass {
 class GraphPassCompute final : public GraphPass {
  private:
   std::vector<std::string> _storageBufferInputs, _storageBufferOutputs;
-  std::vector<std::string> _storageTextureInputs, _storageTextureOutputs;  
+  std::vector<std::string> _storageTextureInputs, _storageTextureOutputs;
   bool _separate = false;
   const Device* _device;
+
  public:
   GraphPassCompute(std::string_view name,
                    int maxFramesInFlight,
@@ -140,7 +147,7 @@ class GraphPassCompute final : public GraphPass {
   const std::vector<std::string>& getStorageBufferOutputs() const noexcept;
   const std::vector<std::string>& getStorageTextureInputs() const noexcept;
   const std::vector<std::string>& getStorageTextureOutputs() const noexcept;
-  bool isSeparate() const noexcept;  
+  bool isSeparate() const noexcept;
   void execute(int currentFrame, const CommandBuffer& commandBuffer) override;
 };
 
@@ -153,6 +160,9 @@ class Graph final {
   std::deque<GraphPass*> _passesOrdered;
   std::unique_ptr<Timestamps> _timestamps;
   std::unique_ptr<GraphStorage> _graphStorage;
+  std::unique_ptr<CommandPool> _commandPoolReset;
+  std::vector<std::unique_ptr<CommandBuffer>> _commandBuffersReset;
+  std::vector<bool> _resetFrames;
   // special semaphores
   std::vector<std::shared_ptr<Semaphore>> _semaphoreRenderFinished, _semaphoreImageAvailable;
   std::unique_ptr<Semaphore> _semaphoreInFlight;
@@ -167,8 +177,6 @@ class Graph final {
 
   std::map<GraphPass*, Cache> _cache;
 
-  //flag for resetting each pass
-  bool _resetPasses = false;  
  public:
   Graph(int threadsNumber, int maxFramesInFlight, Swapchain& swapchain, const Device& device) noexcept;
   Graph(const Graph&) = delete;
@@ -184,7 +192,7 @@ class Graph final {
   GraphStorage& getGraphStorage() const noexcept;
   std::map<std::string, glm::dvec2> getTimestamps() const noexcept;
   int getFrameInFlight() const noexcept;
-  
+
   void calculate();
   // true -> need to call reset
   bool render();

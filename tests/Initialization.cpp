@@ -72,7 +72,8 @@ TEST(DeviceTest, SupportedFormatFeature) {
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(surface, instance);
   // Assuming VK_FORMAT_R8G8B8A8_UNORM with VK_IMAGE_TILING_LINEAR does not support VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT
-  EXPECT_TRUE(device.isFormatFeatureSupported(VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_TILING_LINEAR, VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT));
+  EXPECT_TRUE(device.isFormatFeatureSupported(VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_TILING_LINEAR,
+                                              VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT));
 }
 
 TEST(DeviceTest, QueueFamilyProperties) {
@@ -112,7 +113,8 @@ TEST(BufferTest, Create) {
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(surface, instance);
   RenderGraph::MemoryAllocator allocator(device, instance);
-  RenderGraph::Buffer buffer(1024, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT, allocator);
+  RenderGraph::Buffer buffer(1024, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                             VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT, allocator);
   EXPECT_NE(buffer.getBuffer(), nullptr);
   EXPECT_EQ(buffer.getSize(), 1024);
   EXPECT_NE(buffer.getAllocation(), nullptr);
@@ -125,9 +127,8 @@ TEST(CommandTest, Create) {
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(surface, instance);
   RenderGraph::MemoryAllocator allocator(device, instance);
-  RenderGraph::CommandPool commandPool(vkb::QueueType::graphics, device);  
+  RenderGraph::CommandPool commandPool(vkb::QueueType::graphics, device);
   EXPECT_NO_THROW(RenderGraph::CommandBuffer commandBuffer(commandPool, device));
-  
 }
 
 TEST(CommandTest, BeginEnd) {
@@ -172,7 +173,7 @@ TEST(BufferTest, SetDataPotentiallyStaging) {
   RenderGraph::MemoryAllocator allocator(device, instance);
   RenderGraph::Buffer buffer(1024, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                              VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-                             VMA_ALLOCATION_CREATE_HOST_ACCESS_ALLOW_TRANSFER_INSTEAD_BIT,
+                                 VMA_ALLOCATION_CREATE_HOST_ACCESS_ALLOW_TRANSFER_INSTEAD_BIT,
                              allocator);
   RenderGraph::CommandPool commandPool(vkb::QueueType::graphics, device);
   RenderGraph::CommandBuffer commandBuffer(commandPool, device);
@@ -274,7 +275,7 @@ TEST(DescriptorBufferTest, DifferentDescriptors) {
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(surface, instance);
   RenderGraph::MemoryAllocator allocator(device, instance);
-  RenderGraph::DescriptorSetLayout layout(device);  
+  RenderGraph::DescriptorSetLayout layout(device);
   std::vector<VkDescriptorSetLayoutBinding> layoutBinding{{.binding = 0,
                                                            .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
                                                            .descriptorCount = 1,
@@ -304,7 +305,7 @@ TEST(DescriptorBufferTest, Update) {
   RenderGraph::MemoryAllocator allocator(device, instance);
   RenderGraph::Buffer buffer(1024, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
                              VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
-                             allocator);  
+                             allocator);
   RenderGraph::DescriptorSetLayout layout(device);
   std::vector<VkDescriptorSetLayoutBinding> layoutColor{{.binding = 0,
                                                          .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
@@ -330,7 +331,8 @@ TEST(DescriptorBufferTest, Update) {
                                                                .address = buffer.getDeviceAddress(device),
                                                                .range = buffer.getSize(),
                                                                .format = VK_FORMAT_UNDEFINED},
-                                    VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER), std::runtime_error);
+                                    VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER),
+               std::runtime_error);
   commandBuffer.endCommands();
 }
 
@@ -355,7 +357,7 @@ TEST(PipelineTest, Create) {
 
   RenderGraph::PipelineGraphic pipelineGraphic;
   RenderGraph::Pipeline pipeline(device);
-  
+
   RenderGraph::DescriptorSetLayout layout(device);
   std::vector<VkDescriptorSetLayoutBinding> layoutColor{{.binding = 0,
                                                          .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
@@ -380,10 +382,8 @@ TEST(PipelineTest, Create) {
   descriptorSetLayouts.emplace_back("test", &layout);
 
   // validation error is expected because minimal shader does not have any input
-  EXPECT_NO_THROW(pipeline.createGraphic(
-      pipelineGraphic,
-      shader.getShaderStageInfo(),
-      descriptorSetLayouts, {}, *shader.getVertexInputInfo()));
+  EXPECT_NO_THROW(pipeline.createGraphic(pipelineGraphic, shader.getShaderStageInfo(), descriptorSetLayouts, {},
+                                         *shader.getVertexInputInfo()));
 }
 
 TEST(SwapchainTest, CreateWithoutInitialization) {
@@ -435,8 +435,9 @@ TEST(ImageTest, Create) {
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(surface, instance);
   RenderGraph::MemoryAllocator allocator(device, instance);
-  RenderGraph::Image image(allocator);  
-  image.createImage(VK_FORMAT_R8G8B8A8_UNORM, {512, 512}, 1, 1, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+  RenderGraph::Image image(allocator);
+  image.createImage(VK_FORMAT_R8G8B8A8_UNORM, {512, 512}, 1, 1, VK_IMAGE_ASPECT_COLOR_BIT,
+                    VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
   EXPECT_NE(image.getImage(), nullptr);
   EXPECT_EQ(image.getFormat(), VK_FORMAT_R8G8B8A8_UNORM);
   EXPECT_EQ(image.getResolution(), glm::ivec2(512, 512));
@@ -453,10 +454,10 @@ TEST(ImageViewTest, Create) {
   RenderGraph::Device device(surface, instance);
   RenderGraph::MemoryAllocator allocator(device, instance);
   std::unique_ptr<RenderGraph::Image> image = std::make_unique<RenderGraph::Image>(allocator);
-  image->createImage(VK_FORMAT_R8G8B8A8_UNORM, {512, 512}, 1, 1, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
-  RenderGraph::ImageView imageView(device);
-  imageView.createImageView(std::move(image), VK_IMAGE_VIEW_TYPE_2D,
-                            VK_IMAGE_ASPECT_COLOR_BIT, 0, 0);
+  image->createImage(VK_FORMAT_R8G8B8A8_UNORM, {512, 512}, 1, 1, VK_IMAGE_ASPECT_COLOR_BIT,
+                     VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+  RenderGraph::ImageView imageView(std::move(image), device);
+  imageView.createImageView(VK_IMAGE_VIEW_TYPE_2D, 0, 0);
   EXPECT_NE(imageView.getImageView(), nullptr);
   EXPECT_EQ(imageView.getImage().getFormat(), VK_FORMAT_R8G8B8A8_UNORM);
   EXPECT_EQ(imageView.getImage().getResolution(), glm::ivec2(512, 512));
@@ -472,15 +473,17 @@ TEST(ImageViewHolderTest, Create) {
   RenderGraph::Device device(surface, instance);
   RenderGraph::MemoryAllocator allocator(device, instance);
   std::unique_ptr<RenderGraph::Image> image1 = std::make_unique<RenderGraph::Image>(allocator);
-  image1->createImage(VK_FORMAT_R8G8B8A8_UNORM, {512, 512}, 1, 1, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
-  std::shared_ptr<RenderGraph::ImageView> imageView1 = std::make_shared<RenderGraph::ImageView>(device);
-  imageView1->createImageView(std::move(image1), VK_IMAGE_VIEW_TYPE_2D,
-                             VK_IMAGE_ASPECT_COLOR_BIT, 0, 0);
+  image1->createImage(VK_FORMAT_R8G8B8A8_UNORM, {512, 512}, 1, 1, VK_IMAGE_ASPECT_COLOR_BIT,
+                      VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+  std::shared_ptr<RenderGraph::ImageView> imageView1 = std::make_shared<RenderGraph::ImageView>(std::move(image1),
+                                                                                                device);
+  imageView1->createImageView(VK_IMAGE_VIEW_TYPE_2D, 0, 0);
   std::unique_ptr<RenderGraph::Image> image2 = std::make_unique<RenderGraph::Image>(allocator);
-  image2->createImage(VK_FORMAT_R8G8B8A8_UNORM, {512, 512}, 1, 1, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
-  std::shared_ptr<RenderGraph::ImageView> imageView2 = std::make_shared<RenderGraph::ImageView>(device);
-  imageView2->createImageView(std::move(image2), VK_IMAGE_VIEW_TYPE_2D,
-                             VK_IMAGE_ASPECT_COLOR_BIT, 0, 0);
+  image2->createImage(VK_FORMAT_R8G8B8A8_UNORM, {512, 512}, 1, 1, VK_IMAGE_ASPECT_COLOR_BIT,
+                      VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+  std::shared_ptr<RenderGraph::ImageView> imageView2 = std::make_shared<RenderGraph::ImageView>(std::move(image2),
+                                                                                                device);
+  imageView2->createImageView(VK_IMAGE_VIEW_TYPE_2D, 0, 0);
   std::vector<std::shared_ptr<RenderGraph::ImageView>> imageViews{imageView1, imageView2};
   int index = 0;
   RenderGraph::ImageViewHolder holder(imageViews, [&index]() { return index; });
@@ -511,10 +514,11 @@ TEST(TextureTest, Create) {
   RenderGraph::Device device(surface, instance);
   RenderGraph::MemoryAllocator allocator(device, instance);
   std::unique_ptr<RenderGraph::Image> image = std::make_unique<RenderGraph::Image>(allocator);
-  image->createImage(VK_FORMAT_R8G8B8A8_UNORM, {512, 512}, 1, 1, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
-  std::shared_ptr<RenderGraph::ImageView> imageView = std::make_shared<RenderGraph::ImageView>(device);
-  imageView->createImageView(std::move(image), VK_IMAGE_VIEW_TYPE_2D,
-                            VK_IMAGE_ASPECT_COLOR_BIT, 0, 0);
+  image->createImage(VK_FORMAT_R8G8B8A8_UNORM, {512, 512}, 1, 1, VK_IMAGE_ASPECT_COLOR_BIT,
+                     VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+  std::shared_ptr<RenderGraph::ImageView> imageView = std::make_shared<RenderGraph::ImageView>(std::move(image),
+                                                                                               device);
+  imageView->createImageView(VK_IMAGE_VIEW_TYPE_2D, 0, 0);
   std::shared_ptr<RenderGraph::Sampler> sampler = std::make_shared<RenderGraph::Sampler>(device);
   sampler->createSampler(VK_SAMPLER_ADDRESS_MODE_REPEAT, 1, 4, VK_FILTER_LINEAR);
   RenderGraph::Texture texture(imageView, sampler);
@@ -538,7 +542,7 @@ TEST(ImageCPUTest, RejectsNonArithmeticTypes) {
 TEST(ImageCPUTest, WithoutDeleter) {
   std::vector<float> pixels(256 * 256, 0.5f);
   {
-    RenderGraph::ImageCPU<float> imageCPU;    
+    RenderGraph::ImageCPU<float> imageCPU;
     imageCPU.setData(pixels.data(), [](float* data) {});
     auto data = imageCPU.getData();
     for (int i = 0; i < 256 * 256; i++) {
@@ -554,7 +558,7 @@ TEST(ImageCPUTest, WithDeleter) {
   std::vector<float> pixels(256 * 256, 0.5f);
   bool deleterCalled = false;
   {
-    RenderGraph::ImageCPU<float> imageCPU;    
+    RenderGraph::ImageCPU<float> imageCPU;
     imageCPU.setData(pixels.data(), [&deleterCalled](float* data) { deleterCalled = true; });
     auto data = imageCPU.getData();
     for (int i = 0; i < 256 * 256; i++) {

@@ -33,7 +33,6 @@ export namespace RenderGraph{class Swapchain {
 
   // to be able change layout
   Image& getImage(int index) const noexcept;
-  const ImageView& getImageView(int index) const noexcept;
   std::vector<std::shared_ptr<ImageView>> getImageViews() const noexcept;
   int getImageCount() const noexcept;
   const vkb::Swapchain& getSwapchain() const noexcept;
