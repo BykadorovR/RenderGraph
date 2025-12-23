@@ -20,8 +20,7 @@ class GraphElementMock : public RenderGraph::GraphElement {
  public:
   void draw(int currentFrame, const RenderGraph::CommandBuffer& commandBuffer) override { _drawCount++; }
   void update(int currentFrame, const RenderGraph::CommandBuffer& commandBuffer) override { _updateCount++; }
-  void reset(int frameInFlight,
-             const RenderGraph::ImageView& swapchain,
+  void reset(const std::vector<std::shared_ptr<RenderGraph::ImageView>>& swapchain,
              const RenderGraph::CommandBuffer& commandBuffer) override {
     _resetCount++;
   }
@@ -480,7 +479,7 @@ TEST(ScenarioTest, GraphReset) {
   EXPECT_EQ(window.getResolution().y, 1080);
   // call reset explicitly, usually it should be called if render() returns true
   graph.reset();
-  EXPECT_EQ(elementMock->getResetCount(), 3 * framesInFlight);
+  EXPECT_EQ(elementMock->getResetCount(), 3);
   // we don't change window resolution here
   EXPECT_EQ(window.getResolution().x, 1920);
   EXPECT_EQ(window.getResolution().y, 1080);

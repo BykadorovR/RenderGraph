@@ -62,9 +62,10 @@ void GraphPass::registerGraphElement(std::shared_ptr<GraphElement> graphElement)
 
 std::string GraphPass::getName() const noexcept { return _name; }
 
-void GraphPass::reset(int currentFrame, const RenderGraph::ImageView& swapchain, CommandBuffer& commandBuffer) {
+void GraphPass::reset(const std::vector<std::shared_ptr<RenderGraph::ImageView>>& swapchain,
+                      CommandBuffer& commandBuffer) {
   for (auto&& graphElement : _graphElements) {
-    graphElement->reset(currentFrame, swapchain, commandBuffer);
+    graphElement->reset(swapchain, commandBuffer);
   }
 }
 
@@ -260,11 +261,9 @@ Graph::Graph(int threadsNumber, int maxFramesInFlight, Swapchain& swapchain, con
   _timestamps = std::make_unique<Timestamps>(device);
   _graphStorage = std::make_unique<GraphStorage>();
   _maxFramesInFlight = maxFramesInFlight;
-  _resetFrames.resize(maxFramesInFlight, false);
+  _resetFrames = false;
   _commandPoolReset = std::make_unique<CommandPool>(vkb::QueueType::graphics, device);
-  _commandBuffersReset.resize(maxFramesInFlight);
-  std::ranges::generate(_commandBuffersReset,
-                        [&] { return std::make_unique<CommandBuffer>(*_commandPoolReset, device); });
+  _commandBuffersReset = std::make_unique<CommandBuffer>(*_commandPoolReset, device);
 }
 
 void Graph::initialize() noexcept {
@@ -606,14 +605,14 @@ bool Graph::render() {
     vkQueueSubmit(_device->getQueue(queueType), 1, &submitInfo, nullptr);
   };
 
-  if (_resetFrames[_frameInFlight]) {
+  if (_resetFrames) {
     auto queueType = vkb::QueueType::graphics;
     VkSubmitInfo submitInfo{.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
                             .commandBufferCount = 1u,
-                            .pCommandBuffers = &_commandBuffersReset[_frameInFlight]->getCommandBuffer()};
+                            .pCommandBuffers = &_commandBuffersReset->getCommandBuffer()};
 
     vkQueueSubmit(_device->getQueue(queueType), 1, &submitInfo, nullptr);
-    _resetFrames[_frameInFlight] = false;
+    _resetFrames = false;
   }
 
   // command buffer from passes
@@ -747,18 +746,13 @@ void Graph::reset() {
     _graphStorage->add(name, std::move(swapchainHolder));
   }
 
-  for (int frameInFlight = 0; frameInFlight < _maxFramesInFlight; frameInFlight++) {
-    _commandBuffersReset[frameInFlight]->beginCommands();
-    // TODO: implement
-    _graphStorage->reset(_swapchain->getImageViews()[0]->getImage().getResolution(),
-                         *_commandBuffersReset[frameInFlight]);
-    // TODO: how many times to call: once or per frame in flight?
-    for (auto&& pass : _passesOrdered) {
-      pass->reset(frameInFlight, *_swapchain->getImageViews()[frameInFlight], *_commandBuffersReset[frameInFlight]);
-    }
-
-    // TODO: insert barriers
-    _commandBuffersReset[frameInFlight]->endCommands();
-    _resetFrames[frameInFlight] = true;
+  _commandBuffersReset->beginCommands();
+  _graphStorage->reset(_swapchain->getImageViews()[0]->getImage().getResolution(), *_commandBuffersReset);
+  for (auto&& pass : _passesOrdered) {
+    pass->reset(_swapchain->getImageViews(), *_commandBuffersReset);
   }
+
+  // TODO: insert barriers
+  _commandBuffersReset->endCommands();
+  _resetFrames = true;
 }

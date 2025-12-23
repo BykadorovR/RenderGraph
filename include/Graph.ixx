@@ -41,8 +41,7 @@ class GraphElement {
  public:
   virtual void draw(int currentFrame, const CommandBuffer& commandBuffer) = 0;
   virtual void update(int currentFrame, const CommandBuffer& commandBuffer) = 0;
-  virtual void reset(int currentFrame,
-                     const RenderGraph::ImageView& swapchain,
+  virtual void reset(const std::vector<std::shared_ptr<RenderGraph::ImageView>>& swapchain,
                      const CommandBuffer& commandBuffer) = 0;
   virtual ~GraphElement() = default;
 };
@@ -79,7 +78,7 @@ class GraphPass {
   std::vector<CommandBuffer*> getCommandBuffers() const noexcept;
   std::string getName() const noexcept;
   virtual void execute(int currentFrame, const CommandBuffer& commandBuffer) = 0;
-  void reset(int frameInFlight, const RenderGraph::ImageView& swapchain, CommandBuffer& commandBuffer);
+  void reset(const std::vector<std::shared_ptr<RenderGraph::ImageView>>& swapchain, CommandBuffer& commandBuffer);
   virtual ~GraphPass() = default;
 };
 
@@ -161,8 +160,8 @@ class Graph final {
   std::unique_ptr<Timestamps> _timestamps;
   std::unique_ptr<GraphStorage> _graphStorage;
   std::unique_ptr<CommandPool> _commandPoolReset;
-  std::vector<std::unique_ptr<CommandBuffer>> _commandBuffersReset;
-  std::vector<bool> _resetFrames;
+  std::unique_ptr<CommandBuffer> _commandBuffersReset;
+  bool _resetFrames;
   // special semaphores
   std::vector<std::shared_ptr<Semaphore>> _semaphoreRenderFinished, _semaphoreImageAvailable;
   std::unique_ptr<Semaphore> _semaphoreInFlight;
