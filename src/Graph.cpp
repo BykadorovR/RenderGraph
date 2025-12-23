@@ -190,6 +190,7 @@ void GraphPassGraphic::execute(int currentFrame, const CommandBuffer& commandBuf
     renderingInfo.layerCount = 1;
     renderingInfo.colorAttachmentCount = colorAttachments.size();
     renderingInfo.pColorAttachments = colorAttachments.data();
+    if (depthAttachment.has_value()) renderingInfo.pDepthAttachment = &depthAttachment.value();
 
     graphElement->update(currentFrame, commandBuffer);
     vkCmdBeginRendering(commandBuffer.getCommandBuffer(), &renderingInfo);
