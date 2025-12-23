@@ -33,7 +33,8 @@ void Swapchain::initialize() {
   auto imageViews = _swapchain.get_image_views().value();
   for (auto&& [image, imageView] : std::views::zip(images, imageViews)) {
     auto imageWrap = std::make_unique<Image>(*_allocator);
-    imageWrap->wrapImage(image, _swapchainFormat, {_swapchain.extent.width, _swapchain.extent.height}, 1, 1);
+    imageWrap->wrapImage(image, _swapchainFormat, {_swapchain.extent.width, _swapchain.extent.height}, 1, 1,
+                         VK_IMAGE_ASPECT_COLOR_BIT, _swapchain.image_usage_flags);
     auto imageViewWrap = std::make_unique<ImageView>(std::move(imageWrap), *_device);
     imageViewWrap->wrapImageView(imageView);
     _imageViews.push_back(std::move(imageViewWrap));

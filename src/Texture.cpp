@@ -50,12 +50,16 @@ void Image::wrapImage(const VkImage& existingImage,
                       VkFormat format,
                       glm::ivec2 resolution,
                       int mipMapNumber,
-                      int layerNumber) {
+                      int layerNumber,
+                      VkImageAspectFlags aspectMask,
+                      VkImageUsageFlags usage) {
   _image = existingImage;
   _format = format;
   _resolution = resolution;
   _mipMapNumber = mipMapNumber;
   _layerNumber = layerNumber;
+  _aspectMask = aspectMask;
+  _usageFlags = usage;
 }
 
 void Image::copyFrom(std::unique_ptr<Buffer> buffer,

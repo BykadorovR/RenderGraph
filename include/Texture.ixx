@@ -72,7 +72,9 @@ class Image final {
                  VkFormat format,
                  glm::ivec2 resolution,
                  int mipMapNumber,
-                 int layerNumber);
+                 int layerNumber,
+                 VkImageAspectFlags aspectMask,
+                 VkImageUsageFlags usage);
 
   // bufferOffsets contains offsets for part of buffer that should be copied to corresponding layers of image
   void copyFrom(std::unique_ptr<Buffer> buffer,
