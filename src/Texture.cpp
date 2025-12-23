@@ -35,7 +35,7 @@ void Image::createImage(VkFormat format,
       .tiling = VK_IMAGE_TILING_OPTIMAL,
       .usage = usage,
       .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-      .initialLayout = _imageLayout,
+      .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
   };
 
   VmaAllocationCreateInfo allocCreateInfo = {};
