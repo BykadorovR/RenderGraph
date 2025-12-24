@@ -539,7 +539,8 @@ void Graph::calculate() {
 }
 
 bool Graph::render() {
-  if (_window->getResolution().x == 0 || _window->getResolution().y == 0) return false;
+  if (_window->getResolution().x == 0 || _window->getResolution().y == 0)
+    throw std::runtime_error("Can't render if resolution is 0");
 
   // timeline semaphore instead of fence
   if (_valueSemaphoreInFlight > _maxFramesInFlight) {
@@ -754,7 +755,8 @@ void Graph::reset() {
   // wait all queues idle before reset
   if (vkDeviceWaitIdle(_device->getLogicalDevice()) != VK_SUCCESS) throw std::runtime_error("failed to reset");
 
-  if (_window->getResolution().x == 0 || _window->getResolution().y == 0) return;
+  if (_window->getResolution().x == 0 || _window->getResolution().y == 0)
+    throw std::runtime_error("Can't reset if resolution is 0");
 
   auto oldSwapchain = _swapchain->reset(_window->getResolution());
   _commandBuffersReset->beginCommands();
