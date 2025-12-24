@@ -2,13 +2,17 @@ module Window;
 using namespace RenderGraph;
 import "GLFW/glfw3.h";
 
-bool Window::getResized() const noexcept { return _resized; }
-
-void Window::setResized(bool resized) noexcept { _resized = resized; }
-
 GLFWwindow* Window::getWindow() const noexcept { return _window; }
 
 Window::Window(glm::ivec2 resolution) noexcept { _resolution = resolution; }
+
+glm::ivec2 Window::getResolution() const noexcept {
+  glm::ivec2 resolution = {0, 0};
+  if (_window) {
+    glfwGetFramebufferSize(_window, &resolution.x, &resolution.y);
+  }
+  return resolution;
+}
 
 void Window::setFullScreen(bool fullScreen) {
   if (fullScreen) {
@@ -29,10 +33,6 @@ void Window::initialize() {
   glfwInit();
   glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
   _window = glfwCreateWindow(_resolution.x, _resolution.y, "Vulkan", nullptr, nullptr);
-  glfwSetWindowUserPointer(_window, this);
-  glfwSetFramebufferSizeCallback(_window, [](GLFWwindow* window, int width, int height) {
-    reinterpret_cast<Window*>(glfwGetWindowUserPointer(window))->setResized(true);
-  });
 }
 
 Window::~Window() {
