@@ -51,7 +51,8 @@ class Image final {
   glm::ivec2 _resolution;
   int _mipMapNumber = 1;
   int _layerNumber = 1;
-
+  VkImageAspectFlags _aspectMask;
+  VkImageUsageFlags _usageFlags;
   VkImageLayout _imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
  public:
@@ -61,23 +62,28 @@ class Image final {
   Image(Image&&) = delete;
   Image& operator=(Image&&) = delete;
 
-  void createImage(VkFormat format, glm::ivec2 resolution, int mipMapNumber, int layerNumber, VkImageUsageFlags usage);
+  void createImage(VkFormat format,
+                   glm::ivec2 resolution,
+                   int mipMapNumber,
+                   int layerNumber,
+                   VkImageAspectFlags aspectMask,
+                   VkImageUsageFlags usage);
   void wrapImage(const VkImage& existingImage,
                  VkFormat format,
                  glm::ivec2 resolution,
                  int mipMapNumber,
-                 int layerNumber);
+                 int layerNumber,
+                 VkImageAspectFlags aspectMask,
+                 VkImageUsageFlags usage);
 
   // bufferOffsets contains offsets for part of buffer that should be copied to corresponding layers of image
   void copyFrom(std::unique_ptr<Buffer> buffer,
                 const std::vector<int>& bufferOffsets,
-                VkImageAspectFlags aspectMask,
                 const CommandBuffer& commandBuffer);
   void changeLayout(VkImageLayout oldLayout,
                     VkImageLayout newLayout,
                     VkAccessFlags srcAccessMask,
                     VkAccessFlags dstAccessMask,
-                    VkImageAspectFlags aspectMask,
                     const CommandBuffer& commandBuffer);
   void overrideLayout(VkImageLayout layout);
   void generateMipmaps(const CommandBuffer& commandBuffer);
@@ -88,6 +94,9 @@ class Image final {
   VkImageLayout getImageLayout() const noexcept;
   int getMipMapNumber() const noexcept;
   int getLayerNumber() const noexcept;
+  VkImageAspectFlags getAspectMask() const noexcept;
+  VkImageUsageFlags getUsageFlags() const noexcept;
+  void destroy();
 
   ~Image();
 };
@@ -97,9 +106,11 @@ class ImageView final {
   const Device* _device;
   std::unique_ptr<Image> _image;
   VkImageView _imageView;
+  VkImageViewType _type;
+  int _baseMipMap, _baseArrayLayer;
 
  public:
-  ImageView(const Device& device) noexcept;
+  ImageView(std::unique_ptr<Image> image, const Device& device) noexcept;
   ImageView(const ImageView&) = delete;
   ImageView& operator=(const ImageView&) = delete;
   ImageView(ImageView&&) = delete;
@@ -108,15 +119,16 @@ class ImageView final {
   // componentMapping to pass BGRA texture to shader that accepts only RGBA
   // baseArrayLayer - which layer/face is used
   // baseMipMapLevel - which mip map level is used
-  void createImageView(std::unique_ptr<Image> image,
-                       VkImageViewType type,
-                       VkImageAspectFlags aspectFlags,
+  void createImageView(VkImageViewType type,
                        int baseMipMap,
                        int baseArrayLayer);
-  void wrapImageView(const VkImageView& imageView, std::unique_ptr<Image> image);
+  void wrapImageView(const VkImageView& imageView);
   VkImageView getImageView() const noexcept;
   Image& getImage() const noexcept;
-
+  VkImageViewType getType() const noexcept;
+  int getBaseMipMap() const noexcept;
+  int getBaseArrayLayer() const noexcept;
+  void destroy();
   ~ImageView();
 };
 
@@ -124,7 +136,6 @@ class ImageViewHolder final {
  protected:
   std::vector<std::shared_ptr<ImageView>> _imageViews;
   std::function<int()> _index;
-
  public:
   ImageViewHolder(std::vector<std::shared_ptr<ImageView>> imageViews, std::function<int()> index) noexcept;
   ImageViewHolder(const ImageViewHolder&) = delete;
@@ -132,9 +143,11 @@ class ImageViewHolder final {
   ImageViewHolder(ImageViewHolder&&) = delete;
   ImageViewHolder& operator=(ImageViewHolder&&) = delete;
 
+  void setImageViews(std::vector<std::shared_ptr<ImageView>> imageViews);
   const ImageView& getImageView() const noexcept;
+  std::function<int()> getIndexFunction() const noexcept;
   int getIndex() const noexcept;
-  std::vector<const ImageView*> getImageViews() const noexcept;
+  std::vector<ImageView*> getImageViews() const noexcept;
   bool contains(const std::vector<std::shared_ptr<ImageView>>& imageViews) const noexcept;
 };
 

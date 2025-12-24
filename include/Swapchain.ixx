@@ -21,19 +21,18 @@ export namespace RenderGraph{class Swapchain {
   void _destroy();
 
  public:
-  Swapchain(const MemoryAllocator& allocator, const Device& device);
+  Swapchain(glm::ivec2 resolution, const MemoryAllocator& allocator, const Device& device);
   Swapchain(const Swapchain&) = delete;
   Swapchain& operator=(const Swapchain&) = delete;
   Swapchain(Swapchain&&) = delete;
   Swapchain& operator=(Swapchain&&) = delete;
 
-  void initialize(const CommandBuffer& commandBuffer);
+  void initialize();
   VkResult acquireNextImage(const Semaphore& semaphore) noexcept;
-  std::vector<std::shared_ptr<ImageView>> reset(const CommandBuffer& commandBuffer);
+  std::vector<std::shared_ptr<ImageView>> reset(glm::ivec2 resolution);
 
   // to be able change layout
   Image& getImage(int index) const noexcept;
-  const ImageView& getImageView(int index) const noexcept;
   std::vector<std::shared_ptr<ImageView>> getImageViews() const noexcept;
   int getImageCount() const noexcept;
   const vkb::Swapchain& getSwapchain() const noexcept;

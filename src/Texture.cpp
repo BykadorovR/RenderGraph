@@ -13,11 +13,14 @@ void Image::createImage(VkFormat format,
                         glm::ivec2 resolution,
                         int mipMapNumber,
                         int layerNumber,
+                        VkImageAspectFlags aspectMask,
                         VkImageUsageFlags usage) {
   _format = format;
   _resolution = resolution;
   _mipMapNumber = mipMapNumber;
   _layerNumber = layerNumber;
+  _aspectMask = aspectMask;
+  _usageFlags = usage;
 
   VkImageCreateInfo imageInfo{
       .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
@@ -32,7 +35,7 @@ void Image::createImage(VkFormat format,
       .tiling = VK_IMAGE_TILING_OPTIMAL,
       .usage = usage,
       .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-      .initialLayout = _imageLayout,
+      .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
   };
 
   VmaAllocationCreateInfo allocCreateInfo = {};
@@ -47,17 +50,20 @@ void Image::wrapImage(const VkImage& existingImage,
                       VkFormat format,
                       glm::ivec2 resolution,
                       int mipMapNumber,
-                      int layerNumber) {
+                      int layerNumber,
+                      VkImageAspectFlags aspectMask,
+                      VkImageUsageFlags usage) {
   _image = existingImage;
   _format = format;
   _resolution = resolution;
   _mipMapNumber = mipMapNumber;
   _layerNumber = layerNumber;
+  _aspectMask = aspectMask;
+  _usageFlags = usage;
 }
 
 void Image::copyFrom(std::unique_ptr<Buffer> buffer,
                      const std::vector<int>& bufferOffsets,
-                     VkImageAspectFlags aspectMask,
                      const CommandBuffer& commandBuffer) {
   _stagingBuffer = std::move(buffer);
 
@@ -68,7 +74,7 @@ void Image::copyFrom(std::unique_ptr<Buffer> buffer,
         .bufferOffset = static_cast<VkDeviceSize>(bufferOffsets[i]),
         .bufferRowLength = 0,
         .bufferImageHeight = 0,
-        .imageSubresource = {.aspectMask = aspectMask,
+        .imageSubresource = {.aspectMask = _aspectMask,
                              .mipLevel = 0,
                              .baseArrayLayer = static_cast<uint32_t>(i),
                              .layerCount = 1},
@@ -90,11 +96,14 @@ void Image::copyFrom(std::unique_ptr<Buffer> buffer,
                        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 1, &memoryBarrier, 0, nullptr, 0, nullptr);
 }
 
+VkImageAspectFlags Image::getAspectMask() const noexcept { return _aspectMask; }
+
+VkImageUsageFlags Image::getUsageFlags() const noexcept { return _usageFlags; }
+
 void Image::changeLayout(VkImageLayout oldLayout,
                          VkImageLayout newLayout,
                          VkAccessFlags srcAccessMask,
                          VkAccessFlags dstAccessMask,
-                         VkImageAspectFlags aspectMask,
                          const CommandBuffer& commandBuffer) {
   _imageLayout = newLayout;
   VkImageMemoryBarrier barrier{.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
@@ -105,7 +114,7 @@ void Image::changeLayout(VkImageLayout oldLayout,
                                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                                .image = _image,
-                               .subresourceRange = {.aspectMask = aspectMask,
+                               .subresourceRange = {.aspectMask = _aspectMask,
                                                     .baseMipLevel = 0,
                                                     .levelCount = static_cast<uint32_t>(_mipMapNumber),
                                                     .baseArrayLayer = 0,
@@ -122,7 +131,7 @@ void Image::generateMipmaps(const CommandBuffer& commandBuffer) {
                                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                                .image = getImage(),
-                               .subresourceRange = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                               .subresourceRange = {.aspectMask = _aspectMask,
                                                     .levelCount = 1,
                                                     .baseArrayLayer = 0,
                                                     .layerCount = static_cast<uint32_t>(_layerNumber)}};
@@ -197,20 +206,22 @@ int Image::getMipMapNumber() const noexcept { return _mipMapNumber; }
 
 int Image::getLayerNumber() const noexcept { return _layerNumber; }
 
-Image::~Image() {
+void Image::destroy() {
   if (_imageMemory) {
     vmaDestroyImage(_memoryAllocator->getAllocator(), _image, _imageMemory);
   }
 }
 
-ImageView::ImageView(const Device& device) noexcept : _device(&device) {}
+Image::~Image() { destroy(); }
 
-void ImageView::createImageView(std::unique_ptr<Image> image,
-                                VkImageViewType type,
-                                VkImageAspectFlags aspectFlags,
-                                int baseMipMap,
-                                int baseArrayLayer) {
-  _image = std::move(image);
+ImageView::ImageView(std::unique_ptr<Image> image, const Device& device) noexcept
+    : _image(std::move(image)),
+      _device(&device) {}
+
+void ImageView::createImageView(VkImageViewType type, int baseMipMap, int baseArrayLayer) {
+  _type = type;
+  _baseMipMap = baseMipMap;
+  _baseArrayLayer = baseArrayLayer;
 
   VkImageViewCreateInfo viewInfo{.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
                                  .image = _image->getImage(),
@@ -221,7 +232,7 @@ void ImageView::createImageView(std::unique_ptr<Image> image,
                                                                   .b = VK_COMPONENT_SWIZZLE_IDENTITY,
                                                                   .a = VK_COMPONENT_SWIZZLE_IDENTITY},
                                  .subresourceRange = {
-                                     .aspectMask = aspectFlags,
+                                     .aspectMask = _image->getAspectMask(),
                                      .baseMipLevel = static_cast<uint32_t>(baseMipMap),
                                      .levelCount = static_cast<uint32_t>(_image->getMipMapNumber()),
                                      .baseArrayLayer = static_cast<uint32_t>(baseArrayLayer),
@@ -232,16 +243,21 @@ void ImageView::createImageView(std::unique_ptr<Image> image,
     throw std::runtime_error("failed to create texture image view!");
   }
 }
-void ImageView::wrapImageView(const VkImageView& imageView, std::unique_ptr<Image> image) {
-  _imageView = imageView;
-  _image = std::move(image);
-}
+void ImageView::wrapImageView(const VkImageView& imageView) { _imageView = imageView; }
 
 VkImageView ImageView::getImageView() const noexcept { return _imageView; }
 
 Image& ImageView::getImage() const noexcept { return *_image; }
 
-ImageView::~ImageView() { vkDestroyImageView(_device->getLogicalDevice(), _imageView, nullptr); }
+VkImageViewType ImageView::getType() const noexcept { return _type; }
+
+int ImageView::getBaseMipMap() const noexcept { return _baseMipMap; }
+
+int ImageView::getBaseArrayLayer() const noexcept { return _baseArrayLayer; }
+
+void ImageView::destroy() { vkDestroyImageView(_device->getLogicalDevice(), _imageView, nullptr); }
+
+ImageView::~ImageView() { destroy(); }
 
 ImageViewHolder::ImageViewHolder(std::vector<std::shared_ptr<ImageView>> imageViews,
                                  std::function<int()> index) noexcept {
@@ -249,13 +265,17 @@ ImageViewHolder::ImageViewHolder(std::vector<std::shared_ptr<ImageView>> imageVi
   _index = index;
 }
 
+void ImageViewHolder::setImageViews(std::vector<std::shared_ptr<ImageView>> imageViews) { _imageViews = imageViews; }
+
 const ImageView& ImageViewHolder::getImageView() const noexcept { return *_imageViews[_index()]; }
+
+std::function<int()> ImageViewHolder::getIndexFunction() const noexcept { return _index; }
 
 int ImageViewHolder::getIndex() const noexcept { return _index(); }
 
-std::vector<const ImageView*> ImageViewHolder::getImageViews() const noexcept {
+std::vector<ImageView*> ImageViewHolder::getImageViews() const noexcept {
   return _imageViews | std::views::transform([](auto const& iv) { return iv.get(); }) |
-         std::ranges::to<std::vector<const ImageView*>>();
+         std::ranges::to<std::vector<ImageView*>>();
 }
 
 bool ImageViewHolder::contains(const std::vector<std::shared_ptr<ImageView>>& imageViews) const noexcept {
