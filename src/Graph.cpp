@@ -539,9 +539,6 @@ void Graph::calculate() {
 }
 
 bool Graph::render() {
-  if (_window->getResolution().x == 0 || _window->getResolution().y == 0)
-    throw std::runtime_error("Can't render if resolution is 0");
-
   // timeline semaphore instead of fence
   if (_valueSemaphoreInFlight > _maxFramesInFlight) {
     uint64_t waitValue = _valueSemaphoreInFlight - _maxFramesInFlight;
