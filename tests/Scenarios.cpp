@@ -38,9 +38,9 @@ TEST(ScenarioTest, GraphOneQueue) {
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(surface, instance);
   RenderGraph::MemoryAllocator allocator(device, instance);
-  RenderGraph::Swapchain swapchain(allocator, device);
+  RenderGraph::Swapchain swapchain(resolution, allocator, device);
   int framesInFlight = 2;
-  RenderGraph::Graph graph(4, framesInFlight, swapchain, device);
+  RenderGraph::Graph graph(4, framesInFlight, swapchain, window, device);
 
   auto commandPool = std::make_shared<RenderGraph::CommandPool>(vkb::QueueType::graphics, device);
   std::vector<RenderGraph::CommandBuffer> commandBuffer;
@@ -213,9 +213,9 @@ TEST(ScenarioTest, GraphSeparateQueues) {
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(surface, instance);
   RenderGraph::MemoryAllocator allocator(device, instance);
-  RenderGraph::Swapchain swapchain(allocator, device);
+  RenderGraph::Swapchain swapchain(resolution, allocator, device);
   int framesInFlight = 2;
-  RenderGraph::Graph graph(4, framesInFlight, swapchain, device);
+  RenderGraph::Graph graph(4, framesInFlight, swapchain, window, device);
 
   auto commandPool = std::make_shared<RenderGraph::CommandPool>(vkb::QueueType::graphics, device);
   std::vector<RenderGraph::CommandBuffer> commandBuffer;
@@ -380,9 +380,9 @@ TEST(ScenarioTest, GraphReset) {
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(surface, instance);
   RenderGraph::MemoryAllocator allocator(device, instance);
-  RenderGraph::Swapchain swapchain(allocator, device);
+  RenderGraph::Swapchain swapchain(resolution, allocator, device);
   int framesInFlight = 2;
-  RenderGraph::Graph graph(4, framesInFlight, swapchain, device);
+  RenderGraph::Graph graph(4, framesInFlight, swapchain, window, device);
 
   auto commandPool = std::make_shared<RenderGraph::CommandPool>(vkb::QueueType::graphics, device);
   std::vector<RenderGraph::CommandBuffer> commandBuffer;
@@ -536,9 +536,9 @@ TEST(ScenarioTest, DepthExistance) {
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(surface, instance);
   RenderGraph::MemoryAllocator allocator(device, instance);
-  RenderGraph::Swapchain swapchain(allocator, device);
+  RenderGraph::Swapchain swapchain(resolution, allocator, device);
   int framesInFlight = 2;
-  RenderGraph::Graph graph(4, framesInFlight, swapchain, device);
+  RenderGraph::Graph graph(4, framesInFlight, swapchain, window, device);
 
   auto commandPool = std::make_shared<RenderGraph::CommandPool>(vkb::QueueType::graphics, device);
   std::vector<RenderGraph::CommandBuffer> commandBuffer;

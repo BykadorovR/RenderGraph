@@ -387,26 +387,28 @@ TEST(PipelineTest, Create) {
 }
 
 TEST(SwapchainTest, CreateWithoutInitialization) {
+  glm::ivec2 resolution(1920, 1080);
   RenderGraph::Instance instance("TestApp", false);
-  RenderGraph::Window window({1920, 1080});
+  RenderGraph::Window window(resolution);
   window.initialize();
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(surface, instance);
   RenderGraph::MemoryAllocator allocator(device, instance);
-  RenderGraph::Swapchain swapchain(allocator, device);
+  RenderGraph::Swapchain swapchain(resolution, allocator, device);
   EXPECT_NE(swapchain.getSwapchain(), nullptr);
   EXPECT_EQ(swapchain.getImageCount(), 0);
   EXPECT_EQ(swapchain.getImageViews().size(), 0);
 }
 
 TEST(SwapchainTest, CreateWithInitialization) {
+  glm::ivec2 resolution(1920, 1080);
   RenderGraph::Instance instance("TestApp", false);
-  RenderGraph::Window window({1920, 1080});
+  RenderGraph::Window window(resolution);
   window.initialize();
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(surface, instance);
   RenderGraph::MemoryAllocator allocator(device, instance);
-  RenderGraph::Swapchain swapchain(allocator, device);
+  RenderGraph::Swapchain swapchain(resolution, allocator, device);
   RenderGraph::CommandPool commandPool(vkb::QueueType::graphics, device);
   RenderGraph::CommandBuffer commandBuffer(commandPool, device);
   commandBuffer.beginCommands();

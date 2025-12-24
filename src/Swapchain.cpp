@@ -4,10 +4,11 @@ import <ranges>;
 import <iostream>;
 using namespace RenderGraph;
 
-Swapchain::Swapchain(const MemoryAllocator& allocator, const Device& device)
+Swapchain::Swapchain(glm::ivec2 resolution, const MemoryAllocator& allocator, const Device& device)
     : _allocator(&allocator),
       _device(&device) {
   vkb::SwapchainBuilder builder{device.getDevice()};
+  builder.set_desired_extent(static_cast<uint32_t>(resolution.x), static_cast<uint32_t>(resolution.y));
   builder.set_composite_alpha_flags(VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR);
   builder.set_desired_format(
       VkSurfaceFormatKHR{.format = _swapchainFormat, .colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR});
@@ -66,11 +67,9 @@ const vkb::Swapchain& Swapchain::getSwapchain() const noexcept { return _swapcha
 
 uint32_t Swapchain::getSwapchainIndex() const noexcept { return _swapchainIndex; }
 
-std::vector<std::shared_ptr<ImageView>> Swapchain::reset() {
-  if (vkDeviceWaitIdle(_device->getDevice().device) != VK_SUCCESS)
-    throw std::runtime_error("failed to create reset swap chain!");
-
+std::vector<std::shared_ptr<ImageView>> Swapchain::reset(glm::ivec2 resolution) {
   vkb::SwapchainBuilder builder{_device->getDevice()};
+  builder.set_desired_extent(static_cast<uint32_t>(resolution.x), static_cast<uint32_t>(resolution.y));
   builder.set_old_swapchain(_swapchain);
   builder.set_composite_alpha_flags(VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR);
   builder.set_desired_format(

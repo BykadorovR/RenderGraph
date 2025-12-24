@@ -9,6 +9,7 @@ import Command;
 import CommandPool;
 import Buffer;
 import Device;
+import Window;
 import glm;
 import <volk.h>;
 import "BS_thread_pool.hpp";
@@ -157,6 +158,7 @@ class Graph final {
  private:
   Swapchain* _swapchain;
   const Device* _device;
+  const Window* _window;
   std::unique_ptr<BS::thread_pool> _threadPool;
   std::vector<std::unique_ptr<GraphPass>> _passes;
   std::deque<GraphPass*> _passesOrdered;
@@ -180,7 +182,7 @@ class Graph final {
   std::map<GraphPass*, Cache> _cache;
 
  public:
-  Graph(int threadsNumber, int maxFramesInFlight, Swapchain& swapchain, const Device& device) noexcept;
+  Graph(int threadsNumber, int maxFramesInFlight, Swapchain& swapchain, const Window& window, const Device& device) noexcept;
   Graph(const Graph&) = delete;
   Graph& operator=(const Graph&) = delete;
   Graph(Graph&&) = delete;

@@ -263,8 +263,13 @@ void GraphPassCompute::execute(int currentFrame, const CommandBuffer& commandBuf
   }
 }
 
-Graph::Graph(int threadsNumber, int maxFramesInFlight, Swapchain& swapchain, const Device& device) noexcept
+Graph::Graph(int threadsNumber,
+             int maxFramesInFlight,
+             Swapchain& swapchain,
+             const Window& window,
+             const Device& device) noexcept
     : _swapchain(&swapchain),
+      _window(&window),
       _device(&device) {
   _threadPool = std::make_unique<BS::thread_pool>(threadsNumber);
   _timestamps = std::make_unique<Timestamps>(device);
@@ -534,6 +539,8 @@ void Graph::calculate() {
 }
 
 bool Graph::render() {
+  if (_window->getResolution().x == 0 || _window->getResolution().y == 0) return false;
+
   // timeline semaphore instead of fence
   if (_valueSemaphoreInFlight > _maxFramesInFlight) {
     uint64_t waitValue = _valueSemaphoreInFlight - _maxFramesInFlight;
@@ -745,9 +752,11 @@ bool Graph::render() {
 
 void Graph::reset() {
   // wait all queues idle before reset
-  vkDeviceWaitIdle(_device->getLogicalDevice());
+  if (vkDeviceWaitIdle(_device->getLogicalDevice()) != VK_SUCCESS) throw std::runtime_error("failed to reset");
 
-  auto oldSwapchain = _swapchain->reset();
+  if (_window->getResolution().x == 0 || _window->getResolution().y == 0) return;
+
+  auto oldSwapchain = _swapchain->reset(_window->getResolution());
   _commandBuffersReset->beginCommands();
   _graphStorage->reset(oldSwapchain, _swapchain->getImageViews(), *_commandBuffersReset);
   for (auto&& pass : _passesOrdered) {
