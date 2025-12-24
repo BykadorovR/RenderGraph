@@ -265,9 +265,7 @@ ImageViewHolder::ImageViewHolder(std::vector<std::shared_ptr<ImageView>> imageVi
   _index = index;
 }
 
-void ImageViewHolder::setReset(bool reset) noexcept { _reset = reset; }
-
-bool ImageViewHolder::getReset() const noexcept { return _reset; }
+void ImageViewHolder::setImageViews(std::vector<std::shared_ptr<ImageView>> imageViews) { _imageViews = imageViews; }
 
 const ImageView& ImageViewHolder::getImageView() const noexcept { return *_imageViews[_index()]; }
 

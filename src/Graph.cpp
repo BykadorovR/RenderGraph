@@ -11,9 +11,17 @@ void GraphStorage::add(std::string_view name, std::vector<std::unique_ptr<Buffer
   _buffers[std::string(name)] = std::move(buffers);
 }
 
-void GraphStorage::reset(glm::ivec2 resolution, const CommandBuffer& commandBuffer) noexcept {
+void GraphStorage::reset(std::vector<std::shared_ptr<ImageView>> oldSwapchain,
+                         std::vector<std::shared_ptr<ImageView>> newSwapchain,
+                         const CommandBuffer& commandBuffer) noexcept {
+  glm::ivec2 resolution = newSwapchain.front()->getImage().getResolution();
+  auto nameSwapchain = find(oldSwapchain);
+  if (nameSwapchain.empty() == false) {
+    _imageViewHolders[nameSwapchain]->setImageViews(newSwapchain);
+  }
+
   for (auto&& [name, value] : _imageViewHolders) {
-    if (value->getReset()) {
+    if (name != nameSwapchain) {
       auto indexFunction = value->getIndexFunction();
       auto imageViews = value->getImageViews();
       for (int i = 0; i < imageViews.size(); i++) {
@@ -736,24 +744,25 @@ bool Graph::render() {
 }
 
 void Graph::reset() {
+  // wait all queues idle before reset
+  vkDeviceWaitIdle(_device->getLogicalDevice());
+
   auto oldSwapchain = _swapchain->reset();
-  // TODO: move to graph reset?
-  auto swapchainHolder = std::make_unique<ImageViewHolder>(_swapchain->getImageViews(),
-                                                           [this]() { return _swapchain->getSwapchainIndex(); });
-  swapchainHolder->setReset(false);
-
-  auto name = _graphStorage->find(oldSwapchain);
-  if (name.empty() == false) {
-    _graphStorage->add(name, std::move(swapchainHolder));
-  }
-
   _commandBuffersReset->beginCommands();
-  _graphStorage->reset(_swapchain->getImageViews()[0]->getImage().getResolution(), *_commandBuffersReset);
+  _graphStorage->reset(oldSwapchain, _swapchain->getImageViews(), *_commandBuffersReset);
   for (auto&& pass : _passesOrdered) {
     pass->reset(_swapchain->getImageViews(), *_commandBuffersReset);
   }
 
-  // TODO: insert barriers
+  // insert global barrier so all image layout commands are being processed,
+  // because we submit this command buffer to the same queue along the frame rendering command buffers
+  VkMemoryBarrier mem{};
+  mem.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+  mem.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
+  mem.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+  vkCmdPipelineBarrier(_commandBuffersReset->getCommandBuffer(), VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                       VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &mem, 0, nullptr, 0, nullptr);
+
   _commandBuffersReset->endCommands();
   _resetFrames = true;
 }

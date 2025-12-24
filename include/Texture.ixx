@@ -136,8 +136,6 @@ class ImageViewHolder final {
  protected:
   std::vector<std::shared_ptr<ImageView>> _imageViews;
   std::function<int()> _index;
-  bool _reset = true;
-
  public:
   ImageViewHolder(std::vector<std::shared_ptr<ImageView>> imageViews, std::function<int()> index) noexcept;
   ImageViewHolder(const ImageViewHolder&) = delete;
@@ -145,8 +143,7 @@ class ImageViewHolder final {
   ImageViewHolder(ImageViewHolder&&) = delete;
   ImageViewHolder& operator=(ImageViewHolder&&) = delete;
 
-  void setReset(bool reset) noexcept;
-  bool getReset() const noexcept;
+  void setImageViews(std::vector<std::shared_ptr<ImageView>> imageViews);
   const ImageView& getImageView() const noexcept;
   std::function<int()> getIndexFunction() const noexcept;
   int getIndex() const noexcept;

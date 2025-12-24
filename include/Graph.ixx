@@ -30,7 +30,10 @@ class GraphStorage final {
   void add(std::string_view name, std::unique_ptr<ImageViewHolder> imageViewHolder) noexcept;
   // not const because will do std::move
   void add(std::string_view name, std::vector<std::unique_ptr<Buffer>>& buffers) noexcept;
-  void reset(glm::ivec2 resolution, const CommandBuffer& commandBuffer) noexcept;
+  void reset(
+             std::vector<std::shared_ptr<ImageView>> oldSwapchain,
+             std::vector<std::shared_ptr<ImageView>> newSwapchain,
+             const CommandBuffer& commandBuffer) noexcept;
   std::string find(const std::vector<std::shared_ptr<ImageView>>& imageViews) noexcept;
   const ImageViewHolder& getImageViewHolder(std::string_view name) const noexcept;
   // NVRO

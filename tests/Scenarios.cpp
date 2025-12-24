@@ -491,14 +491,24 @@ TEST(ScenarioTest, GraphReset) {
               nullptr);
   }
 
+  // the most important here is the resolution
+  std::vector<std::shared_ptr<RenderGraph::ImageView>> swapchainNewImages;
+  for (int i = 0; i < swapchainOldImages.size(); i++) {
+    auto swapchainImage = std::make_unique<RenderGraph::Image>(allocator);
+    swapchainImage->createImage(VK_FORMAT_R32G32B32A32_UINT, {720, 480}, 1, 1, VK_IMAGE_ASPECT_COLOR_BIT,
+                                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+    auto swapchainImageView = std::make_shared<RenderGraph::ImageView>(std::move(swapchainImage), device);
+    swapchainImageView->createImageView(VK_IMAGE_VIEW_TYPE_2D, 0, 0);
+    swapchainNewImages.push_back(swapchainImageView);
+  }
   commandBuffer[graph.getFrameInFlight()].beginCommands();
-  graph.getGraphStorage().reset({720, 480}, commandBuffer[graph.getFrameInFlight()]);
-  // we don't resize swapchain here, just graph storage
+  graph.getGraphStorage().reset(swapchain.getImageViews(), swapchainNewImages, commandBuffer[graph.getFrameInFlight()]);
+  // swapchain is resized differently but resized anyway
   for (int i = 0; i < swapchainOldImages.size(); i++) {
     EXPECT_EQ(graph.getGraphStorage().getImageViewHolder("Swapchain").getImageViews()[i]->getImage().getResolution().x,
-              1920);
+              720);
     EXPECT_EQ(graph.getGraphStorage().getImageViewHolder("Swapchain").getImageViews()[i]->getImage().getResolution().y,
-              1080);
+              480);
   }
 
   for (int i = 0; i < framesInFlight; i++) {
