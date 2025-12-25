@@ -31,7 +31,16 @@ void GraphStorage::reset(std::vector<std::shared_ptr<ImageView>> oldSwapchain,
           image.destroy();
           image.createImage(image.getFormat(), resolution, image.getMipMapNumber(), image.getLayerNumber(),
                             image.getAspectMask(), image.getUsageFlags());
-          image.changeLayout(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_NONE, VK_ACCESS_NONE,
+
+          // attachments are used in beginRendering, to avoid WAW hazard we set access mask to WRITE
+          // potentially this won't work for storage images if there is no rendering pass before usage
+          // so READ is needed as well
+          auto dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT;
+          if (image.getAspectMask() & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) {
+            dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+          }
+
+          image.changeLayout(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_NONE, dstAccessMask,
                              commandBuffer);
           imageViews[i]->destroy();
           imageViews[i]->createImageView(imageViews[i]->getType(), imageViews[i]->getBaseMipMap(),
@@ -573,7 +582,8 @@ bool Graph::render() {
         if (_swapchain->getImage(swapchainIndex).getImageLayout() != VK_IMAGE_LAYOUT_GENERAL) {
           _swapchain->getImage(swapchainIndex)
               .changeLayout(_swapchain->getImage(swapchainIndex).getImageLayout(), VK_IMAGE_LAYOUT_GENERAL,
-                            VK_ACCESS_NONE, VK_ACCESS_NONE, *pass->getCommandBuffers()[_frameInFlight]);
+                            VK_ACCESS_NONE, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                            *pass->getCommandBuffers()[_frameInFlight]);
         }
 
         return _threadPool->submit([this, pass, commandBuffer]() {
