@@ -582,7 +582,8 @@ bool Graph::render() {
         if (_swapchain->getImage(swapchainIndex).getImageLayout() != VK_IMAGE_LAYOUT_GENERAL) {
           _swapchain->getImage(swapchainIndex)
               .changeLayout(_swapchain->getImage(swapchainIndex).getImageLayout(), VK_IMAGE_LAYOUT_GENERAL,
-                            VK_ACCESS_NONE, VK_ACCESS_NONE, *pass->getCommandBuffers()[_frameInFlight]);
+                            VK_ACCESS_NONE, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                            *pass->getCommandBuffers()[_frameInFlight]);
         }
 
         return _threadPool->submit([this, pass, commandBuffer]() {
