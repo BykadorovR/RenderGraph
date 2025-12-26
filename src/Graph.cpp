@@ -300,7 +300,9 @@ void Graph::initialize() noexcept {
 
 GraphStorage& Graph::getGraphStorage() const noexcept { return *_graphStorage; }
 
-std::map<std::string, glm::dvec2> Graph::getTimestamps() const noexcept { return _timestamps->getTimestamps(); }
+std::unordered_map<std::string, glm::dvec2> Graph::getTimestamps() const noexcept {
+  return _timestamps->getTimestamps();
+}
 
 int Graph::getFrameInFlight() const noexcept { return _frameInFlight; }
 
