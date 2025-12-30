@@ -83,11 +83,16 @@ void PipelineGraphic::setColorBlendOp(VkBlendOp colorBlendOp) noexcept {
 }
 
 void PipelineGraphic::setTesselation(int patchControlPoints) noexcept {
-  _tessellationState = VkPipelineTessellationStateCreateInfo{
-      .sType = VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO,
-      .pNext = nullptr,
-      .flags = 0,
-      .patchControlPoints = static_cast<uint32_t>(patchControlPoints)};
+  // according to specification: patchControlPoints must be greater than zero and less than or equal to
+  // VkPhysicalDeviceLimits::maxTessellationPatchSize
+  if (patchControlPoints == 0)
+    _tessellationState = std::nullopt;
+  else
+    _tessellationState = VkPipelineTessellationStateCreateInfo{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO,
+        .pNext = nullptr,
+        .flags = 0,
+        .patchControlPoints = static_cast<uint32_t>(patchControlPoints)};
 }
 
 void PipelineGraphic::setColorAttachments(const std::vector<VkFormat>& colorAttachments) noexcept {
@@ -134,7 +139,9 @@ const std::vector<std::pair<std::string, DescriptorSetLayout*>>& Pipeline::getDe
   return _descriptorSetLayout;
 }
 
-const std::map<std::string, VkPushConstantRange>& Pipeline::getPushConstants() const noexcept { return _pushConstants; }
+const std::unordered_map<std::string, VkPushConstantRange>& Pipeline::getPushConstants() const noexcept {
+  return _pushConstants;
+}
 
 const VkPipeline& Pipeline::getPipeline() const noexcept { return _pipeline; }
 
@@ -148,7 +155,7 @@ Pipeline::~Pipeline() {
 void Pipeline::createGraphic(const PipelineGraphic& pipelineGraphic,
                              const std::vector<VkPipelineShaderStageCreateInfo>& shaderStages,
                              std::vector<std::pair<std::string, DescriptorSetLayout*>>& descriptorSetLayout,
-                             const std::map<std::string, VkPushConstantRange>& pushConstants,
+                             const std::unordered_map<std::string, VkPushConstantRange>& pushConstants,
                              const VkPipelineVertexInputStateCreateInfo& vertexInputInfo) {
   _descriptorSetLayout = descriptorSetLayout;
   _pushConstants = pushConstants;
@@ -174,7 +181,7 @@ void Pipeline::createGraphic(const PipelineGraphic& pipelineGraphic,
     throw std::runtime_error("failed to create pipeline layout!");
   }
 
-  // create pipeline  
+  // create pipeline
   VkPipelineRenderingCreateInfo renderingInfo = {};
   renderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
   auto colorAttachments = pipelineGraphic.getColorAttachments();
@@ -206,8 +213,7 @@ void Pipeline::createGraphic(const PipelineGraphic& pipelineGraphic,
                                             .basePipelineHandle = nullptr};
   if (pipelineGraphic.getTessellationState())
     pipelineInfo.pTessellationState = &pipelineGraphic.getTessellationState().value();
-  auto status = vkCreateGraphicsPipelines(_device->getLogicalDevice(), nullptr, 1, &pipelineInfo, nullptr,
-                                          &_pipeline);
+  auto status = vkCreateGraphicsPipelines(_device->getLogicalDevice(), nullptr, 1, &pipelineInfo, nullptr, &_pipeline);
   if (status != VK_SUCCESS) {
     throw std::runtime_error("failed to create graphics pipeline!");
   }
@@ -215,7 +221,7 @@ void Pipeline::createGraphic(const PipelineGraphic& pipelineGraphic,
 
 void Pipeline::createCompute(const VkPipelineShaderStageCreateInfo& shaderStage,
                              std::vector<std::pair<std::string, DescriptorSetLayout*>>& descriptorSetLayout,
-                             const std::map<std::string, VkPushConstantRange>& pushConstants) {
+                             const std::unordered_map<std::string, VkPushConstantRange>& pushConstants) {
   _descriptorSetLayout = descriptorSetLayout;
   _pushConstants = pushConstants;
 

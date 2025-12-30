@@ -4,7 +4,7 @@ import DescriptorBuffer;
 import Device;
 import <volk.h>;
 import <vector>;
-import <map>;
+import <unordered_map>;
 import <string>;
 import <optional>;
 import <ranges>;
@@ -62,7 +62,7 @@ class Pipeline final {
  protected:
   const Device* _device;
   std::vector<std::pair<std::string, DescriptorSetLayout*>> _descriptorSetLayout;
-  std::map<std::string, VkPushConstantRange> _pushConstants;
+  std::unordered_map<std::string, VkPushConstantRange> _pushConstants;
   VkPipeline _pipeline;
   VkPipelineLayout _pipelineLayout;
 
@@ -75,15 +75,15 @@ class Pipeline final {
 
   void createCompute(const VkPipelineShaderStageCreateInfo& shaderStage,
                      std::vector < std::pair<std::string, DescriptorSetLayout*>> & descriptorSetLayout,
-                     const std::map<std::string, VkPushConstantRange>& pushConstants);
+                     const std::unordered_map<std::string, VkPushConstantRange>& pushConstants);
   void createGraphic(const PipelineGraphic& pipelineGraphic,
                      const std::vector<VkPipelineShaderStageCreateInfo>& shaderStages,
                      std::vector<std::pair<std::string, DescriptorSetLayout*>>& descriptorSetLayout,
-                     const std::map<std::string, VkPushConstantRange>& pushConstants,
+                     const std::unordered_map<std::string, VkPushConstantRange>& pushConstants,
                      const VkPipelineVertexInputStateCreateInfo& vertexInputInfo);
 
   const std::vector<std::pair<std::string, DescriptorSetLayout*>>& getDescriptorSetLayout() const noexcept;
-  const std::map<std::string, VkPushConstantRange>& getPushConstants() const noexcept;
+  const std::unordered_map<std::string, VkPushConstantRange>& getPushConstants() const noexcept;
   const VkPipeline& getPipeline() const noexcept;
   const VkPipelineLayout& getPipelineLayout() const noexcept;
   ~Pipeline();

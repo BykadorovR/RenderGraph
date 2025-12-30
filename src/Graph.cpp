@@ -175,45 +175,42 @@ void GraphPassGraphic::execute(int currentFrame, const CommandBuffer& commandBuf
     return info;
   };
 
-  for (auto&& graphElement : _graphElements) {
-    std::vector<VkRenderingAttachmentInfo> colorAttachments = _colorTargets |
-                                                              std::views::transform(createColorAttachment) |
-                                                              std::ranges::to<std::vector>();
+  std::vector<VkRenderingAttachmentInfo> colorAttachments = _colorTargets |
+                                                            std::views::transform(createColorAttachment) |
+                                                            std::ranges::to<std::vector>();
 
-    std::optional<VkRenderingAttachmentInfo> depthAttachment = std::nullopt;
-    if (_depthTarget.has_value()) {
-      auto& target = _depthTarget.value();
-      auto& imageViewHolder = _graphStorage->getImageViewHolder(target);
+  std::optional<VkRenderingAttachmentInfo> depthAttachment = std::nullopt;
+  if (_depthTarget.has_value()) {
+    auto& target = _depthTarget.value();
+    auto& imageViewHolder = _graphStorage->getImageViewHolder(target);
 
-      depthAttachment = VkRenderingAttachmentInfo{
-          .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-          .imageView = imageViewHolder.getImageView().getImageView(),
-          .imageLayout = imageViewHolder.getImageView().getImage().getImageLayout(),
-          .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
-          .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
-      if (_clearTarget.contains(target) && _clearTarget.at(target)) {
-        depthAttachment->loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        depthAttachment->clearValue.depthStencil = {1.f, 0};
-      }
+    depthAttachment = VkRenderingAttachmentInfo{
+        .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+        .imageView = imageViewHolder.getImageView().getImageView(),
+        .imageLayout = imageViewHolder.getImageView().getImage().getImageLayout(),
+        .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
+        .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
+    if (_clearTarget.contains(target) && _clearTarget.at(target)) {
+      depthAttachment->loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+      depthAttachment->clearValue.depthStencil = {1.f, 0};
     }
-
-    VkRenderingInfo renderingInfo = {};
-    renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-    renderingInfo.renderArea.offset = {0, 0};
-    // take image resolution, it's safe
-    auto resolution =
-        _graphStorage->getImageViewHolder(_colorTargets.front()).getImageView().getImage().getResolution();
-    renderingInfo.renderArea.extent = VkExtent2D(resolution.x, resolution.y);
-    renderingInfo.layerCount = 1;
-    renderingInfo.colorAttachmentCount = colorAttachments.size();
-    renderingInfo.pColorAttachments = colorAttachments.data();
-    if (depthAttachment.has_value()) renderingInfo.pDepthAttachment = &depthAttachment.value();
-
-    graphElement->update(currentFrame, commandBuffer);
-    vkCmdBeginRendering(commandBuffer.getCommandBuffer(), &renderingInfo);
-    graphElement->draw(currentFrame, commandBuffer);
-    vkCmdEndRendering(commandBuffer.getCommandBuffer());
   }
+
+  VkRenderingInfo renderingInfo = {};
+  renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+  renderingInfo.renderArea.offset = {0, 0};
+  // take image resolution, it's safe
+  auto resolution = _graphStorage->getImageViewHolder(_colorTargets.front()).getImageView().getImage().getResolution();
+  renderingInfo.renderArea.extent = VkExtent2D(resolution.x, resolution.y);
+  renderingInfo.layerCount = 1;
+  renderingInfo.colorAttachmentCount = colorAttachments.size();
+  renderingInfo.pColorAttachments = colorAttachments.data();
+  if (depthAttachment.has_value()) renderingInfo.pDepthAttachment = &depthAttachment.value();
+
+  for (auto&& graphElement : _graphElements) graphElement->update(currentFrame, commandBuffer);
+  vkCmdBeginRendering(commandBuffer.getCommandBuffer(), &renderingInfo);
+  for (auto&& graphElement : _graphElements) graphElement->draw(currentFrame, commandBuffer);
+  vkCmdEndRendering(commandBuffer.getCommandBuffer());
 }
 
 GraphPassCompute::GraphPassCompute(std::string_view name,
@@ -300,7 +297,9 @@ void Graph::initialize() noexcept {
 
 GraphStorage& Graph::getGraphStorage() const noexcept { return *_graphStorage; }
 
-std::map<std::string, glm::dvec2> Graph::getTimestamps() const noexcept { return _timestamps->getTimestamps(); }
+std::unordered_map<std::string, glm::dvec2> Graph::getTimestamps() const noexcept {
+  return _timestamps->getTimestamps();
+}
 
 int Graph::getFrameInFlight() const noexcept { return _frameInFlight; }
 

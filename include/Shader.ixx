@@ -1,7 +1,7 @@
 export module Shader;
 import Device;
 import <volk.h>;
-import <map>;
+import <unordered_map>;
 import <vector>;
 import <memory>;
 import <spirv_reflect.h>;
@@ -10,8 +10,8 @@ export namespace RenderGraph {
 class Shader final {
  private:
   const Device* _device;
-  std::map<VkShaderStageFlagBits, VkPipelineShaderStageCreateInfo> _shaders;
-  std::map<VkShaderStageFlagBits, const VkSpecializationInfo*> _specializationInfo;
+  std::unordered_map<VkShaderStageFlagBits, VkPipelineShaderStageCreateInfo> _shaders;
+  std::unordered_map<VkShaderStageFlagBits, const VkSpecializationInfo*> _specializationInfo;
   std::vector<VkDescriptorSetLayoutBinding> _descriptorSetLayoutBindings;
   std::vector<VkVertexInputAttributeDescription> _vertexInputAttributes;
   std::vector<VkVertexInputBindingDescription> _bindingDescription;
