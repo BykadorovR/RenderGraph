@@ -83,11 +83,16 @@ void PipelineGraphic::setColorBlendOp(VkBlendOp colorBlendOp) noexcept {
 }
 
 void PipelineGraphic::setTesselation(int patchControlPoints) noexcept {
-  _tessellationState = VkPipelineTessellationStateCreateInfo{
-      .sType = VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO,
-      .pNext = nullptr,
-      .flags = 0,
-      .patchControlPoints = static_cast<uint32_t>(patchControlPoints)};
+  // according to specification: patchControlPoints must be greater than zero and less than or equal to
+  // VkPhysicalDeviceLimits::maxTessellationPatchSize
+  if (patchControlPoints == 0)
+    _tessellationState = std::nullopt;
+  else
+    _tessellationState = VkPipelineTessellationStateCreateInfo{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO,
+        .pNext = nullptr,
+        .flags = 0,
+        .patchControlPoints = static_cast<uint32_t>(patchControlPoints)};
 }
 
 void PipelineGraphic::setColorAttachments(const std::vector<VkFormat>& colorAttachments) noexcept {
