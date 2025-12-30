@@ -57,7 +57,7 @@ void Timestamps::fetchTimestamps() {
   _timestampRanges.clear();
 }
 
-std::map<std::string, glm::dvec2> Timestamps::getTimestamps() {
+std::unordered_map<std::string, glm::dvec2> Timestamps::getTimestamps() {
   std::unique_lock<std::mutex> lock(_mutexRequest);
   return _timestampResults;
 }

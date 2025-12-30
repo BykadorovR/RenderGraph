@@ -18,8 +18,8 @@ import <map>;
 export namespace RenderGraph {
 class GraphStorage final {
  private:
-  std::map<std::string, std::unique_ptr<ImageViewHolder>> _imageViewHolders;
-  std::map<std::string, std::vector<std::unique_ptr<Buffer>>> _buffers;
+  std::unordered_map<std::string, std::unique_ptr<ImageViewHolder>> _imageViewHolders;
+  std::unordered_map<std::string, std::vector<std::unique_ptr<Buffer>>> _buffers;
 
  public:
   GraphStorage() = default;
@@ -91,7 +91,7 @@ class GraphPassGraphic final : public GraphPass {
   std::vector<std::string> _colorTargets, _textureInputs;
   std::optional<std::string> _depthTarget;
 
-  std::map<std::string, bool> _clearTarget;
+  std::unordered_map<std::string, bool> _clearTarget;
   std::unique_ptr<PipelineGraphic> _pipelineGraphic;
   const Device* _device;
 
@@ -179,7 +179,7 @@ class Graph final {
     GraphPass* previousPass = nullptr;
   };
 
-  std::map<GraphPass*, Cache> _cache;
+  std::unordered_map<GraphPass*, Cache> _cache;
 
  public:
   Graph(int threadsNumber, int maxFramesInFlight, Swapchain& swapchain, const Window& window, const Device& device) noexcept;
@@ -194,7 +194,7 @@ class Graph final {
   GraphPassGraphic* getPassGraphic(std::string_view name) const noexcept;
   GraphPassCompute* getPassCompute(std::string_view name) const noexcept;
   GraphStorage& getGraphStorage() const noexcept;
-  std::map<std::string, glm::dvec2> getTimestamps() const noexcept;
+  std::unordered_map<std::string, glm::dvec2> getTimestamps() const noexcept;
   int getFrameInFlight() const noexcept;
 
   void calculate();
