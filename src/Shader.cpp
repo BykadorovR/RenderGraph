@@ -16,6 +16,41 @@ VkShaderModule Shader::_createShaderModule(const std::vector<char>& code) {
   return shaderModule;
 }
 
+std::vector<VkVertexInputAttributeDescription>
+Shader::_calculateAttributeDescription(const SpvReflectInterfaceVariable* v, int binding, uint32_t& offset) {
+  uint32_t loc = v->location;
+  VkFormat fmt = static_cast<VkFormat>(v->format);
+
+  auto elements = v->numeric.matrix.column_count * v->numeric.matrix.row_count;
+  elements = std::max(elements, v->numeric.vector.component_count);
+  elements = std::max(elements, 1u);
+
+  // split attributes larger than vec4
+  std::vector<int> components;
+  while ((elements / 4) > 0) {
+    components.push_back(4);
+    elements -= 4;
+  }
+  if (elements) components.push_back(elements % 4);
+
+  std::vector<VkVertexInputAttributeDescription> attributeDescriptions;
+  for (auto component : components) {
+    auto size = (v->numeric.scalar.width / 8) * component;
+
+    VkVertexInputAttributeDescription attributes{};
+    attributes.location = loc;
+    attributes.format = fmt;
+    attributes.binding = binding;
+    attributes.offset = offset;
+    attributeDescriptions.push_back(attributes);
+
+    loc++;
+    offset += size;
+  }
+
+  return attributeDescriptions;
+}
+
 Shader::Shader(const Device& device) noexcept : _device(&device) {}
 
 void Shader::add(const std::vector<char>& shaderCode, const VkSpecializationInfo* info) {
@@ -57,47 +92,16 @@ void Shader::add(const std::vector<char>& shaderCode, const VkSpecializationInfo
   if (module.shader_stage == SPV_REFLECT_SHADER_STAGE_VERTEX_BIT) {
     count = 0;
     spvReflectEnumerateInputVariables(&module, &count, nullptr);
-    std::vector<SpvReflectInterfaceVariable*> vars(count);
-    spvReflectEnumerateInputVariables(&module, &count, vars.data());
-    
-    std::sort(vars.begin(), vars.end(),
+    _variables.resize(count);
+    spvReflectEnumerateInputVariables(&module, &count, _variables.data());
+
+    std::sort(_variables.begin(), _variables.end(),
               [&](const SpvReflectInterfaceVariable* left, const SpvReflectInterfaceVariable* right) {
                 return left->location < right->location;
               });
-    
-    for (auto v : vars) {        
-      if (v->decoration_flags & SPV_REFLECT_DECORATION_BUILT_IN) continue;  // skip builtins      
-      uint32_t loc = v->location;
-      VkFormat fmt = static_cast<VkFormat>(v->format);
-
-      auto elements = v->numeric.matrix.column_count * v->numeric.matrix.row_count;
-      elements = std::max(elements, v->numeric.vector.component_count);
-      elements = std::max(elements, 1u);
-
-      // split attributes larger than vec4
-      std::vector<int> components;
-      while ((elements / 4) > 0) {
-        components.push_back(4);
-        elements -= 4;
-      }
-      if (elements) components.push_back(elements % 4);
-      
-      for (auto component : components) {
-        auto size = (v->numeric.scalar.width / 8) * component;
-
-        VkVertexInputAttributeDescription attributes{};
-        attributes.location = loc;
-        attributes.format = fmt;
-        attributes.binding = 0;
-        attributes.offset = _attributesSize;
-        _vertexInputAttributes.push_back(attributes);
-        
-        loc++;
-        _attributesSize += size;
-      }
-    }    
   }
-  spvReflectDestroyShaderModule(&module);
+
+  _modules.push_back(module);
 }
 
 std::vector<VkPipelineShaderStageCreateInfo> Shader::getShaderStageInfo() const noexcept {
@@ -110,10 +114,17 @@ const std::vector<VkDescriptorSetLayoutBinding>& Shader::getDescriptorSetLayoutB
 
 const VkPipelineVertexInputStateCreateInfo* Shader::getVertexInputInfo() {
   if (_vertexInputInfo == nullptr) {
+    uint32_t attributesSize = 0;
+    for (auto v : _variables) {
+      if (v->decoration_flags & SPV_REFLECT_DECORATION_BUILT_IN) continue;  // skip builtins
+      auto attributes = _calculateAttributeDescription(v, 0, attributesSize);
+      _vertexInputAttributes.insert(_vertexInputAttributes.end(), attributes.begin(), attributes.end());
+    }
+
     if (_vertexInputAttributes.size() > 0) {
       _bindingDescription = {{
           .binding = 0,
-          .stride = _attributesSize,
+          .stride = static_cast<uint32_t>(attributesSize),
           .inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
       }};
     }
@@ -128,23 +139,23 @@ const VkPipelineVertexInputStateCreateInfo* Shader::getVertexInputInfo() {
 }
 
 const VkPipelineVertexInputStateCreateInfo* Shader::getVertexInputInfo(
-    std::vector<std::pair<VkVertexInputRate, int>> typeSize) {
+    std::vector<std::pair<VkVertexInputRate, int>> typeElements) {
   if (_vertexInputInfo == nullptr) {
-    _bindingDescription.resize(typeSize.size());
-    int index = 0;
-    for (int binding = 0; binding < typeSize.size(); binding++) {
-      auto [type, size] = typeSize[binding];
-      size += _vertexInputAttributes[index].offset;
-
-      while (index < _vertexInputAttributes.size() && _vertexInputAttributes[index].offset < size) {
-        _vertexInputAttributes[index].binding = binding;
-        index++;        
+    _bindingDescription.resize(typeElements.size());
+    int locationOffset = 0;
+    for (int binding = 0; binding < typeElements.size(); binding++) {
+      auto [type, number] = typeElements[binding];
+      uint32_t offset = 0;
+      for (int location = locationOffset; location < locationOffset + number; location++) {
+        auto v = _variables[location];
+        if (v->decoration_flags & SPV_REFLECT_DECORATION_BUILT_IN) continue;  // skip builtins
+        auto attributes = _calculateAttributeDescription(v, binding, offset);
+        _vertexInputAttributes.insert(_vertexInputAttributes.end(), attributes.begin(), attributes.end());
       }
 
-      uint32_t stride = _attributesSize;
-      if (index < _vertexInputAttributes.size()) stride = _vertexInputAttributes[index].offset;
+      locationOffset += number;
       _bindingDescription[binding] = VkVertexInputBindingDescription{.binding = static_cast<uint32_t>(binding),
-                                                                     .stride = stride,
+                                                                     .stride = static_cast<uint32_t>(offset),
                                                                      .inputRate = type};
     }
 
@@ -158,4 +169,5 @@ const VkPipelineVertexInputStateCreateInfo* Shader::getVertexInputInfo(
 
 Shader::~Shader() {
   for (auto&& [type, shader] : _shaders) vkDestroyShaderModule(_device->getLogicalDevice(), shader.module, nullptr);
+  for (auto& module : _modules) spvReflectDestroyShaderModule(&module);
 }
