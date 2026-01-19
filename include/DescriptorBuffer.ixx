@@ -8,6 +8,13 @@ import <map>;
 import <volk.h>;
 import <memory>;
 
+// Forward declarations for test classes, not visible outside this module
+class DescriptorBufferTest_Create_Test;
+class DescriptorBufferTest_BigDescriptorCount_Test;
+class DescriptorBufferTest_DifferentBinning_Test;
+class DescriptorBufferTest_DifferentSets_Test;
+class DescriptorBufferTest_Update_Test;
+
 export namespace RenderGraph {
 class DescriptorSetLayout final {
  private:
@@ -30,6 +37,12 @@ class DescriptorSetLayout final {
 };
 
 class DescriptorBuffer final {
+ private:
+  friend class ::DescriptorBufferTest_Create_Test;
+  friend class ::DescriptorBufferTest_BigDescriptorCount_Test;
+  friend class ::DescriptorBufferTest_DifferentBinning_Test;
+  friend class ::DescriptorBufferTest_DifferentSets_Test;
+  friend class ::DescriptorBufferTest_Update_Test;
  private:
   const Device* _device;
   const MemoryAllocator* _memoryAllocator;

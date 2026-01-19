@@ -42,14 +42,14 @@ DescriptorBuffer::DescriptorBuffer(const std::vector<const DescriptorSetLayout*>
   _memoryAllocator = &memoryAllocator;
   _device = &device;
   _descriptorLayouts = layouts;
-  
+
   // one buffer for the entire shader, but separate offsets for the sets inside the buffer
   _offsets.resize(layouts.size());
   _layoutSize.resize(layouts.size());
-  for (int id = 0; id < layouts.size(); id++) {    
+  for (int id = 0; id < layouts.size(); id++) {
     auto&& layout = layouts[id];
     for (int i = 0; i < layout->getLayoutInfo().size(); i++) {
-      for (int j = 0; j < layout->getLayoutInfo()[i].descriptorCount; j++) {        
+      for (int j = 0; j < layout->getLayoutInfo()[i].descriptorCount; j++) {
         VkDeviceSize offset;
         vkGetDescriptorSetLayoutBindingOffsetEXT(device.getLogicalDevice(), layout->getDescriptorSetLayout(), i,
                                                  &offset);
@@ -65,35 +65,36 @@ DescriptorBuffer::DescriptorBuffer(const std::vector<const DescriptorSetLayout*>
 
 int DescriptorBuffer::_getDescriptorSize(VkDescriptorType descriptorType) {
   auto bufferProperties = VkPhysicalDeviceDescriptorBufferPropertiesEXT{
-      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_PROPERTIES_EXT};    
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_PROPERTIES_EXT};
   _device->getFeatureProperties(bufferProperties);
-    switch (descriptorType) {
+  switch (descriptorType) {
     case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
       return bufferProperties.combinedImageSamplerDescriptorSize;
     case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
       return bufferProperties.sampledImageDescriptorSize;
     case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
-      return bufferProperties.storageImageDescriptorSize;    
+      return bufferProperties.storageImageDescriptorSize;
     case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
       return bufferProperties.uniformBufferDescriptorSize;
     case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
-      return bufferProperties.storageBufferDescriptorSize;    
+      return bufferProperties.storageBufferDescriptorSize;
     default:
       throw std::runtime_error("Unsupported descriptor type for descriptor buffer");
-    }
+  }
 }
 
-void DescriptorBuffer::_add(VkDescriptorGetInfoEXT info) {  
-  auto setSize = std::reduce(_layoutSize.begin(), _layoutSize.end());  
+void DescriptorBuffer::_add(VkDescriptorGetInfoEXT info) {
+  auto setSize = std::reduce(_layoutSize.begin(), _layoutSize.end());
   // allign for the whole set (for frames in flight)
-  if (_set == 0) {    
+  if (_set == 0) {
     _descriptors.resize(setSize * (_frame + 1));
   }
 
   auto descSize = _getDescriptorSize(info.type);
   std::vector<uint8_t> descriptorCPU(descSize);
   vkGetDescriptorEXT(_device->getLogicalDevice(), &info, descSize, descriptorCPU.data());
-  std::copy(descriptorCPU.begin(), descriptorCPU.end(), _descriptors.begin() + setSize * _frame + _offsets[_set][_binning]);
+  std::copy(descriptorCPU.begin(), descriptorCPU.end(),
+            _descriptors.begin() + setSize * _frame + _set * _layoutSize[_set] + _offsets[_set][_binning]);
 
   // calculate next frame, set, binning
   _binning++;
@@ -175,8 +176,8 @@ void DescriptorBuffer::bind(int frameInFlight,
   // we use 1 buffer for the whole shader
   vkCmdBindDescriptorBuffersEXT(commandBuffer.getCommandBuffer(), 1, &bufferBinding);
   // but specify offsets for every set
-  vkCmdSetDescriptorBufferOffsetsEXT(commandBuffer.getCommandBuffer(), bindPoint, pipelineLayout,
-                                     0, _descriptorLayouts.size(), bufIndex.data(), offset.data());
+  vkCmdSetDescriptorBufferOffsetsEXT(commandBuffer.getCommandBuffer(), bindPoint, pipelineLayout, 0,
+                                     _descriptorLayouts.size(), bufIndex.data(), offset.data());
 }
 
 DescriptorPool::DescriptorPool(DescriptorPoolSize poolSize, const Device& device) {
@@ -282,15 +283,10 @@ DescriptorHelper::DescriptorHelper(const std::vector<const DescriptorSetLayout*>
   }
 }
 
-void DescriptorHelper::add(std::vector<VkDescriptorImageInfo> images, VkDescriptorType type) {  
-}
+void DescriptorHelper::add(std::vector<VkDescriptorImageInfo> images, VkDescriptorType type) {}
 
-void DescriptorHelper::add(std::vector<Buffer> buffers, VkDescriptorType type) {
+void DescriptorHelper::add(std::vector<Buffer> buffers, VkDescriptorType type) {}
 
-}
+void DescriptorHelper::initialize() {}
 
-void DescriptorHelper::initialize() { }
-
-void DescriptorHelper::bind(int frame, const CommandBuffer& commandBuffer, const VkPipelineLayout& layout) {
-
-}
+void DescriptorHelper::bind(int frame, const CommandBuffer& commandBuffer, const VkPipelineLayout& layout) {}
