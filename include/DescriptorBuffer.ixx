@@ -67,6 +67,7 @@ class DescriptorBuffer final {
   void add(VkDescriptorImageInfo info);
   void add(VkDescriptorAddressInfoEXT info);
   void initialize(const CommandBuffer& commandBuffer);
+  bool initialized();
   void bind(int frameInFlight, const VkPipelineLayout& pipelineLayout, const CommandBuffer& commandBuffer, VkPipelineBindPoint bindPoint);
 };
 

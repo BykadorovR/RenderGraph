@@ -151,6 +151,8 @@ void DescriptorBuffer::add(VkDescriptorAddressInfoEXT info) {
   _add(getInfo);
 }
 
+bool DescriptorBuffer::initialized() { return _descriptorBuffer != nullptr; }
+
 void DescriptorBuffer::initialize(const CommandBuffer& commandBuffer) {
   if (_descriptorBuffer != nullptr) throw std::runtime_error("Descriptor buffer is already initialized");
   // first need to allocate the buffer itself
