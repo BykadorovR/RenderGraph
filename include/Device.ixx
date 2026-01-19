@@ -8,9 +8,7 @@ export namespace RenderGraph {
 class Device final {
  private:
   vkb::Device _device;
-  VkPhysicalDeviceProperties _deviceProperties;
-  VkPhysicalDeviceDescriptorBufferPropertiesEXT _descriptorBufferProperties;
-  std::vector<VkQueueFamilyProperties> _queueFamilyProperties;
+  std::vector<VkQueueFamilyProperties> _queueFamilyProperties;  
 
  public:
   Device(const Surface& surface, const Instance& instance);
@@ -19,15 +17,19 @@ class Device final {
   Device(Device&&) = delete;
   Device& operator=(Device&&) = delete;
 
-  bool isFormatFeatureSupported(VkFormat format, VkImageTiling tiling, VkFormatFeatureFlagBits featureFlagBit) const;
+  bool isFormatFeatureSupported(VkFormat format, VkImageTiling tiling, VkFormatFeatureFlagBits featureFlagBit) const;  
   const VkDevice getLogicalDevice() const noexcept;
   const VkPhysicalDevice getPhysicalDevice() const noexcept;
   const VkQueue getQueue(vkb::QueueType type) const;
   int getQueueIndex(vkb::QueueType type) const;
 
   const vkb::Device& getDevice() const noexcept;
-  const VkPhysicalDeviceProperties& getDeviceProperties() const noexcept;
-  const VkPhysicalDeviceDescriptorBufferPropertiesEXT& getDescriptorBufferProperties() const noexcept;
+  bool isExtensionSupported(std::string name) const;
+  void getFeatureProperties(auto& property) const noexcept {
+    VkPhysicalDeviceProperties2 properties2{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+                                            .pNext = &property};
+    vkGetPhysicalDeviceProperties2(getPhysicalDevice(), &properties2);
+  }
   const VkQueueFamilyProperties& getQueueFamilyProperties(vkb::QueueType type) const noexcept;
 
   ~Device();

@@ -295,7 +295,7 @@ void Sampler::createSampler(VkSamplerAddressMode mode, int mipMapLevels, int ani
                                   .addressModeW = mode,
                                   .mipLodBias = 0.0f,
                                   .anisotropyEnable = anisotropicSamples > 0 ? true : false,
-                                  .maxAnisotropy = std::min(_device->getDeviceProperties().limits.maxSamplerAnisotropy,
+                                  .maxAnisotropy = std::min(_device->getDevice().physical_device.properties.limits.maxSamplerAnisotropy,
                                                             static_cast<float>(anisotropicSamples)),
                                   .compareEnable = false,
                                   .minLod = 0.0f,

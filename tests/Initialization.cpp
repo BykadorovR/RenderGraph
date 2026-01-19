@@ -92,7 +92,7 @@ TEST(DeviceTest, DeviceProperties) {
   window.initialize();
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(surface, instance);
-  auto properties = device.getDeviceProperties();
+  auto properties = device.getDevice().physical_device.properties;
   EXPECT_GT(properties.apiVersion, 0);
 }
 

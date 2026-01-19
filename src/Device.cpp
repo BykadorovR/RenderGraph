@@ -1,7 +1,11 @@
 module Device;
+import <ranges>;
+import <algorithm>;
+
 using namespace RenderGraph;
 
 Device::Device(const Surface& surface, const Instance& instance) {
+  // Vulkan 1.0 features
   VkPhysicalDeviceFeatures deviceFeatures{
       .geometryShader = true,
       .tessellationShader = true,
@@ -9,6 +13,7 @@ Device::Device(const Surface& surface, const Instance& instance) {
       .samplerAnisotropy = true,
   };
 
+  // Vulkan 1.0+ features
   VkPhysicalDeviceDynamicRenderingFeatures dynamicRenderingFeature{
       .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES,
       .dynamicRendering = true};
@@ -30,18 +35,22 @@ Device::Device(const Surface& surface, const Instance& instance) {
   vkb::PhysicalDeviceSelector deviceSelector(instance.getInstance());
   deviceSelector.set_required_features(deviceFeatures);
   deviceSelector.allow_any_gpu_device_type(false);
-  // not part of Vulkan 1.3 core
-  deviceSelector.add_required_extension("VK_EXT_descriptor_buffer");
+  // not part of Vulkan 1.3 core  
+  deviceSelector.add_desired_extension("VK_EXT_descriptor_buffer");
   // VK_KHR_SWAPCHAIN_EXTENSION_NAME is added by default
-  auto deviceSelectorResult = deviceSelector.set_surface(surface.getSurface()).select();
+  deviceSelector.set_surface(surface.getSurface());
+  auto deviceSelectorResult = deviceSelector.select();
   if (!deviceSelectorResult) {
     throw std::runtime_error(deviceSelectorResult.error().message());
   }
-  auto devicePhysical = deviceSelectorResult.value();
+  auto devicePhysical = deviceSelectorResult.value();  
 
   vkb::DeviceBuilder builder{devicePhysical};
-  builder.add_pNext(&descriptorBufferFeatures);
-  builder.add_pNext(&dynamicRenderingFeature);
+  if (devicePhysical.is_extension_present("VK_EXT_descriptor_buffer"))
+    builder.add_pNext(&descriptorBufferFeatures);
+  if (devicePhysical.is_extension_present("VK_KHR_dynamic_rendering"))
+    builder.add_pNext(&dynamicRenderingFeature);
+  //rest should be available
   builder.add_pNext(&timelineFeatures);
   builder.add_pNext(&resetFeatures);
   builder.add_pNext(&bufferDeviceAddressFeatures);
@@ -51,14 +60,6 @@ Device::Device(const Surface& surface, const Instance& instance) {
   }
   _device = builderResult.value();
   volkLoadDevice(_device.device);
-
-  // request properties
-  _descriptorBufferProperties = VkPhysicalDeviceDescriptorBufferPropertiesEXT{
-      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_PROPERTIES_EXT};
-  VkPhysicalDeviceProperties2 properties2{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
-                                          .pNext = &_descriptorBufferProperties};
-  vkGetPhysicalDeviceProperties2(getPhysicalDevice(), &properties2);
-  _deviceProperties = properties2.properties;
 
   uint32_t queueFamilyCount = 0;
   vkGetPhysicalDeviceQueueFamilyProperties(getPhysicalDevice(), &queueFamilyCount, nullptr);
@@ -70,10 +71,8 @@ const VkQueueFamilyProperties& Device::getQueueFamilyProperties(vkb::QueueType t
   return _queueFamilyProperties[getQueueIndex(type)];
 }
 
-const VkPhysicalDeviceProperties& Device::getDeviceProperties() const noexcept { return _deviceProperties; }
-
-const VkPhysicalDeviceDescriptorBufferPropertiesEXT& Device::getDescriptorBufferProperties() const noexcept {
-  return _descriptorBufferProperties;
+bool Device::isExtensionSupported(std::string name) const {    
+  return _device.physical_device.is_extension_present(name.c_str());  
 }
 
 bool Device::isFormatFeatureSupported(VkFormat format,
