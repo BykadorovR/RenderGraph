@@ -1,7 +1,6 @@
 export module DescriptorBuffer;
 import Device;
 import Buffer;
-import Texture;
 import Allocator;
 import Command;
 import <vector>;
@@ -41,7 +40,7 @@ class DescriptorSetLayout final {
 
 class DescriptorHandler {
  public:
-  virtual void add(std::vector<Texture*> images) = 0;
+  virtual void add(std::vector<VkDescriptorImageInfo> imageInfos) = 0;
   virtual void add(std::vector<Buffer*> buffers) = 0;
   virtual void initialize(const CommandBuffer& commandBuffer) = 0;
   virtual void bind(int frameInFlight,
@@ -80,7 +79,7 @@ class DescriptorBuffer final : public DescriptorHandler {
   DescriptorBuffer(const std::vector<const DescriptorSetLayout*>& layouts,
                    const MemoryAllocator& memoryAllocator,
                    const Device& device);
-  void add(std::vector<Texture*> images) override;
+  void add(std::vector<VkDescriptorImageInfo> imageInfos) override;
   void add(std::vector<Buffer*> buffers) override;
   void initialize(const CommandBuffer& commandBuffer) override;
   void bind(int frameInFlight,
@@ -153,7 +152,7 @@ class DescriptorSet final : public DescriptorHandler {
   DescriptorSet(DescriptorSet&& other) = delete;
   DescriptorSet& operator=(DescriptorSet&& other) = delete;
 
-  void add(std::vector<Texture*> textures) override;
+  void add(std::vector<VkDescriptorImageInfo> imageInfos) override;
   void add(std::vector<Buffer*> buffers) override;
   void initialize(const CommandBuffer& commandBuffer) override;
   void bind(int frameInFlight,

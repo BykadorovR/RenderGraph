@@ -115,16 +115,12 @@ void DescriptorBuffer::_add(VkDescriptorGetInfoEXT info) {
   }
 }
 
-void DescriptorBuffer::add(std::vector<Texture*> textures) {
+void DescriptorBuffer::add(std::vector<VkDescriptorImageInfo> imageInfos) {
   if (_descriptorBuffer != nullptr) {
     throw std::runtime_error("Cannot add descriptors after initialization");
   }
 
-  for (auto&& texture : textures) {
-    auto info = VkDescriptorImageInfo{.sampler = texture->getSampler().getSampler(),
-                                      .imageView = texture->getImageView().getImageView(),
-                                      .imageLayout = texture->getImageView().getImage().getImageLayout()};
-
+  for (auto&& info : imageInfos) {
     VkDescriptorGetInfoEXT getInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT};
     getInfo.type = _descriptorLayouts[_set]->getLayoutInfo()[_binding.first].descriptorType;
     switch (getInfo.type) {
@@ -320,7 +316,7 @@ void DescriptorSet::add(std::vector<Buffer*> buffers) {
   _number++;
 }
 
-void DescriptorSet::add(std::vector<Texture*> textures) {
+void DescriptorSet::add(std::vector<VkDescriptorImageInfo> imageInfos) {
   if (_number == _bindingNumber) {
     _frame++;
     _number = 0;
@@ -329,13 +325,6 @@ void DescriptorSet::add(std::vector<Texture*> textures) {
   }
 
   auto index = _calculateDescriptorSetIndex();
-  std::vector<VkDescriptorImageInfo> imageInfos(textures.size());
-  for (int i = 0; i < textures.size(); i++) {
-    imageInfos[i] = VkDescriptorImageInfo{.sampler = textures[i]->getSampler().getSampler(),
-                                          .imageView = textures[i]->getImageView().getImageView(),
-                                          .imageLayout = textures[i]->getImageView().getImage().getImageLayout()};
-  }
-
   int imageKey = _imageInfo.size();
   _imageInfo.push_back(imageInfos);
   int key = _descriptorWrites[_frame].size();
