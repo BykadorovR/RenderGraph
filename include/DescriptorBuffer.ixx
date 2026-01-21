@@ -1,6 +1,7 @@
 export module DescriptorBuffer;
 import Device;
 import Buffer;
+import Texture;
 import Allocator;
 import Command;
 import <vector>;
@@ -14,6 +15,8 @@ class DescriptorBufferTest_BigDescriptorCount_Test;
 class DescriptorBufferTest_DifferentBinning_Test;
 class DescriptorBufferTest_DifferentSets_Test;
 class DescriptorBufferTest_Update_Test;
+class DescriptorSetTest_Create_Test;
+class DescriptorSetTest_Update_Test;
 
 export namespace RenderGraph {
 class DescriptorSetLayout final {
@@ -36,7 +39,19 @@ class DescriptorSetLayout final {
   ~DescriptorSetLayout();
 };
 
-class DescriptorBuffer final {
+class DescriptorHandler {
+ public:
+  virtual void add(std::vector<Texture*> images) = 0;
+  virtual void add(std::vector<Buffer*> buffers) = 0;
+  virtual void initialize(const CommandBuffer& commandBuffer) = 0;
+  virtual void bind(int frameInFlight,
+                    VkPipelineBindPoint bindPoint,
+                    const VkPipelineLayout& pipelineLayout,
+                    const CommandBuffer& commandBuffer) = 0;
+  virtual ~DescriptorHandler() = default;
+};
+
+class DescriptorBuffer final : public DescriptorHandler {
  private:
   friend class ::DescriptorBufferTest_Create_Test;
   friend class ::DescriptorBufferTest_BigDescriptorCount_Test;
@@ -52,7 +67,8 @@ class DescriptorBuffer final {
   std::vector<std::vector<VkDeviceSize>> _offsets;
   std::vector<VkDeviceSize> _layoutSize;
   std::vector<uint8_t> _descriptors;
-  int _binning = 0;
+  // binding and iterator inside it
+  std::pair<int, int> _binding = {0, 0};
   int _set = 0;
   int _frame = 0;
   int _getDescriptorSize(VkDescriptorType descriptorType);
@@ -64,11 +80,13 @@ class DescriptorBuffer final {
   DescriptorBuffer(const std::vector<const DescriptorSetLayout*>& layouts,
                    const MemoryAllocator& memoryAllocator,
                    const Device& device);
-  void add(VkDescriptorImageInfo info);
-  void add(VkDescriptorAddressInfoEXT info);
-  void initialize(const CommandBuffer& commandBuffer);
-  bool initialized();
-  void bind(int frameInFlight, const VkPipelineLayout& pipelineLayout, const CommandBuffer& commandBuffer, VkPipelineBindPoint bindPoint);
+  void add(std::vector<Texture*> images) override;
+  void add(std::vector<Buffer*> buffers) override;
+  void initialize(const CommandBuffer& commandBuffer) override;
+  void bind(int frameInFlight,
+            VkPipelineBindPoint bindPoint,
+            const VkPipelineLayout& pipelineLayout,
+            const CommandBuffer& commandBuffer) override;
 };
 
 struct DescriptorPoolSize {
@@ -103,47 +121,46 @@ class DescriptorPool final {
   ~DescriptorPool();
 };
 
-class DescriptorSet final {
+class DescriptorSet final : public DescriptorHandler {
+ private:
+  friend class ::DescriptorSetTest_Create_Test;  
+  friend class ::DescriptorSetTest_Update_Test;
  private:
   DescriptorPool* _descriptorPool;
   const Device* _device;
-  VkDescriptorSet _descriptorSet;
-  const DescriptorSetLayout* _layout;
-  std::vector<VkWriteDescriptorSet> _descriptorWrites;
+  // frame - set
+  std::vector<std::vector<VkDescriptorSet>> _descriptorSet;
+  // set
+  std::vector<const DescriptorSetLayout*> _descriptorLayouts;
+  // frame - set
+  std::vector<std::vector<VkWriteDescriptorSet>> _descriptorWrites;
+  // set - binding
+  std::vector<std::vector<VkDescriptorImageInfo>> _imageInfo;
+  std::vector<std::vector<VkDescriptorBufferInfo>> _bufferInfo;
 
+  int _bindingNumber = 0;
+  int _frame = 0;
+  int _number = 0;
+
+  int _calculateDescriptorSetIndex();
+ void _allocateDescriptorSetsForNextFrame();
  public:
-  DescriptorSet(const DescriptorSetLayout& layout, DescriptorPool& descriptorPool, const Device& device);
+  DescriptorSet(const std::vector<const DescriptorSetLayout*>& layouts,                
+                DescriptorPool& descriptorPool,
+                const Device& device);
   DescriptorSet(const DescriptorSet&) = delete;
   DescriptorSet& operator=(const DescriptorSet&) = delete;
   DescriptorSet(DescriptorSet&& other) = delete;
   DescriptorSet& operator=(DescriptorSet&& other) = delete;
 
-  void add(std::vector<VkDescriptorBufferInfo> info);
-  void add(std::vector<VkDescriptorImageInfo> info);
-  void initialize();
-
-  VkDescriptorSet getDescriptorSet() const noexcept;
+  void add(std::vector<Texture*> textures) override;
+  void add(std::vector<Buffer*> buffers) override;
+  void initialize(const CommandBuffer& commandBuffer) override;
+  void bind(int frameInFlight,
+            VkPipelineBindPoint bindPoint,
+            const VkPipelineLayout& pipelineLayout,
+            const CommandBuffer& commandBuffer) override;
+  
   ~DescriptorSet();
-};
-
-class DescriptorHelper final {
- private:
-  DescriptorPool* _descriptorPool;
-  std::vector<std::unique_ptr<DescriptorSet>> _descriptorSet;
-  std::vector<const DescriptorSetLayout*> _descriptorLayouts;
-
-  std::unique_ptr<DescriptorBuffer> _descriptorBuffer;
- public:
-  DescriptorHelper(const std::vector<const DescriptorSetLayout*>& layouts,
-                   const MemoryAllocator& memoryAllocator,
-                   const Device& device);
-  DescriptorHelper(const std::vector<const DescriptorSetLayout*>& layouts,
-                   DescriptorPool& descriptorPool,
-                   const Device& device);
-  void add(std::vector<VkDescriptorImageInfo> images, VkDescriptorType type);
-  void add(std::vector<Buffer> buffers, VkDescriptorType type);
-  void initialize();
-
-  void bind(int frame, const CommandBuffer& commandBuffer, const VkPipelineLayout& layout);
 };
 }  // namespace RenderGraph

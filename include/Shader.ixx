@@ -31,11 +31,14 @@ class Shader final {
   Shader& operator=(Shader&&) = delete;
 
   void add(const std::vector<char>& shaderCode, const VkSpecializationInfo* info = nullptr);
+  // returns info about shader stages (vertex, tesselation, fragments), used during pipeline creation
   std::vector<VkPipelineShaderStageCreateInfo> getShaderStageInfo() const noexcept;
+  // used to create descriptor set layout (provides all neccessary info about bindings and types)
   const std::vector<VkDescriptorSetLayoutBinding>& getDescriptorSetLayoutBindings() const;
   // for instancing
   const VkPipelineVertexInputStateCreateInfo* getVertexInputInfo(
       std::vector<std::pair<VkVertexInputRate, int>> typeElements);
+  // provides information about attributes and their format (position, UV) + (RGBA32, RG32), used during pipeline creation
   const VkPipelineVertexInputStateCreateInfo* getVertexInputInfo();
   ~Shader();
 };

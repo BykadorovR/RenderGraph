@@ -216,6 +216,72 @@ TEST(BufferTest, GetDeviceAddress) {
   EXPECT_NE(buffer.getDeviceAddress(device), 0);
 }
 
+TEST(DescriptorPoolTest, Create) {
+  RenderGraph::Instance instance("TestApp", true);
+  RenderGraph::Window window({1920, 1080});
+  window.initialize();
+  RenderGraph::Surface surface(window, instance);
+  RenderGraph::Device device(surface, instance);
+  RenderGraph::DescriptorPoolSize poolSize;
+  RenderGraph::DescriptorPool descriptorPool(poolSize, device);
+  EXPECT_NE(descriptorPool.getDescriptorPool(), nullptr);
+}
+
+TEST(DescriptorSetTest, Create) {
+  RenderGraph::Instance instance("TestApp", true);
+  RenderGraph::Window window({1920, 1080});
+  window.initialize();
+  RenderGraph::Surface surface(window, instance);
+  RenderGraph::Device device(surface, instance);
+  RenderGraph::DescriptorPoolSize poolSize;
+  RenderGraph::DescriptorPool descriptorPool(poolSize, device);
+  RenderGraph::DescriptorSetLayout layout(device);
+  std::vector<VkDescriptorSetLayoutBinding> layoutColor{{.binding = 0,
+                                                         .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                                         .descriptorCount = 1,
+                                                         .stageFlags = VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT,
+                                                         .pImmutableSamplers = nullptr}};
+  layout.createCustom(layoutColor);
+  RenderGraph::DescriptorSet descriptorSet({&layout}, descriptorPool, device);
+  EXPECT_EQ(descriptorSet._descriptorSet.size(), 1);
+  EXPECT_EQ(descriptorSet._bindingNumber, 1);
+}
+
+TEST(DescriptorSetTest, Update) {
+  RenderGraph::Instance instance("TestApp", true);
+  RenderGraph::Window window({1920, 1080});
+  window.initialize();
+  RenderGraph::Surface surface(window, instance);
+  RenderGraph::Device device(surface, instance);
+  RenderGraph::MemoryAllocator allocator(device, instance);
+  RenderGraph::Buffer buffer(1024, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                             VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+                             allocator);
+  RenderGraph::DescriptorPoolSize poolSize;
+  RenderGraph::DescriptorPool descriptorPool(poolSize, device);
+  RenderGraph::DescriptorSetLayout layout(device);
+  std::vector<VkDescriptorSetLayoutBinding> layoutColor{{.binding = 0,
+                                                         .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                                         .descriptorCount = 1,
+                                                         .stageFlags = VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT,
+                                                         .pImmutableSamplers = nullptr}};
+  layout.createCustom(layoutColor);
+  RenderGraph::DescriptorSet descriptorSet({&layout}, descriptorPool, device);
+  VkDescriptorBufferInfo bufferInfo{.buffer = buffer.getBuffer(), .offset = 0, .range = buffer.getSize()};
+  descriptorSet.add({&buffer});
+  EXPECT_EQ(descriptorSet._descriptorWrites.size(), 1);
+  EXPECT_EQ(descriptorSet._bindingNumber, 1);
+  EXPECT_EQ(descriptorSet._bufferInfo.size(), 1);
+  RenderGraph::CommandPool commandPool(vkb::QueueType::graphics, device);
+  RenderGraph::CommandBuffer commandBuffer(commandPool, device);
+  commandBuffer.beginCommands();
+  descriptorSet.initialize(commandBuffer);
+  EXPECT_EQ(descriptorSet._descriptorWrites.size(), 1);
+  EXPECT_EQ(descriptorSet._bindingNumber, 1);
+  EXPECT_EQ(descriptorSet._bufferInfo.size(), 0);
+  commandBuffer.endCommands();
+}
+
 TEST(DescriptorBufferTest, Create) {
   RenderGraph::Instance instance("TestApp", false);
   RenderGraph::Window window({1920, 1080});
@@ -334,48 +400,37 @@ TEST(DescriptorBufferTest, DifferentSets) {
                             });
   EXPECT_EQ(offset, true);
 
-  EXPECT_EQ(descriptorBuffer._binning, 0);
+  EXPECT_EQ(descriptorBuffer._binding.first, 0);
+  EXPECT_EQ(descriptorBuffer._binding.second, 0);
   EXPECT_EQ(descriptorBuffer._set, 0);
   EXPECT_EQ(descriptorBuffer._frame, 0);
-  descriptorBuffer.add(VkDescriptorAddressInfoEXT{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_ADDRESS_INFO_EXT,
-                                                  .pNext = nullptr,
-                                                  .address = buffer.getDeviceAddress(device),
-                                                  .range = buffer.getSize(),
-                                                  .format = VK_FORMAT_UNDEFINED});
-  EXPECT_EQ(descriptorBuffer._binning, 1);
+  descriptorBuffer.add({&buffer});
+  EXPECT_EQ(descriptorBuffer._binding.first, 1);
+  EXPECT_EQ(descriptorBuffer._binding.second, 0);
   EXPECT_EQ(descriptorBuffer._set, 0);
   EXPECT_EQ(descriptorBuffer._frame, 0);
-  descriptorBuffer.add(VkDescriptorAddressInfoEXT{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_ADDRESS_INFO_EXT,
-                                                  .pNext = nullptr,
-                                                  .address = buffer.getDeviceAddress(device),
-                                                  .range = buffer.getSize(),
-                                                  .format = VK_FORMAT_UNDEFINED});
+  descriptorBuffer.add({&buffer});
   int size1 = descriptorBuffer._offsets[0][0] + descriptorBuffer._offsets[0][1];
   bool filled = std::any_of(descriptorBuffer._descriptors.begin(), descriptorBuffer._descriptors.begin() + size1,
                             [](auto v) { return v != 0; });
   EXPECT_EQ(filled, true);
 
-  EXPECT_EQ(descriptorBuffer._binning, 0);
+  EXPECT_EQ(descriptorBuffer._binding.first, 0);
+  EXPECT_EQ(descriptorBuffer._binding.second, 0);
   EXPECT_EQ(descriptorBuffer._set, 1);
   EXPECT_EQ(descriptorBuffer._frame, 0);
-  descriptorBuffer.add(VkDescriptorAddressInfoEXT{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_ADDRESS_INFO_EXT,
-                                                  .pNext = nullptr,
-                                                  .address = buffer.getDeviceAddress(device),
-                                                  .range = buffer.getSize(),
-                                                  .format = VK_FORMAT_UNDEFINED});
-  EXPECT_EQ(descriptorBuffer._binning, 1);
+  descriptorBuffer.add({&buffer});
+  EXPECT_EQ(descriptorBuffer._binding.first, 1);
+  EXPECT_EQ(descriptorBuffer._binding.second, 0);
   EXPECT_EQ(descriptorBuffer._set, 1);
   EXPECT_EQ(descriptorBuffer._frame, 0);
-  descriptorBuffer.add(VkDescriptorAddressInfoEXT{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_ADDRESS_INFO_EXT,
-                                                  .pNext = nullptr,
-                                                  .address = buffer.getDeviceAddress(device),
-                                                  .range = buffer.getSize(),
-                                                  .format = VK_FORMAT_UNDEFINED});
+  descriptorBuffer.add({&buffer});
   bool filled2 = std::any_of(descriptorBuffer._descriptors.begin() + descriptorBuffer._layoutSize[0],
                              descriptorBuffer._descriptors.end(), [](auto v) { return v != 0; });
   EXPECT_EQ(filled2, true);
 
-  EXPECT_EQ(descriptorBuffer._binning, 0);
+  EXPECT_EQ(descriptorBuffer._binding.first, 0);
+  EXPECT_EQ(descriptorBuffer._binding.second, 0);
   EXPECT_EQ(descriptorBuffer._set, 0);
   EXPECT_EQ(descriptorBuffer._frame, 1);
 }
@@ -398,23 +453,14 @@ TEST(DescriptorBufferTest, Update) {
                                                          .pImmutableSamplers = nullptr}};
   layout.createCustom(layoutColor);
   RenderGraph::DescriptorBuffer descriptorBuffer({&layout}, allocator, device);
-  descriptorBuffer.add(VkDescriptorAddressInfoEXT{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_ADDRESS_INFO_EXT,
-                                                  .pNext = nullptr,
-                                                  .address = buffer.getDeviceAddress(device),
-                                                  .range = buffer.getSize(),
-                                                  .format = VK_FORMAT_UNDEFINED});
+  descriptorBuffer.add({&buffer});
   RenderGraph::CommandPool commandPool(vkb::QueueType::graphics, device);
   RenderGraph::CommandBuffer commandBuffer(commandPool, device);
   commandBuffer.beginCommands();
   descriptorBuffer.initialize(commandBuffer);
   EXPECT_THROW(descriptorBuffer.initialize(commandBuffer), std::runtime_error);
   EXPECT_NE(descriptorBuffer._descriptorBuffer->getDeviceAddress(device), 0);
-  EXPECT_THROW(descriptorBuffer.add(VkDescriptorAddressInfoEXT{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_ADDRESS_INFO_EXT,
-                                                               .pNext = nullptr,
-                                                               .address = buffer.getDeviceAddress(device),
-                                                               .range = buffer.getSize(),
-                                                               .format = VK_FORMAT_UNDEFINED}),
-               std::runtime_error);
+  EXPECT_THROW(descriptorBuffer.add({&buffer}), std::runtime_error);
   commandBuffer.endCommands();
 }
 
