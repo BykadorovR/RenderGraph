@@ -94,19 +94,20 @@ void DescriptorBuffer::_add(VkDescriptorGetInfoEXT info) {
   std::vector<uint8_t> descriptorCPU(descSize);
   vkGetDescriptorEXT(_device->getLogicalDevice(), &info, descSize, descriptorCPU.data());
   std::copy(descriptorCPU.begin(), descriptorCPU.end(),
-            _descriptors.begin() + setSize * _frame + _set * _layoutSize[_set] +
-                _offsets[_set][_binding.first + _binding.second]);
+            _descriptors.begin() + setSize * _frame + _set * _layoutSize[_set] + _offsets[_set][_bindingOffset]);
 
   // calculate next frame, set, binning
-  if (_binding.second < _descriptorLayouts[_set]->getLayoutInfo()[_binding.first].descriptorCount - 1) {
-    _binding.second++;
-  } else {
+  if (_binding.second < _descriptorLayouts[_set]->getLayoutInfo()[_binding.first].descriptorCount) _binding.second++;
+  if (_binding.second == _descriptorLayouts[_set]->getLayoutInfo()[_binding.first].descriptorCount) {
     _binding.first++;
     _binding.second = 0;
   }
 
+  _bindingOffset++;
+
   if (_descriptorLayouts[_set]->getLayoutInfo().size() == _binding.first) {
     _binding.first = 0;
+    _bindingOffset = 0;
     _set++;
     if (_descriptorLayouts.size() == _set) {
       _set = 0;
@@ -189,7 +190,12 @@ void DescriptorBuffer::bind(int frameInFlight,
   auto bufferBinding = VkDescriptorBufferBindingInfoEXT{VK_STRUCTURE_TYPE_DESCRIPTOR_BUFFER_BINDING_INFO_EXT, nullptr,
                                                         _descriptorBuffer->getDeviceAddress(*_device), _usage};
   std::vector<VkDeviceSize> offset(_layoutSize.size());
-  for (int i = 0; i < _layoutSize.size(); i++) offset[i] = _layoutSize[i] * frameInFlight;
+  for (int i = 0; i < _layoutSize.size(); i++) {
+    offset[i] = _layoutSize[i] * (_currentBind++ % (_frame));
+    if (i > 0) {
+      offset[i] += offset[i - 1];
+    }
+  }
   std::vector<uint32_t> bufIndex(_layoutSize.size(), 0);
   // we use 1 buffer for the whole shader
   vkCmdBindDescriptorBuffersEXT(commandBuffer.getCommandBuffer(), 1, &bufferBinding);

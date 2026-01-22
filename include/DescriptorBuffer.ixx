@@ -68,8 +68,10 @@ class DescriptorBuffer final : public DescriptorHandler {
   std::vector<uint8_t> _descriptors;
   // binding and iterator inside it
   std::pair<int, int> _binding = {0, 0};
+  int _bindingOffset = 0;
   int _set = 0;
   int _frame = 0;
+  int _currentBind = 0;
   int _getDescriptorSize(VkDescriptorType descriptorType);
   VkBufferUsageFlags _usage = VK_BUFFER_USAGE_SAMPLER_DESCRIPTOR_BUFFER_BIT_EXT |
                               VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT |
@@ -122,7 +124,7 @@ class DescriptorPool final {
 
 class DescriptorSet final : public DescriptorHandler {
  private:
-  friend class ::DescriptorSetTest_Create_Test;  
+  friend class ::DescriptorSetTest_Create_Test;
   friend class ::DescriptorSetTest_Update_Test;
  private:
   DescriptorPool* _descriptorPool;
@@ -142,9 +144,9 @@ class DescriptorSet final : public DescriptorHandler {
   int _number = 0;
 
   int _calculateDescriptorSetIndex();
- void _allocateDescriptorSetsForNextFrame();
+  void _allocateDescriptorSetsForNextFrame();
  public:
-  DescriptorSet(const std::vector<const DescriptorSetLayout*>& layouts,                
+  DescriptorSet(const std::vector<const DescriptorSetLayout*>& layouts,
                 DescriptorPool& descriptorPool,
                 const Device& device);
   DescriptorSet(const DescriptorSet&) = delete;
