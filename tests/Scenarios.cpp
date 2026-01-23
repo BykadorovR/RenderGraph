@@ -37,6 +37,7 @@ TEST(ScenarioTest, GraphOneQueue) {
   window.initialize();
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(surface, instance);
+  device.initialize();
   RenderGraph::MemoryAllocator allocator(device, instance);
   RenderGraph::Swapchain swapchain(resolution, allocator, device);
   int framesInFlight = 2;
@@ -212,6 +213,7 @@ TEST(ScenarioTest, GraphSeparateQueues) {
   window.initialize();
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(surface, instance);
+  device.initialize();
   RenderGraph::MemoryAllocator allocator(device, instance);
   RenderGraph::Swapchain swapchain(resolution, allocator, device);
   int framesInFlight = 2;
@@ -379,6 +381,7 @@ TEST(ScenarioTest, GraphReset) {
   window.initialize();
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(surface, instance);
+  device.initialize();
   RenderGraph::MemoryAllocator allocator(device, instance);
   RenderGraph::Swapchain swapchain(resolution, allocator, device);
   int framesInFlight = 2;
@@ -535,6 +538,7 @@ TEST(ScenarioTest, DepthExistance) {
   window.initialize();
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(surface, instance);
+  device.initialize();
   RenderGraph::MemoryAllocator allocator(device, instance);
   RenderGraph::Swapchain swapchain(resolution, allocator, device);
   int framesInFlight = 2;

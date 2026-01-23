@@ -43,8 +43,7 @@ class DescriptorHandler {
   virtual void add(std::vector<VkDescriptorImageInfo> imageInfos) = 0;
   virtual void add(std::vector<Buffer*> buffers) = 0;
   virtual void initialize(const CommandBuffer& commandBuffer) = 0;
-  virtual void bind(int frameInFlight,
-                    VkPipelineBindPoint bindPoint,
+  virtual void bind(VkPipelineBindPoint bindPoint,
                     const VkPipelineLayout& pipelineLayout,
                     const CommandBuffer& commandBuffer) = 0;
   virtual ~DescriptorHandler() = default;
@@ -84,8 +83,7 @@ class DescriptorBuffer final : public DescriptorHandler {
   void add(std::vector<VkDescriptorImageInfo> imageInfos) override;
   void add(std::vector<Buffer*> buffers) override;
   void initialize(const CommandBuffer& commandBuffer) override;
-  void bind(int frameInFlight,
-            VkPipelineBindPoint bindPoint,
+  void bind(VkPipelineBindPoint bindPoint,
             const VkPipelineLayout& pipelineLayout,
             const CommandBuffer& commandBuffer) override;
 };
@@ -142,6 +140,7 @@ class DescriptorSet final : public DescriptorHandler {
   int _bindingNumber = 0;
   int _frame = 0;
   int _number = 0;
+  int _currentBind = 0;
 
   int _calculateDescriptorSetIndex();
   void _allocateDescriptorSetsForNextFrame();
@@ -157,8 +156,7 @@ class DescriptorSet final : public DescriptorHandler {
   void add(std::vector<VkDescriptorImageInfo> imageInfos) override;
   void add(std::vector<Buffer*> buffers) override;
   void initialize(const CommandBuffer& commandBuffer) override;
-  void bind(int frameInFlight,
-            VkPipelineBindPoint bindPoint,
+  void bind(VkPipelineBindPoint bindPoint,
             const VkPipelineLayout& pipelineLayout,
             const CommandBuffer& commandBuffer) override;
   

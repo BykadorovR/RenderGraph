@@ -19,9 +19,14 @@ void DescriptorSetLayout::createCustom(const std::vector<VkDescriptorSetLayoutBi
   _info = info;
 
   auto layoutInfo = VkDescriptorSetLayoutCreateInfo{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-                                                    .flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT,
                                                     .bindingCount = static_cast<uint32_t>(_info.size()),
                                                     .pBindings = _info.data()};
+  auto desiredExtensions = _device->getDesiredExtensions();
+  if (_device->isExtensionSupported("VK_EXT_descriptor_buffer") &&
+      std::find(desiredExtensions.begin(), desiredExtensions.end(), "VK_EXT_descriptor_buffer") !=
+          desiredExtensions.end())
+    layoutInfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
+
   if (vkCreateDescriptorSetLayout(_device->getLogicalDevice(), &layoutInfo, nullptr, &_descriptorSetLayout) !=
       VK_SUCCESS) {
     throw std::runtime_error("failed to create descriptor set layout!");
@@ -183,8 +188,7 @@ void DescriptorBuffer::initialize(const CommandBuffer& commandBuffer) {
                              commandBuffer);
 }
 
-void DescriptorBuffer::bind(int frameInFlight,
-                            VkPipelineBindPoint bindPoint,
+void DescriptorBuffer::bind(VkPipelineBindPoint bindPoint,
                             const VkPipelineLayout& pipelineLayout,
                             const CommandBuffer& commandBuffer) {
   auto bufferBinding = VkDescriptorBufferBindingInfoEXT{VK_STRUCTURE_TYPE_DESCRIPTOR_BUFFER_BINDING_INFO_EXT, nullptr,
@@ -357,11 +361,10 @@ void DescriptorSet::initialize(const CommandBuffer& commandBuffer) {
   _bufferInfo.clear();
 }
 
-void DescriptorSet::bind(int frameInFlight,
-                         VkPipelineBindPoint bindPoint,
+void DescriptorSet::bind(VkPipelineBindPoint bindPoint,
                          const VkPipelineLayout& pipelineLayout,
                          const CommandBuffer& commandBuffer) {
-  for (auto&& descriptorSet : _descriptorSet[frameInFlight])
+  for (auto&& descriptorSet : _descriptorSet[_currentBind++ % (_frame + 1)])
     vkCmdBindDescriptorSets(commandBuffer.getCommandBuffer(), bindPoint, pipelineLayout, 0, 1, &descriptorSet, 0,
                             nullptr);
 }

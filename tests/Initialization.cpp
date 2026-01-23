@@ -60,6 +60,7 @@ TEST(DeviceTest, Create) {
   window.initialize();
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(surface, instance);
+  device.initialize();
   EXPECT_NE(device.getPhysicalDevice(), nullptr);
   EXPECT_NE(device.getDevice(), nullptr);
   EXPECT_NE(device.getLogicalDevice(), nullptr);
@@ -71,6 +72,7 @@ TEST(DeviceTest, SupportedFormatFeature) {
   window.initialize();
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(surface, instance);
+  device.initialize();
   // Assuming VK_FORMAT_R8G8B8A8_UNORM with VK_IMAGE_TILING_LINEAR does not support VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT
   EXPECT_TRUE(device.isFormatFeatureSupported(VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_TILING_LINEAR,
                                               VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT));
@@ -82,6 +84,7 @@ TEST(DeviceTest, QueueFamilyProperties) {
   window.initialize();
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(surface, instance);
+  device.initialize();
   auto properties = device.getQueueFamilyProperties(vkb::QueueType::graphics);
   EXPECT_GT(properties.queueCount, 0);
 }
@@ -92,6 +95,7 @@ TEST(DeviceTest, DeviceProperties) {
   window.initialize();
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(surface, instance);
+  device.initialize();
   auto properties = device.getDevice().physical_device.properties;
   EXPECT_GT(properties.apiVersion, 0);
 }
@@ -102,6 +106,7 @@ TEST(AllocatorTest, Create) {
   window.initialize();
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(surface, instance);
+  device.initialize();
   RenderGraph::MemoryAllocator allocator(device, instance);
   EXPECT_NE(allocator.getAllocator(), nullptr);
 }
@@ -112,6 +117,7 @@ TEST(BufferTest, Create) {
   window.initialize();
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(surface, instance);
+  device.initialize();
   RenderGraph::MemoryAllocator allocator(device, instance);
   RenderGraph::Buffer buffer(1024, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
                              VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT, allocator);
@@ -126,6 +132,7 @@ TEST(CommandTest, Create) {
   window.initialize();
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(surface, instance);
+  device.initialize();
   RenderGraph::MemoryAllocator allocator(device, instance);
   RenderGraph::CommandPool commandPool(vkb::QueueType::graphics, device);
   EXPECT_NO_THROW(RenderGraph::CommandBuffer commandBuffer(commandPool, device));
@@ -137,6 +144,7 @@ TEST(CommandTest, BeginEnd) {
   window.initialize();
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(surface, instance);
+  device.initialize();
   RenderGraph::MemoryAllocator allocator(device, instance);
   RenderGraph::CommandPool commandPool(vkb::QueueType::graphics, device);
   RenderGraph::CommandBuffer commandBuffer(commandPool, device);
@@ -152,6 +160,7 @@ TEST(BufferTest, SetDataCPU) {
   window.initialize();
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(surface, instance);
+  device.initialize();
   RenderGraph::MemoryAllocator allocator(device, instance);
   RenderGraph::Buffer buffer(1024, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
                              VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
@@ -170,6 +179,7 @@ TEST(BufferTest, SetDataPotentiallyStaging) {
   window.initialize();
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(surface, instance);
+  device.initialize();
   RenderGraph::MemoryAllocator allocator(device, instance);
   RenderGraph::Buffer buffer(1024, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                              VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
@@ -189,6 +199,7 @@ TEST(BufferTest, ShaderCreate) {
   window.initialize();
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(surface, instance);
+  device.initialize();
   RenderGraph::Shader shader(device);
   // #version 450
   // void main() {}
@@ -209,6 +220,7 @@ TEST(BufferTest, GetDeviceAddress) {
   window.initialize();
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(surface, instance);
+  device.initialize();
   RenderGraph::MemoryAllocator allocator(device, instance);
   RenderGraph::Buffer buffer(1024, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
                              VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
@@ -217,22 +229,25 @@ TEST(BufferTest, GetDeviceAddress) {
 }
 
 TEST(DescriptorPoolTest, Create) {
-  RenderGraph::Instance instance("TestApp", true);
+  RenderGraph::Instance instance("TestApp", false);
   RenderGraph::Window window({1920, 1080});
   window.initialize();
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(surface, instance);
+  device.initialize();
   RenderGraph::DescriptorPoolSize poolSize;
   RenderGraph::DescriptorPool descriptorPool(poolSize, device);
   EXPECT_NE(descriptorPool.getDescriptorPool(), nullptr);
 }
 
 TEST(DescriptorSetTest, Create) {
-  RenderGraph::Instance instance("TestApp", true);
+  RenderGraph::Instance instance("TestApp", false);
   RenderGraph::Window window({1920, 1080});
   window.initialize();
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(surface, instance);
+  device.setDesiredExtensions({"VK_KHR_dynamic_rendering"});
+  device.initialize();
   RenderGraph::DescriptorPoolSize poolSize;
   RenderGraph::DescriptorPool descriptorPool(poolSize, device);
   RenderGraph::DescriptorSetLayout layout(device);
@@ -248,11 +263,13 @@ TEST(DescriptorSetTest, Create) {
 }
 
 TEST(DescriptorSetTest, Update) {
-  RenderGraph::Instance instance("TestApp", true);
+  RenderGraph::Instance instance("TestApp", false);
   RenderGraph::Window window({1920, 1080});
   window.initialize();
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(surface, instance);
+  device.setDesiredExtensions({"VK_KHR_dynamic_rendering"});
+  device.initialize();
   RenderGraph::MemoryAllocator allocator(device, instance);
   RenderGraph::Buffer buffer(1024, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                              VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
@@ -288,6 +305,7 @@ TEST(DescriptorBufferTest, Create) {
   window.initialize();
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(surface, instance);
+  device.initialize();
   RenderGraph::MemoryAllocator allocator(device, instance);
   RenderGraph::DescriptorSetLayout layout(device);
   std::vector<VkDescriptorSetLayoutBinding> layoutColor{{.binding = 0,
@@ -314,6 +332,7 @@ TEST(DescriptorBufferTest, BigDescriptorCount) {
   window.initialize();
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(surface, instance);
+  device.initialize();
   RenderGraph::MemoryAllocator allocator(device, instance);
   RenderGraph::DescriptorSetLayout layout(device);
   std::vector<VkDescriptorSetLayoutBinding> layoutColor{{.binding = 0,
@@ -340,6 +359,7 @@ TEST(DescriptorBufferTest, DifferentBinning) {
   window.initialize();
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(surface, instance);
+  device.initialize();
   RenderGraph::MemoryAllocator allocator(device, instance);
   RenderGraph::DescriptorSetLayout layout(device);
   std::vector<VkDescriptorSetLayoutBinding> layoutBinding{{.binding = 0,
@@ -368,6 +388,7 @@ TEST(DescriptorBufferTest, DifferentSets) {
   window.initialize();
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(surface, instance);
+  device.initialize();
   RenderGraph::MemoryAllocator allocator(device, instance);
   RenderGraph::Buffer buffer(1024, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
                              VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
@@ -441,6 +462,7 @@ TEST(DescriptorBufferTest, Update) {
   window.initialize();
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(surface, instance);
+  device.initialize();
   RenderGraph::MemoryAllocator allocator(device, instance);
   RenderGraph::Buffer buffer(1024, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
                              VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
@@ -470,6 +492,7 @@ TEST(PipelineTest, Create) {
   window.initialize();
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(surface, instance);
+  device.initialize();
   RenderGraph::Shader shader(device);
   // #version 450
   // void main() {}
@@ -521,6 +544,7 @@ TEST(SwapchainTest, CreateWithoutInitialization) {
   window.initialize();
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(surface, instance);
+  device.initialize();
   RenderGraph::MemoryAllocator allocator(device, instance);
   RenderGraph::Swapchain swapchain(resolution, allocator, device);
   EXPECT_NE(swapchain.getSwapchain(), nullptr);
@@ -535,6 +559,7 @@ TEST(SwapchainTest, CreateWithInitialization) {
   window.initialize();
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(surface, instance);
+  device.initialize();
   RenderGraph::MemoryAllocator allocator(device, instance);
   RenderGraph::Swapchain swapchain(resolution, allocator, device);
   RenderGraph::CommandPool commandPool(vkb::QueueType::graphics, device);
@@ -552,6 +577,7 @@ TEST(SyncTest, Create) {
   window.initialize();
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(surface, instance);
+  device.initialize();
   RenderGraph::Semaphore semaphoreTimeline(VK_SEMAPHORE_TYPE_TIMELINE, device);
   RenderGraph::Semaphore semaphoreBinary(VK_SEMAPHORE_TYPE_BINARY, device);
   EXPECT_NE(semaphoreTimeline.getSemaphore(), nullptr);
@@ -564,6 +590,7 @@ TEST(ImageTest, Create) {
   window.initialize();
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(surface, instance);
+  device.initialize();
   RenderGraph::MemoryAllocator allocator(device, instance);
   RenderGraph::Image image(allocator);
   image.createImage(VK_FORMAT_R8G8B8A8_UNORM, {512, 512}, 1, 1, VK_IMAGE_ASPECT_COLOR_BIT,
@@ -582,6 +609,7 @@ TEST(ImageViewTest, Create) {
   window.initialize();
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(surface, instance);
+  device.initialize();
   RenderGraph::MemoryAllocator allocator(device, instance);
   std::unique_ptr<RenderGraph::Image> image = std::make_unique<RenderGraph::Image>(allocator);
   image->createImage(VK_FORMAT_R8G8B8A8_UNORM, {512, 512}, 1, 1, VK_IMAGE_ASPECT_COLOR_BIT,
@@ -601,6 +629,7 @@ TEST(ImageViewHolderTest, Create) {
   window.initialize();
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(surface, instance);
+  device.initialize();
   RenderGraph::MemoryAllocator allocator(device, instance);
   std::unique_ptr<RenderGraph::Image> image1 = std::make_unique<RenderGraph::Image>(allocator);
   image1->createImage(VK_FORMAT_R8G8B8A8_UNORM, {512, 512}, 1, 1, VK_IMAGE_ASPECT_COLOR_BIT,
@@ -631,6 +660,7 @@ TEST(SamplerTest, Create) {
   window.initialize();
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(surface, instance);
+  device.initialize();
   RenderGraph::Sampler sampler(device);
   sampler.createSampler(VK_SAMPLER_ADDRESS_MODE_REPEAT, 1, 4, VK_FILTER_LINEAR);
   EXPECT_NE(sampler.getSampler(), nullptr);
@@ -642,6 +672,7 @@ TEST(TextureTest, Create) {
   window.initialize();
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(surface, instance);
+  device.initialize();
   RenderGraph::MemoryAllocator allocator(device, instance);
   std::unique_ptr<RenderGraph::Image> image = std::make_unique<RenderGraph::Image>(allocator);
   image->createImage(VK_FORMAT_R8G8B8A8_UNORM, {512, 512}, 1, 1, VK_IMAGE_ASPECT_COLOR_BIT,
@@ -717,6 +748,7 @@ TEST(ShaderTest, Reflection) {
   window.initialize();
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(surface, instance);
+  device.initialize();
   RenderGraph::Shader shader(device);
   shader.add(fragmentSpirv);
   auto resultFragment = shader.getDescriptorSetLayoutBindings();

@@ -8,15 +8,19 @@ export namespace RenderGraph {
 class Device final {
  private:
   vkb::Device _device;
+  const Surface* _surface;
+  const Instance* _instance;
   std::vector<VkQueueFamilyProperties> _queueFamilyProperties;  
-
+  std::vector<std::string> _desiredExtensions = {"VK_EXT_descriptor_buffer", "VK_KHR_dynamic_rendering"};
  public:
   Device(const Surface& surface, const Instance& instance);
   Device(const Device&) = delete;
   Device& operator=(const Device&) = delete;
   Device(Device&&) = delete;
   Device& operator=(Device&&) = delete;
+  void initialize();
 
+  void setDesiredExtensions(const std::vector<std::string>& extensions) noexcept;
   bool isFormatFeatureSupported(VkFormat format, VkImageTiling tiling, VkFormatFeatureFlagBits featureFlagBit) const;  
   const VkDevice getLogicalDevice() const noexcept;
   const VkPhysicalDevice getPhysicalDevice() const noexcept;
@@ -25,6 +29,7 @@ class Device final {
 
   const vkb::Device& getDevice() const noexcept;
   bool isExtensionSupported(std::string name) const;
+  std::vector<std::string> getDesiredExtensions() const noexcept;
   void getFeatureProperties(auto& property) const noexcept {
     VkPhysicalDeviceProperties2 properties2{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
                                             .pNext = &property};

@@ -197,7 +197,6 @@ void Pipeline::createGraphic(const PipelineGraphic& pipelineGraphic,
 
   VkGraphicsPipelineCreateInfo pipelineInfo{.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
                                             .pNext = &renderingInfo,
-                                            .flags = VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT,
                                             .stageCount = static_cast<uint32_t>(shaderStages.size()),
                                             .pStages = shaderStages.data(),
                                             .pVertexInputState = &vertexInputInfo,
@@ -211,6 +210,11 @@ void Pipeline::createGraphic(const PipelineGraphic& pipelineGraphic,
                                             .layout = _pipelineLayout,
                                             .subpass = 0,
                                             .basePipelineHandle = nullptr};
+  auto desiredExtensions = _device->getDesiredExtensions();
+  if (_device->isExtensionSupported("VK_EXT_descriptor_buffer") &&
+      std::find(desiredExtensions.begin(), desiredExtensions.end(), "VK_EXT_descriptor_buffer") !=
+          desiredExtensions.end())
+    pipelineInfo.flags = VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
   if (pipelineGraphic.getTessellationState())
     pipelineInfo.pTessellationState = &pipelineGraphic.getTessellationState().value();
   auto status = vkCreateGraphicsPipelines(_device->getLogicalDevice(), nullptr, 1, &pipelineInfo, nullptr, &_pipeline);
@@ -251,7 +255,11 @@ void Pipeline::createCompute(const VkPipelineShaderStageCreateInfo& shaderStage,
   VkComputePipelineCreateInfo computePipelineCreateInfo{};
   computePipelineCreateInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
   computePipelineCreateInfo.layout = _pipelineLayout;
-  computePipelineCreateInfo.flags = VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
+  auto desiredExtensions = _device->getDesiredExtensions();
+  if (_device->isExtensionSupported("VK_EXT_descriptor_buffer") &&
+      std::find(desiredExtensions.begin(), desiredExtensions.end(), "VK_EXT_descriptor_buffer") !=
+          desiredExtensions.end())
+    computePipelineCreateInfo.flags = VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
   //
   computePipelineCreateInfo.stage = shaderStage;
   if (vkCreateComputePipelines(_device->getLogicalDevice(), nullptr, 1, &computePipelineCreateInfo, nullptr,
