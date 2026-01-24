@@ -14,7 +14,8 @@ class Shader final {
   std::unordered_map<VkShaderStageFlagBits, const VkSpecializationInfo*> _specializationInfo;
   std::vector<SpvReflectShaderModule> _modules;
   std::vector<SpvReflectInterfaceVariable*> _variables;
-  std::vector<VkDescriptorSetLayoutBinding> _descriptorSetLayoutBindings;
+  // set - bindings
+  std::vector<std::vector<VkDescriptorSetLayoutBinding>> _descriptorSetLayoutBindings;
   std::vector<VkVertexInputAttributeDescription> _vertexInputAttributes;
   std::vector<VkVertexInputBindingDescription> _bindingDescription;
   std::unique_ptr<VkPipelineVertexInputStateCreateInfo> _vertexInputInfo;
@@ -34,7 +35,7 @@ class Shader final {
   // returns info about shader stages (vertex, tesselation, fragments), used during pipeline creation
   std::vector<VkPipelineShaderStageCreateInfo> getShaderStageInfo() const noexcept;
   // used to create descriptor set layout (provides all neccessary info about bindings and types)
-  const std::vector<VkDescriptorSetLayoutBinding>& getDescriptorSetLayoutBindings() const;
+  const std::vector<std::vector<VkDescriptorSetLayoutBinding>>& getDescriptorSetLayoutBindings() const;
   // for instancing
   const VkPipelineVertexInputStateCreateInfo* getVertexInputInfo(
       std::vector<std::pair<VkVertexInputRate, int>> typeElements);

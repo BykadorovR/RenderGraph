@@ -59,7 +59,7 @@ class DescriptorBuffer final : public DescriptorHandler {
  private:
   const Device* _device;
   const MemoryAllocator* _memoryAllocator;
-  std::vector<const DescriptorSetLayout*> _descriptorLayouts;
+  std::vector<DescriptorSetLayout*> _descriptorLayouts;
   std::unique_ptr<Buffer> _descriptorBuffer = nullptr;
   VkDeviceAddress _address = 0;
   std::vector<std::vector<VkDeviceSize>> _offsets;
@@ -77,7 +77,7 @@ class DescriptorBuffer final : public DescriptorHandler {
                               VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
   void _add(VkDescriptorGetInfoEXT info);
  public:
-  DescriptorBuffer(const std::vector<const DescriptorSetLayout*>& layouts,
+  DescriptorBuffer(const std::vector<DescriptorSetLayout*>& layouts,
                    const MemoryAllocator& memoryAllocator,
                    const Device& device);
   void add(std::vector<VkDescriptorImageInfo> imageInfos) override;

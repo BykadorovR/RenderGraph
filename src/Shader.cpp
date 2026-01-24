@@ -60,23 +60,30 @@ void Shader::add(const std::vector<char>& shaderCode, const VkSpecializationInfo
   if (r != SPV_REFLECT_RESULT_SUCCESS) {
     throw std::runtime_error("Failed to reflect shader module");
   }
-  uint32_t count = 0;
-  spvReflectEnumerateDescriptorBindings(&module, &count, nullptr);
-  std::vector<SpvReflectDescriptorBinding*> bindings(count);
-  spvReflectEnumerateDescriptorBindings(&module, &count, bindings.data());
 
-  for (uint32_t i = 0; i < count; ++i) {
-    SpvReflectDescriptorBinding* b = bindings[i];
-    VkDescriptorSetLayoutBinding layoutBinding{};
-    layoutBinding.binding = b->binding;
-    layoutBinding.descriptorType = static_cast<VkDescriptorType>(b->descriptor_type);
-    layoutBinding.descriptorCount = b->count;
-    layoutBinding.stageFlags = static_cast<VkShaderStageFlagBits>(module.shader_stage);
-    layoutBinding.pImmutableSamplers = nullptr;
+  uint32_t descriptorCount = 0;
+  spvReflectEnumerateDescriptorSets(&module, &descriptorCount, nullptr);
+  std::vector<SpvReflectDescriptorSet*> sets(descriptorCount);
+  spvReflectEnumerateDescriptorSets(&module, &descriptorCount, sets.data());
 
-    auto it = std::lower_bound(_descriptorSetLayoutBindings.begin(), _descriptorSetLayoutBindings.end(), layoutBinding,
-                               [](auto const& x, auto const& v) { return x.binding < v.binding; });
-    _descriptorSetLayoutBindings.insert(it, layoutBinding);
+  if (descriptorCount > _descriptorSetLayoutBindings.size())
+    _descriptorSetLayoutBindings.resize(descriptorCount);
+  for (int s = 0; s < sets.size(); s++) {
+    auto count = sets[s]->binding_count;
+    auto bindings = std::vector<SpvReflectDescriptorBinding*>(sets[s]->bindings, sets[s]->bindings + count);
+    for (uint32_t i = 0; i < count; ++i) {
+      SpvReflectDescriptorBinding* b = bindings[i];
+      VkDescriptorSetLayoutBinding layoutBinding{};
+      layoutBinding.binding = b->binding;
+      layoutBinding.descriptorType = static_cast<VkDescriptorType>(b->descriptor_type);
+      layoutBinding.descriptorCount = b->count;
+      layoutBinding.stageFlags = static_cast<VkShaderStageFlagBits>(module.shader_stage);
+      layoutBinding.pImmutableSamplers = nullptr;
+
+      auto it = std::lower_bound(_descriptorSetLayoutBindings[s].begin(), _descriptorSetLayoutBindings[s].end(),
+                                 layoutBinding, [](auto const& x, auto const& v) { return x.binding < v.binding; });
+      _descriptorSetLayoutBindings[s].insert(it, layoutBinding);
+    }
   }
 
   VkShaderModule shaderModule = _createShaderModule(shaderCode);
@@ -90,7 +97,7 @@ void Shader::add(const std::vector<char>& shaderCode, const VkSpecializationInfo
   _specializationInfo[static_cast<VkShaderStageFlagBits>(module.shader_stage)] = info;
 
   if (module.shader_stage == SPV_REFLECT_SHADER_STAGE_VERTEX_BIT) {
-    count = 0;
+    uint32_t count = 0;
     spvReflectEnumerateInputVariables(&module, &count, nullptr);
     _variables.resize(count);
     spvReflectEnumerateInputVariables(&module, &count, _variables.data());
@@ -108,7 +115,7 @@ std::vector<VkPipelineShaderStageCreateInfo> Shader::getShaderStageInfo() const 
   return _shaders | std::views::values | std::ranges::to<std::vector>();
 }
 
-const std::vector<VkDescriptorSetLayoutBinding>& Shader::getDescriptorSetLayoutBindings() const {
+const std::vector<std::vector<VkDescriptorSetLayoutBinding>>& Shader::getDescriptorSetLayoutBindings() const {
   return _descriptorSetLayoutBindings;
 }
 

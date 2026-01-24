@@ -61,7 +61,7 @@ class PipelineGraphic final {
 class Pipeline final {
  protected:
   const Device* _device;
-  std::vector<std::pair<std::string, DescriptorSetLayout*>> _descriptorSetLayout;
+  std::vector<DescriptorSetLayout*> _descriptorSetLayout;
   std::unordered_map<std::string, VkPushConstantRange> _pushConstants;
   VkPipeline _pipeline;
   VkPipelineLayout _pipelineLayout;
@@ -74,15 +74,15 @@ class Pipeline final {
   Pipeline& operator=(Pipeline&&) = delete;
 
   void createCompute(const VkPipelineShaderStageCreateInfo& shaderStage,
-                     std::vector < std::pair<std::string, DescriptorSetLayout*>> & descriptorSetLayout,
+                     std::vector<DescriptorSetLayout*> & descriptorSetLayout,
                      const std::unordered_map<std::string, VkPushConstantRange>& pushConstants);
   void createGraphic(const PipelineGraphic& pipelineGraphic,
                      const std::vector<VkPipelineShaderStageCreateInfo>& shaderStages,
-                     std::vector<std::pair<std::string, DescriptorSetLayout*>>& descriptorSetLayout,
+                     std::vector<DescriptorSetLayout*>& descriptorSetLayout,
                      const std::unordered_map<std::string, VkPushConstantRange>& pushConstants,
                      const VkPipelineVertexInputStateCreateInfo& vertexInputInfo);
 
-  const std::vector<std::pair<std::string, DescriptorSetLayout*>>& getDescriptorSetLayout() const noexcept;
+  const std::vector<DescriptorSetLayout*>& getDescriptorSetLayout() const noexcept;
   const std::unordered_map<std::string, VkPushConstantRange>& getPushConstants() const noexcept;
   const VkPipeline& getPipeline() const noexcept;
   const VkPipelineLayout& getPipelineLayout() const noexcept;

@@ -41,7 +41,7 @@ DescriptorSetLayout::~DescriptorSetLayout() {
   vkDestroyDescriptorSetLayout(_device->getLogicalDevice(), _descriptorSetLayout, nullptr);
 }
 
-DescriptorBuffer::DescriptorBuffer(const std::vector<const DescriptorSetLayout*>& layouts,
+DescriptorBuffer::DescriptorBuffer(const std::vector<DescriptorSetLayout*>& layouts,
                                    const MemoryAllocator& memoryAllocator,
                                    const Device& device) {
   _memoryAllocator = &memoryAllocator;
@@ -98,8 +98,12 @@ void DescriptorBuffer::_add(VkDescriptorGetInfoEXT info) {
   auto descSize = _getDescriptorSize(info.type);
   std::vector<uint8_t> descriptorCPU(descSize);
   vkGetDescriptorEXT(_device->getLogicalDevice(), &info, descSize, descriptorCPU.data());
+
+  std::vector<VkDeviceSize> offsetSet(_layoutSize.size());
+  std::exclusive_scan(_layoutSize.begin(), _layoutSize.end(), offsetSet.begin(), VkDeviceSize{0});
   std::copy(descriptorCPU.begin(), descriptorCPU.end(),
-            _descriptors.begin() + setSize * _frame + _set * _layoutSize[_set] + _offsets[_set][_bindingOffset]);
+            // offset between frames, between sets, inside set 
+            _descriptors.begin() + setSize * _frame + offsetSet[_set] + _offsets[_set][_bindingOffset]);
 
   // calculate next frame, set, binning
   if (_binding.second < _descriptorLayouts[_set]->getLayoutInfo()[_binding.first].descriptorCount) _binding.second++;
@@ -192,20 +196,19 @@ void DescriptorBuffer::bind(VkPipelineBindPoint bindPoint,
                             const VkPipelineLayout& pipelineLayout,
                             const CommandBuffer& commandBuffer) {
   auto bufferBinding = VkDescriptorBufferBindingInfoEXT{VK_STRUCTURE_TYPE_DESCRIPTOR_BUFFER_BINDING_INFO_EXT, nullptr,
-                                                        _descriptorBuffer->getDeviceAddress(*_device), _usage};
-  std::vector<VkDeviceSize> offset(_layoutSize.size());
-  for (int i = 0; i < _layoutSize.size(); i++) {
-    offset[i] = _layoutSize[i] * (_currentBind++ % (_frame));
-    if (i > 0) {
-      offset[i] += offset[i - 1];
-    }
-  }
+                                                        _descriptorBuffer->getDeviceAddress(*_device), _usage};  
+  std::vector<VkDeviceSize> offsets(_layoutSize.size());
+  auto setSize = std::reduce(_layoutSize.begin(), _layoutSize.end());
+  std::exclusive_scan(_layoutSize.begin(), _layoutSize.end(), offsets.begin(), VkDeviceSize{0});
+  for (auto&& offset : offsets) offset += setSize * (_currentBind % _frame);
+  _currentBind++;
+  
   std::vector<uint32_t> bufIndex(_layoutSize.size(), 0);
   // we use 1 buffer for the whole shader
   vkCmdBindDescriptorBuffersEXT(commandBuffer.getCommandBuffer(), 1, &bufferBinding);
   // but specify offsets for every set
   vkCmdSetDescriptorBufferOffsetsEXT(commandBuffer.getCommandBuffer(), bindPoint, pipelineLayout, 0,
-                                     _descriptorLayouts.size(), bufIndex.data(), offset.data());
+                                     _descriptorLayouts.size(), bufIndex.data(), offsets.data());
 }
 
 DescriptorPool::DescriptorPool(DescriptorPoolSize poolSize, const Device& device) {
