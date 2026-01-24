@@ -529,9 +529,7 @@ TEST(PipelineTest, Create) {
                                 .offset = std::get<1>(fields[i])};
   }
 
-  std::vector<std::pair<std::string, RenderGraph::DescriptorSetLayout*>> descriptorSetLayouts;
-  descriptorSetLayouts.emplace_back("test", &layout);
-
+  std::vector<RenderGraph::DescriptorSetLayout*> descriptorSetLayouts = {&layout};
   // validation error is expected because minimal shader does not have any input
   EXPECT_NO_THROW(pipeline.createGraphic(pipelineGraphic, shader.getShaderStageInfo(), descriptorSetLayouts, {},
                                          *shader.getVertexInputInfo()));
@@ -751,12 +749,12 @@ TEST(ShaderTest, Reflection) {
   device.initialize();
   RenderGraph::Shader shader(device);
   shader.add(fragmentSpirv);
-  auto resultFragment = shader.getDescriptorSetLayoutBindings();
+  auto resultFragment = shader.getDescriptorSetLayoutBindings()[0];
   EXPECT_EQ(resultFragment.size(), 1);
   EXPECT_EQ(resultFragment[0].binding, 1);
   EXPECT_EQ(resultFragment[0].stageFlags, VK_SHADER_STAGE_FRAGMENT_BIT);
   shader.add(vertexSpirv);
-  auto resultVertex = shader.getDescriptorSetLayoutBindings();
+  auto resultVertex = shader.getDescriptorSetLayoutBindings()[0];
   EXPECT_EQ(resultVertex.size(), 2);
   EXPECT_EQ(resultVertex[0].binding, 0);
   EXPECT_EQ(resultVertex[1].binding, 1);
