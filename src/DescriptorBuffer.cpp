@@ -248,7 +248,7 @@ VkDescriptorPool DescriptorPool::getDescriptorPool() const noexcept { return _de
 
 DescriptorPool::~DescriptorPool() { vkDestroyDescriptorPool(_device->getLogicalDevice(), _descriptorPool, nullptr); }
 
-DescriptorSet::DescriptorSet(const std::vector<const DescriptorSetLayout*>& layouts,
+DescriptorSet::DescriptorSet(const std::vector<DescriptorSetLayout*>& layouts,
                              DescriptorPool& descriptorPool,
                              const Device& device) {
   _descriptorLayouts = layouts;
@@ -262,6 +262,7 @@ DescriptorSet::DescriptorSet(const std::vector<const DescriptorSetLayout*>& layo
 }
 
 void DescriptorSet::_allocateDescriptorSetsForNextFrame() {
+  _descriptorWrites.emplace_back();
   std::vector<VkDescriptorSet> setFrame;
   for (auto&& layout : _descriptorLayouts) {
     VkDescriptorSet descriptorSet;
@@ -282,9 +283,9 @@ void DescriptorSet::_allocateDescriptorSetsForNextFrame() {
     }
 
     setFrame.push_back(descriptorSet);
+    _descriptorWrites[_descriptorWrites.size() - 1].emplace_back();
   }
-  _descriptorSet.push_back(std::move(setFrame));
-  _descriptorWrites.emplace_back();
+  _descriptorSet.push_back(std::move(setFrame));  
 }
 
 int DescriptorSet::_calculateDescriptorSetIndex() {
@@ -307,7 +308,7 @@ void DescriptorSet::add(std::vector<Buffer*> buffers) {
     _allocateDescriptorSetsForNextFrame();
   }
 
-  auto index = _calculateDescriptorSetIndex();
+  auto set = _calculateDescriptorSetIndex();
   std::vector<VkDescriptorBufferInfo> bufferInfos(buffers.size());
   for (int i = 0; i < buffers.size(); i++) {
     bufferInfos[i] =
@@ -315,16 +316,16 @@ void DescriptorSet::add(std::vector<Buffer*> buffers) {
   }
   int bufferKey = _bufferInfo.size();
   _bufferInfo.push_back(bufferInfos);
-  int key = _descriptorWrites[_frame].size();
+  int key = _descriptorWrites[_frame][set].size();
   VkWriteDescriptorSet descriptorSet = {
       .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-      .dstSet = _descriptorSet[_frame][index],
-      .dstBinding = _descriptorLayouts[index]->getLayoutInfo()[key].binding,
+      .dstSet = _descriptorSet[_frame][set],
+      .dstBinding = _descriptorLayouts[set]->getLayoutInfo()[key].binding,
       .dstArrayElement = 0,
-      .descriptorCount = _descriptorLayouts[index]->getLayoutInfo()[key].descriptorCount,
-      .descriptorType = _descriptorLayouts[index]->getLayoutInfo()[key].descriptorType,
+      .descriptorCount = _descriptorLayouts[set]->getLayoutInfo()[key].descriptorCount,
+      .descriptorType = _descriptorLayouts[set]->getLayoutInfo()[key].descriptorType,
       .pBufferInfo = _bufferInfo[bufferKey].data()};
-  _descriptorWrites[_frame].push_back(descriptorSet);
+  _descriptorWrites[_frame][set].push_back(descriptorSet);
 
   _number++;
 }
@@ -337,19 +338,19 @@ void DescriptorSet::add(std::vector<VkDescriptorImageInfo> imageInfos) {
     _allocateDescriptorSetsForNextFrame();
   }
 
-  auto index = _calculateDescriptorSetIndex();
+  auto set = _calculateDescriptorSetIndex();
   int imageKey = _imageInfo.size();
   _imageInfo.push_back(imageInfos);
-  int key = _descriptorWrites[_frame].size();
+  int key = _descriptorWrites[_frame][set].size();
   VkWriteDescriptorSet descriptorSet = {
       .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-      .dstSet = _descriptorSet[_frame][index],
-      .dstBinding = _descriptorLayouts[index]->getLayoutInfo()[key].binding,
+      .dstSet = _descriptorSet[_frame][set],
+      .dstBinding = _descriptorLayouts[set]->getLayoutInfo()[key].binding,
       .dstArrayElement = 0,
-      .descriptorCount = _descriptorLayouts[index]->getLayoutInfo()[key].descriptorCount,
-      .descriptorType = _descriptorLayouts[index]->getLayoutInfo()[key].descriptorType,
+      .descriptorCount = _descriptorLayouts[set]->getLayoutInfo()[key].descriptorCount,
+      .descriptorType = _descriptorLayouts[set]->getLayoutInfo()[key].descriptorType,
       .pImageInfo = _imageInfo[imageKey].data()};
-  _descriptorWrites[_frame].push_back(descriptorSet);
+  _descriptorWrites[_frame][set].push_back(descriptorSet);
 
   _number++;
 }
@@ -358,7 +359,8 @@ void DescriptorSet::initialize(const CommandBuffer& commandBuffer) {
   // update for every frame
   // TODO: maybe can simplify and use 1 command?
   for (auto&& descriptorWrites : _descriptorWrites) {
-    vkUpdateDescriptorSets(_device->getLogicalDevice(), descriptorWrites.size(), descriptorWrites.data(), 0, nullptr);
+    for (auto&& setWrites : descriptorWrites)
+      vkUpdateDescriptorSets(_device->getLogicalDevice(), setWrites.size(), setWrites.data(), 0, nullptr);
   }
   _imageInfo.clear();
   _bufferInfo.clear();
@@ -367,9 +369,10 @@ void DescriptorSet::initialize(const CommandBuffer& commandBuffer) {
 void DescriptorSet::bind(VkPipelineBindPoint bindPoint,
                          const VkPipelineLayout& pipelineLayout,
                          const CommandBuffer& commandBuffer) {
-  for (auto&& descriptorSet : _descriptorSet[_currentBind++ % (_frame + 1)])
-    vkCmdBindDescriptorSets(commandBuffer.getCommandBuffer(), bindPoint, pipelineLayout, 0, 1, &descriptorSet, 0,
-                            nullptr);
+  auto&& descriptorSet = _descriptorSet[_currentBind % (_frame + 1)];
+  vkCmdBindDescriptorSets(commandBuffer.getCommandBuffer(), bindPoint, pipelineLayout, 0, descriptorSet.size(),
+                          descriptorSet.data(), 0, nullptr);
+  _currentBind++;
 }
 
 DescriptorSet::~DescriptorSet() {

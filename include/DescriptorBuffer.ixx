@@ -130,9 +130,9 @@ class DescriptorSet final : public DescriptorHandler {
   // frame - set
   std::vector<std::vector<VkDescriptorSet>> _descriptorSet;
   // set
-  std::vector<const DescriptorSetLayout*> _descriptorLayouts;
+  std::vector<DescriptorSetLayout*> _descriptorLayouts;
   // frame - set
-  std::vector<std::vector<VkWriteDescriptorSet>> _descriptorWrites;
+  std::vector<std::vector<std::vector<VkWriteDescriptorSet>>> _descriptorWrites;
   // set - binding
   std::vector<std::vector<VkDescriptorImageInfo>> _imageInfo;
   std::vector<std::vector<VkDescriptorBufferInfo>> _bufferInfo;
@@ -145,7 +145,7 @@ class DescriptorSet final : public DescriptorHandler {
   int _calculateDescriptorSetIndex();
   void _allocateDescriptorSetsForNextFrame();
  public:
-  DescriptorSet(const std::vector<const DescriptorSetLayout*>& layouts,
+  DescriptorSet(const std::vector<DescriptorSetLayout*>& layouts,
                 DescriptorPool& descriptorPool,
                 const Device& device);
   DescriptorSet(const DescriptorSet&) = delete;
