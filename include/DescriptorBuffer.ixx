@@ -3,6 +3,7 @@ import Device;
 import Buffer;
 import Allocator;
 import Command;
+import Texture;
 import <vector>;
 import <map>;
 import <volk.h>;
@@ -39,9 +40,19 @@ class DescriptorSetLayout final {
 };
 
 class DescriptorHandler {
+ private:
+  friend class ::DescriptorSetTest_Create_Test;
+  friend class ::DescriptorSetTest_Update_Test;
+ protected:
+  struct Resource {
+    enum class Type { BUFFER, TEXTURE } type;
+    std::vector<Buffer*> buffers;
+    std::vector<Texture*> textures;
+  };
+  std::vector<Resource> _resources;
  public:
-  virtual void add(std::vector<VkDescriptorImageInfo> imageInfos) = 0;
-  virtual void add(std::vector<Buffer*> buffers) = 0;
+  void add(std::vector<Texture*> textures);
+  void add(std::vector<Buffer*> buffers);
   virtual void initialize(const CommandBuffer& commandBuffer) = 0;
   virtual void bind(VkPipelineBindPoint bindPoint,
                     const VkPipelineLayout& pipelineLayout,
@@ -80,8 +91,6 @@ class DescriptorBuffer final : public DescriptorHandler {
   DescriptorBuffer(const std::vector<DescriptorSetLayout*>& layouts,
                    const MemoryAllocator& memoryAllocator,
                    const Device& device);
-  void add(std::vector<VkDescriptorImageInfo> imageInfos) override;
-  void add(std::vector<Buffer*> buffers) override;
   void initialize(const CommandBuffer& commandBuffer) override;
   void bind(VkPipelineBindPoint bindPoint,
             const VkPipelineLayout& pipelineLayout,
@@ -130,12 +139,7 @@ class DescriptorSet final : public DescriptorHandler {
   // frame - set
   std::vector<std::vector<VkDescriptorSet>> _descriptorSet;
   // set
-  std::vector<DescriptorSetLayout*> _descriptorLayouts;
-  // frame - set
-  std::vector<std::vector<std::vector<VkWriteDescriptorSet>>> _descriptorWrites;
-  // set - binding
-  std::vector<std::vector<VkDescriptorImageInfo>> _imageInfo;
-  std::vector<std::vector<VkDescriptorBufferInfo>> _bufferInfo;
+  std::vector<DescriptorSetLayout*> _descriptorLayouts;  
 
   int _bindingNumber = 0;
   int _frame = 0;
@@ -153,8 +157,6 @@ class DescriptorSet final : public DescriptorHandler {
   DescriptorSet(DescriptorSet&& other) = delete;
   DescriptorSet& operator=(DescriptorSet&& other) = delete;
 
-  void add(std::vector<VkDescriptorImageInfo> imageInfos) override;
-  void add(std::vector<Buffer*> buffers) override;
   void initialize(const CommandBuffer& commandBuffer) override;
   void bind(VkPipelineBindPoint bindPoint,
             const VkPipelineLayout& pipelineLayout,

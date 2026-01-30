@@ -31,10 +31,8 @@ class GraphStorage final {
   void add(std::string_view name, std::unique_ptr<ImageViewHolder> imageViewHolder) noexcept;
   // not const because will do std::move
   void add(std::string_view name, std::vector<std::unique_ptr<Buffer>>& buffers) noexcept;
-  void reset(
-             std::vector<std::shared_ptr<ImageView>> oldSwapchain,
-             std::vector<std::shared_ptr<ImageView>> newSwapchain,
-             const CommandBuffer& commandBuffer) noexcept;
+  void reset(std::vector<std::shared_ptr<ImageView>> oldSwapchain,
+             std::vector<std::shared_ptr<ImageView>> newSwapchain) noexcept;
   std::string find(const std::vector<std::shared_ptr<ImageView>>& imageViews) noexcept;
   const ImageViewHolder& getImageViewHolder(std::string_view name) const noexcept;
   // NVRO
@@ -45,8 +43,7 @@ class GraphElement {
  public:
   virtual void draw(int currentFrame, const CommandBuffer& commandBuffer) = 0;
   virtual void update(int currentFrame, const CommandBuffer& commandBuffer) = 0;
-  virtual void reset(const std::vector<std::shared_ptr<RenderGraph::ImageView>>& swapchain,
-                     const CommandBuffer& commandBuffer) = 0;
+  virtual void reset(const std::vector<std::shared_ptr<RenderGraph::ImageView>>& swapchain) = 0;
   virtual ~GraphElement() = default;
 };
 
@@ -82,7 +79,7 @@ class GraphPass {
   std::vector<CommandBuffer*> getCommandBuffers() const noexcept;
   std::string getName() const noexcept;
   virtual void execute(int currentFrame, const CommandBuffer& commandBuffer) = 0;
-  void reset(const std::vector<std::shared_ptr<RenderGraph::ImageView>>& swapchain, CommandBuffer& commandBuffer);
+  void reset(const std::vector<std::shared_ptr<RenderGraph::ImageView>>& swapchain);
   virtual ~GraphPass() = default;
 };
 
@@ -164,9 +161,6 @@ class Graph final {
   std::deque<GraphPass*> _passesOrdered;
   std::unique_ptr<Timestamps> _timestamps;
   std::unique_ptr<GraphStorage> _graphStorage;
-  std::unique_ptr<CommandPool> _commandPoolReset;
-  std::unique_ptr<CommandBuffer> _commandBuffersReset;
-  bool _resetFrames;
   // special semaphores
   std::vector<std::shared_ptr<Semaphore>> _semaphoreRenderFinished, _semaphoreImageAvailable;
   std::unique_ptr<Semaphore> _semaphoreInFlight;

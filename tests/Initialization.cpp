@@ -286,16 +286,12 @@ TEST(DescriptorSetTest, Update) {
   RenderGraph::DescriptorSet descriptorSet({&layout}, descriptorPool, device);
   VkDescriptorBufferInfo bufferInfo{.buffer = buffer.getBuffer(), .offset = 0, .range = buffer.getSize()};
   descriptorSet.add({&buffer});
-  EXPECT_EQ(descriptorSet._descriptorWrites.size(), 1);
-  EXPECT_EQ(descriptorSet._bindingNumber, 1);
-  EXPECT_EQ(descriptorSet._bufferInfo.size(), 1);
+  EXPECT_EQ(descriptorSet._resources.size(), 1);
   RenderGraph::CommandPool commandPool(vkb::QueueType::graphics, device);
   RenderGraph::CommandBuffer commandBuffer(commandPool, device);
   commandBuffer.beginCommands();
   descriptorSet.initialize(commandBuffer);
-  EXPECT_EQ(descriptorSet._descriptorWrites.size(), 1);
   EXPECT_EQ(descriptorSet._bindingNumber, 1);
-  EXPECT_EQ(descriptorSet._bufferInfo.size(), 0);
   commandBuffer.endCommands();
 }
 
@@ -420,40 +416,31 @@ TEST(DescriptorBufferTest, DifferentSets) {
                               return (offsets[0] == 0 && offsets[1] != 0) || (offsets[1] == 0 && offsets[0] != 0);
                             });
   EXPECT_EQ(offset, true);
-
-  EXPECT_EQ(descriptorBuffer._binding.first, 0);
-  EXPECT_EQ(descriptorBuffer._binding.second, 0);
-  EXPECT_EQ(descriptorBuffer._set, 0);
-  EXPECT_EQ(descriptorBuffer._frame, 0);
   descriptorBuffer.add({&buffer});
-  EXPECT_EQ(descriptorBuffer._binding.first, 1);
-  EXPECT_EQ(descriptorBuffer._binding.second, 0);
-  EXPECT_EQ(descriptorBuffer._set, 0);
-  EXPECT_EQ(descriptorBuffer._frame, 0);
   descriptorBuffer.add({&buffer});
-  int size1 = descriptorBuffer._offsets[0][0] + descriptorBuffer._offsets[0][1];
-  bool filled = std::any_of(descriptorBuffer._descriptors.begin(), descriptorBuffer._descriptors.begin() + size1,
-                            [](auto v) { return v != 0; });
-  EXPECT_EQ(filled, true);
-
-  EXPECT_EQ(descriptorBuffer._binding.first, 0);
-  EXPECT_EQ(descriptorBuffer._binding.second, 0);
-  EXPECT_EQ(descriptorBuffer._set, 1);
-  EXPECT_EQ(descriptorBuffer._frame, 0);
   descriptorBuffer.add({&buffer});
-  EXPECT_EQ(descriptorBuffer._binding.first, 1);
-  EXPECT_EQ(descriptorBuffer._binding.second, 0);
-  EXPECT_EQ(descriptorBuffer._set, 1);
-  EXPECT_EQ(descriptorBuffer._frame, 0);
   descriptorBuffer.add({&buffer});
-  bool filled2 = std::any_of(descriptorBuffer._descriptors.begin() + descriptorBuffer._layoutSize[0],
-                             descriptorBuffer._descriptors.end(), [](auto v) { return v != 0; });
-  EXPECT_EQ(filled2, true);
-
+  RenderGraph::CommandPool commandPool(vkb::QueueType::graphics, device);
+  RenderGraph::CommandBuffer commandBuffer(commandPool, device);
+  commandBuffer.beginCommands();
+  descriptorBuffer.initialize(commandBuffer);
+  EXPECT_THROW(descriptorBuffer.initialize(commandBuffer), std::runtime_error);
   EXPECT_EQ(descriptorBuffer._binding.first, 0);
   EXPECT_EQ(descriptorBuffer._binding.second, 0);
   EXPECT_EQ(descriptorBuffer._set, 0);
   EXPECT_EQ(descriptorBuffer._frame, 1);
+
+  int size1 = descriptorBuffer._offsets[0][0] + descriptorBuffer._offsets[0][1];
+  bool filled1 = std::any_of(descriptorBuffer._descriptors.begin(), descriptorBuffer._descriptors.begin() + size1,
+                             [](auto v) { return v != 0; });
+  int size2 = descriptorBuffer._offsets[1][0] + descriptorBuffer._offsets[1][1];
+  bool filled2 = std::any_of(descriptorBuffer._descriptors.begin(),
+                             descriptorBuffer._descriptors.begin() + size1 + descriptorBuffer._layoutSize[0],
+                             [](auto v) { return v != 0; });
+
+  EXPECT_EQ(filled1, true);
+  EXPECT_EQ(filled2, true);
+  commandBuffer.endCommands();
 }
 
 TEST(DescriptorBufferTest, Update) {
@@ -482,7 +469,6 @@ TEST(DescriptorBufferTest, Update) {
   descriptorBuffer.initialize(commandBuffer);
   EXPECT_THROW(descriptorBuffer.initialize(commandBuffer), std::runtime_error);
   EXPECT_NE(descriptorBuffer._descriptorBuffer->getDeviceAddress(device), 0);
-  EXPECT_THROW(descriptorBuffer.add({&buffer}), std::runtime_error);
   commandBuffer.endCommands();
 }
 
@@ -682,7 +668,7 @@ TEST(TextureTest, Create) {
   sampler->createSampler(VK_SAMPLER_ADDRESS_MODE_REPEAT, 1, 4, VK_FILTER_LINEAR);
   RenderGraph::Texture texture(imageView, sampler);
   EXPECT_EQ(&texture.getImageView(), imageView.get());
-  EXPECT_EQ(&texture.getSampler(), sampler.get());
+  EXPECT_EQ(texture.getSampler(), sampler.get());
 }
 
 template <typename T>
