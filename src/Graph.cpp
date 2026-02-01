@@ -12,8 +12,7 @@ void GraphStorage::add(std::string_view name, std::vector<std::unique_ptr<Buffer
 }
 
 void GraphStorage::reset(std::vector<std::shared_ptr<ImageView>> oldSwapchain,
-                         std::vector<std::shared_ptr<ImageView>> newSwapchain,
-                         const CommandBuffer& commandBuffer) noexcept {
+                         std::vector<std::shared_ptr<ImageView>> newSwapchain) noexcept {
   glm::ivec2 resolution = newSwapchain.front()->getImage().getResolution();
   auto nameSwapchain = find(oldSwapchain);
   if (nameSwapchain.empty() == false) {
@@ -31,17 +30,6 @@ void GraphStorage::reset(std::vector<std::shared_ptr<ImageView>> oldSwapchain,
           image.destroy();
           image.createImage(image.getFormat(), resolution, image.getMipMapNumber(), image.getLayerNumber(),
                             image.getAspectMask(), image.getUsageFlags());
-
-          // attachments are used in beginRendering, to avoid WAW hazard we set access mask to WRITE
-          // potentially this won't work for storage images if there is no rendering pass before usage
-          // so READ is needed as well
-          auto dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT;
-          if (image.getAspectMask() & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) {
-            dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
-          }
-
-          image.changeLayout(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_NONE, dstAccessMask,
-                             commandBuffer);
           imageViews[i]->destroy();
           imageViews[i]->createImageView(imageViews[i]->getType(), imageViews[i]->getBaseMipMap(),
                                          imageViews[i]->getBaseArrayLayer());
@@ -79,10 +67,9 @@ void GraphPass::registerGraphElement(std::shared_ptr<GraphElement> graphElement)
 
 std::string GraphPass::getName() const noexcept { return _name; }
 
-void GraphPass::reset(const std::vector<std::shared_ptr<RenderGraph::ImageView>>& swapchain,
-                      CommandBuffer& commandBuffer) {
+void GraphPass::reset(const std::vector<std::shared_ptr<RenderGraph::ImageView>>& swapchain) {
   for (auto&& graphElement : _graphElements) {
-    graphElement->reset(swapchain, commandBuffer);
+    graphElement->reset(swapchain);
   }
 }
 
@@ -281,9 +268,6 @@ Graph::Graph(int threadsNumber,
   _timestamps = std::make_unique<Timestamps>(device);
   _graphStorage = std::make_unique<GraphStorage>();
   _maxFramesInFlight = maxFramesInFlight;
-  _resetFrames = false;
-  _commandPoolReset = std::make_unique<CommandPool>(vkb::QueueType::graphics, device);
-  _commandBuffersReset = std::make_unique<CommandBuffer>(*_commandPoolReset, device);
 }
 
 void Graph::initialize() noexcept {
@@ -577,12 +561,33 @@ bool Graph::render() {
       _passesOrdered | std::views::transform([this, swapchainIndex](auto& pass) {
         auto commandBuffer = pass->getCommandBuffers()[_frameInFlight];
         if (commandBuffer->getActive() == false) commandBuffer->beginCommands();
-        // first pass changes swapchain layout to GENERAL, because by default it's UNDEFINED
-        if (_swapchain->getImage(swapchainIndex).getImageLayout() != VK_IMAGE_LAYOUT_GENERAL) {
-          _swapchain->getImage(swapchainIndex)
-              .changeLayout(_swapchain->getImage(swapchainIndex).getImageLayout(), VK_IMAGE_LAYOUT_GENERAL,
-                            VK_ACCESS_NONE, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-                            *pass->getCommandBuffers()[_frameInFlight]);
+
+        // change layouts for dynamic rendering if needed (attachments and/or swapchain), handles reset as well
+        if (pass->getGraphPassType() == GraphPassType::GRAPHIC) {
+          auto passGraphic = static_cast<GraphPassGraphic*>(pass);
+          auto colorTargets = passGraphic->getColorTargets();
+          for (auto&& colorTarget : colorTargets) {
+            auto&& imageView = _graphStorage->getImageViewHolder(colorTarget).getImageView();
+            if (imageView.getImage().getImageLayout() != VK_IMAGE_LAYOUT_GENERAL) {
+              // attachments are used in beginRendering, to avoid WAW hazard we set access mask to WRITE
+              // potentially this won't work for storage images if there is no rendering pass before usage
+              // so READ is needed as well
+              auto dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT;
+              imageView.getImage().changeLayout(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_NONE,
+                                                dstAccessMask, *commandBuffer);
+            }
+          }
+          auto depthTarget = passGraphic->getDepthTarget();
+          if (depthTarget) {
+            auto&& depthImageView = _graphStorage->getImageViewHolder(depthTarget.value()).getImageView();
+            if (depthImageView.getImage().getImageLayout() != VK_IMAGE_LAYOUT_GENERAL) {
+              auto dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
+                                   VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+
+              depthImageView.getImage().changeLayout(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_NONE,
+                                                     dstAccessMask, *commandBuffer);
+            }
+          }
         }
 
         return _threadPool->submit([this, pass, commandBuffer]() {
@@ -627,16 +632,6 @@ bool Graph::render() {
 
     vkQueueSubmit(_device->getQueue(queueType), 1, &submitInfo, nullptr);
   };
-
-  if (_resetFrames) {
-    auto queueType = vkb::QueueType::graphics;
-    VkSubmitInfo submitInfo{.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-                            .commandBufferCount = 1u,
-                            .pCommandBuffers = &_commandBuffersReset->getCommandBuffer()};
-
-    vkQueueSubmit(_device->getQueue(queueType), 1, &submitInfo, nullptr);
-    _resetFrames = false;
-  }
 
   // command buffer from passes
   std::vector<CommandBuffer*> commandBufferSubmit;
@@ -765,21 +760,8 @@ void Graph::reset() {
     throw std::runtime_error("Can't reset if resolution is 0");
 
   auto oldSwapchain = _swapchain->reset(_window->getResolution());
-  _commandBuffersReset->beginCommands();
-  _graphStorage->reset(oldSwapchain, _swapchain->getImageViews(), *_commandBuffersReset);
+  _graphStorage->reset(oldSwapchain, _swapchain->getImageViews());
   for (auto&& pass : _passesOrdered) {
-    pass->reset(_swapchain->getImageViews(), *_commandBuffersReset);
+    pass->reset(_swapchain->getImageViews());
   }
-
-  // insert global barrier so all image layout commands are being processed,
-  // because we submit this command buffer to the same queue along the frame rendering command buffers
-  VkMemoryBarrier mem{};
-  mem.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-  mem.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
-  mem.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
-  vkCmdPipelineBarrier(_commandBuffersReset->getCommandBuffer(), VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                       VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &mem, 0, nullptr, 0, nullptr);
-
-  _commandBuffersReset->endCommands();
-  _resetFrames = true;
 }

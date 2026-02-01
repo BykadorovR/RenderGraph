@@ -20,10 +20,7 @@ class GraphElementMock : public RenderGraph::GraphElement {
  public:
   void draw(int currentFrame, const RenderGraph::CommandBuffer& commandBuffer) override { _drawCount++; }
   void update(int currentFrame, const RenderGraph::CommandBuffer& commandBuffer) override { _updateCount++; }
-  void reset(const std::vector<std::shared_ptr<RenderGraph::ImageView>>& swapchain,
-             const RenderGraph::CommandBuffer& commandBuffer) override {
-    _resetCount++;
-  }
+  void reset(const std::vector<std::shared_ptr<RenderGraph::ImageView>>& swapchain) override { _resetCount++; }
 
   int getDrawCount() const noexcept { return _drawCount; }
   int getUpdateCount() const noexcept { return _updateCount; }
@@ -37,6 +34,7 @@ TEST(ScenarioTest, GraphOneQueue) {
   window.initialize();
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(surface, instance);
+  device.initialize();
   RenderGraph::MemoryAllocator allocator(device, instance);
   RenderGraph::Swapchain swapchain(resolution, allocator, device);
   int framesInFlight = 2;
@@ -212,6 +210,7 @@ TEST(ScenarioTest, GraphSeparateQueues) {
   window.initialize();
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(surface, instance);
+  device.initialize();
   RenderGraph::MemoryAllocator allocator(device, instance);
   RenderGraph::Swapchain swapchain(resolution, allocator, device);
   int framesInFlight = 2;
@@ -379,6 +378,7 @@ TEST(ScenarioTest, GraphReset) {
   window.initialize();
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(surface, instance);
+  device.initialize();
   RenderGraph::MemoryAllocator allocator(device, instance);
   RenderGraph::Swapchain swapchain(resolution, allocator, device);
   int framesInFlight = 2;
@@ -501,8 +501,8 @@ TEST(ScenarioTest, GraphReset) {
     swapchainImageView->createImageView(VK_IMAGE_VIEW_TYPE_2D, 0, 0);
     swapchainNewImages.push_back(swapchainImageView);
   }
-  commandBuffer[graph.getFrameInFlight()].beginCommands();
-  graph.getGraphStorage().reset(swapchain.getImageViews(), swapchainNewImages, commandBuffer[graph.getFrameInFlight()]);
+
+  graph.getGraphStorage().reset(swapchain.getImageViews(), swapchainNewImages);
   // swapchain is resized differently but resized anyway
   for (int i = 0; i < swapchainOldImages.size(); i++) {
     EXPECT_EQ(graph.getGraphStorage().getImageViewHolder("Swapchain").getImageViews()[i]->getImage().getResolution().x,
@@ -518,12 +518,6 @@ TEST(ScenarioTest, GraphReset) {
               480);
   }
 
-  commandBuffer[graph.getFrameInFlight()].endCommands();
-  VkSubmitInfo submitInfoReset = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-                                  .commandBufferCount = 1,
-                                  .pCommandBuffers = &commandBuffer[graph.getFrameInFlight()].getCommandBuffer()};
-  vkQueueSubmit(device.getQueue(vkb::QueueType::graphics), 1, &submitInfoReset, nullptr);
-
   // wait device idle before destroying resources
   vkDeviceWaitIdle(device.getLogicalDevice());
 }
@@ -535,6 +529,7 @@ TEST(ScenarioTest, DepthExistance) {
   window.initialize();
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(surface, instance);
+  device.initialize();
   RenderGraph::MemoryAllocator allocator(device, instance);
   RenderGraph::Swapchain swapchain(resolution, allocator, device);
   int framesInFlight = 2;

@@ -54,6 +54,7 @@ class Image final {
   VkImageAspectFlags _aspectMask;
   VkImageUsageFlags _usageFlags;
   VkImageLayout _imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  bool _mipMapGenerated = false;
 
  public:
   Image(const MemoryAllocator& memoryAllocator);
@@ -85,7 +86,6 @@ class Image final {
                     VkAccessFlags srcAccessMask,
                     VkAccessFlags dstAccessMask,
                     const CommandBuffer& commandBuffer);
-  void overrideLayout(VkImageLayout layout);
   void generateMipmaps(const CommandBuffer& commandBuffer);
 
   glm::ivec2 getResolution() const noexcept;
@@ -93,6 +93,7 @@ class Image final {
   VkFormat getFormat() const noexcept;
   VkImageLayout getImageLayout() const noexcept;
   int getMipMapNumber() const noexcept;
+  bool getMipMapGenerated() const noexcept;
   int getLayerNumber() const noexcept;
   VkImageAspectFlags getAspectMask() const noexcept;
   VkImageUsageFlags getUsageFlags() const noexcept;
@@ -181,6 +182,6 @@ class Texture final {
   Texture& operator=(Texture&&) = delete;
 
   const ImageView& getImageView() const noexcept;
-  const Sampler& getSampler() const noexcept;
+  const Sampler* getSampler() const noexcept;
 };
 }  // namespace RenderGraph

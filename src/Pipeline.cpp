@@ -135,7 +135,7 @@ const std::optional<VkFormat>& PipelineGraphic::getDepthAttachment() const noexc
 
 Pipeline::Pipeline(const Device& device) noexcept : _device(&device) {}
 
-const std::vector<std::pair<std::string, DescriptorSetLayout*>>& Pipeline::getDescriptorSetLayout() const noexcept {
+const std::vector<DescriptorSetLayout*>& Pipeline::getDescriptorSetLayout() const noexcept {
   return _descriptorSetLayout;
 }
 
@@ -154,7 +154,7 @@ Pipeline::~Pipeline() {
 
 void Pipeline::createGraphic(const PipelineGraphic& pipelineGraphic,
                              const std::vector<VkPipelineShaderStageCreateInfo>& shaderStages,
-                             std::vector<std::pair<std::string, DescriptorSetLayout*>>& descriptorSetLayout,
+                             std::vector<DescriptorSetLayout*>& descriptorSetLayout,
                              const std::unordered_map<std::string, VkPushConstantRange>& pushConstants,
                              const VkPipelineVertexInputStateCreateInfo& vertexInputInfo) {
   _descriptorSetLayout = descriptorSetLayout;
@@ -164,7 +164,7 @@ void Pipeline::createGraphic(const PipelineGraphic& pipelineGraphic,
   std::vector<VkDescriptorSetLayout> descriptorSetLayoutRaw;
   descriptorSetLayoutRaw.reserve(_descriptorSetLayout.size());
   for (auto&& layout : _descriptorSetLayout) {
-    descriptorSetLayoutRaw.push_back(layout.second->getDescriptorSetLayout());
+    descriptorSetLayoutRaw.push_back(layout->getDescriptorSetLayout());
   }
   VkPipelineLayoutCreateInfo pipelineLayoutInfo{.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
                                                 .setLayoutCount = static_cast<uint32_t>(descriptorSetLayoutRaw.size()),
@@ -197,7 +197,6 @@ void Pipeline::createGraphic(const PipelineGraphic& pipelineGraphic,
 
   VkGraphicsPipelineCreateInfo pipelineInfo{.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
                                             .pNext = &renderingInfo,
-                                            .flags = VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT,
                                             .stageCount = static_cast<uint32_t>(shaderStages.size()),
                                             .pStages = shaderStages.data(),
                                             .pVertexInputState = &vertexInputInfo,
@@ -211,6 +210,11 @@ void Pipeline::createGraphic(const PipelineGraphic& pipelineGraphic,
                                             .layout = _pipelineLayout,
                                             .subpass = 0,
                                             .basePipelineHandle = nullptr};
+  auto desiredExtensions = _device->getDesiredExtensions();
+  if (_device->isExtensionSupported("VK_EXT_descriptor_buffer") &&
+      std::find(desiredExtensions.begin(), desiredExtensions.end(), "VK_EXT_descriptor_buffer") !=
+          desiredExtensions.end())
+    pipelineInfo.flags = VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
   if (pipelineGraphic.getTessellationState())
     pipelineInfo.pTessellationState = &pipelineGraphic.getTessellationState().value();
   auto status = vkCreateGraphicsPipelines(_device->getLogicalDevice(), nullptr, 1, &pipelineInfo, nullptr, &_pipeline);
@@ -220,7 +224,7 @@ void Pipeline::createGraphic(const PipelineGraphic& pipelineGraphic,
 }
 
 void Pipeline::createCompute(const VkPipelineShaderStageCreateInfo& shaderStage,
-                             std::vector<std::pair<std::string, DescriptorSetLayout*>>& descriptorSetLayout,
+                             std::vector<DescriptorSetLayout*>& descriptorSetLayout,
                              const std::unordered_map<std::string, VkPushConstantRange>& pushConstants) {
   _descriptorSetLayout = descriptorSetLayout;
   _pushConstants = pushConstants;
@@ -229,7 +233,7 @@ void Pipeline::createCompute(const VkPipelineShaderStageCreateInfo& shaderStage,
   std::vector<VkDescriptorSetLayout> descriptorSetLayoutRaw;
   descriptorSetLayoutRaw.reserve(_descriptorSetLayout.size());
   for (auto& layout : _descriptorSetLayout) {
-    descriptorSetLayoutRaw.push_back(layout.second->getDescriptorSetLayout());
+    descriptorSetLayoutRaw.push_back(layout->getDescriptorSetLayout());
   }
   VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
   pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -251,7 +255,11 @@ void Pipeline::createCompute(const VkPipelineShaderStageCreateInfo& shaderStage,
   VkComputePipelineCreateInfo computePipelineCreateInfo{};
   computePipelineCreateInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
   computePipelineCreateInfo.layout = _pipelineLayout;
-  computePipelineCreateInfo.flags = VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
+  auto desiredExtensions = _device->getDesiredExtensions();
+  if (_device->isExtensionSupported("VK_EXT_descriptor_buffer") &&
+      std::find(desiredExtensions.begin(), desiredExtensions.end(), "VK_EXT_descriptor_buffer") !=
+          desiredExtensions.end())
+    computePipelineCreateInfo.flags = VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
   //
   computePipelineCreateInfo.stage = shaderStage;
   if (vkCreateComputePipelines(_device->getLogicalDevice(), nullptr, 1, &computePipelineCreateInfo, nullptr,
