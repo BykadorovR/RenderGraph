@@ -84,9 +84,9 @@ void Image::copyFrom(std::unique_ptr<Buffer> buffer,
     bufferCopyRegions.push_back(region);
   }
 
-  // demands image to be in VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL before copy
-  vkCmdCopyBufferToImage(commandBuffer.getCommandBuffer(), _stagingBuffer->getBuffer(), _image,
-                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, bufferCopyRegions.size(), bufferCopyRegions.data());
+  changeLayout(_imageLayout, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_NONE, VK_ACCESS_TRANSFER_WRITE_BIT, commandBuffer);
+  vkCmdCopyBufferToImage(commandBuffer.getCommandBuffer(), _stagingBuffer->getBuffer(), _image, VK_IMAGE_LAYOUT_GENERAL,
+                         bufferCopyRegions.size(), bufferCopyRegions.data());
   // need to insert memory barrier so read in fragment shader waits for copy
   VkMemoryBarrier memoryBarrier = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
                                    .pNext = nullptr,
@@ -124,8 +124,6 @@ void Image::changeLayout(VkImageLayout oldLayout,
                        VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
 }
 
-void Image::overrideLayout(VkImageLayout layout) { _imageLayout = layout; }
-
 void Image::generateMipmaps(const CommandBuffer& commandBuffer) {
   VkImageMemoryBarrier barrier{.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
                                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -140,8 +138,8 @@ void Image::generateMipmaps(const CommandBuffer& commandBuffer) {
   for (uint32_t i = 1; i < _mipMapNumber; i++) {
     // change layout of source image to SRC so we can resize it and generate i-th mip map level
     barrier.subresourceRange.baseMipLevel = i - 1;
-    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
     barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
     barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
 
@@ -164,12 +162,12 @@ void Image::generateMipmaps(const CommandBuffer& commandBuffer) {
 
     // i = 0 has SRC layout (we changed it above), i = 1 has DST layout (we changed from undefined to dst in
     // constructor)
-    vkCmdBlitImage(commandBuffer.getCommandBuffer(), getImage(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, getImage(),
-                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
+    vkCmdBlitImage(commandBuffer.getCommandBuffer(), getImage(), VK_IMAGE_LAYOUT_GENERAL, getImage(),
+                   VK_IMAGE_LAYOUT_GENERAL, 1, &blit, VK_FILTER_LINEAR);
 
     // change i = 0 to READ OPTIMAL, we won't use this level anymore, next resizes will use next i
-    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-    barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
     barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
     barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
 
@@ -182,16 +180,15 @@ void Image::generateMipmaps(const CommandBuffer& commandBuffer) {
 
   // we don't generate mip map from last level so we need explicitly change dst to read only
   barrier.subresourceRange.baseMipLevel = _mipMapNumber - 1;
-  barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-  barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+  barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
   barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
   barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
 
   vkCmdPipelineBarrier(commandBuffer.getCommandBuffer(), VK_PIPELINE_STAGE_TRANSFER_BIT,
                        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
 
-  // we changed real image layout above, need to override imageLayout internal field
-  overrideLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+  _mipMapGenerated = true;
 }
 
 glm::ivec2 Image::getResolution() const noexcept { return _resolution; }
@@ -203,6 +200,8 @@ VkFormat Image::getFormat() const noexcept { return _format; }
 VkImageLayout Image::getImageLayout() const noexcept { return _imageLayout; }
 
 int Image::getMipMapNumber() const noexcept { return _mipMapNumber; }
+
+bool Image::getMipMapGenerated() const noexcept { return _mipMapGenerated; }
 
 int Image::getLayerNumber() const noexcept { return _layerNumber; }
 
@@ -287,21 +286,22 @@ bool ImageViewHolder::contains(const std::vector<std::shared_ptr<ImageView>>& im
 Sampler::Sampler(const Device& device) noexcept : _device(&device) {}
 
 void Sampler::createSampler(VkSamplerAddressMode mode, int mipMapLevels, int anisotropicSamples, VkFilter filter) {
-  VkSamplerCreateInfo samplerInfo{.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
-                                  .magFilter = filter,
-                                  .minFilter = filter,
-                                  .addressModeU = mode,
-                                  .addressModeV = mode,
-                                  .addressModeW = mode,
-                                  .mipLodBias = 0.0f,
-                                  .anisotropyEnable = anisotropicSamples > 0 ? true : false,
-                                  .maxAnisotropy = std::min(_device->getDeviceProperties().limits.maxSamplerAnisotropy,
-                                                            static_cast<float>(anisotropicSamples)),
-                                  .compareEnable = false,
-                                  .minLod = 0.0f,
-                                  .maxLod = static_cast<float>(mipMapLevels),
-                                  .borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE,
-                                  .unnormalizedCoordinates = false};
+  VkSamplerCreateInfo samplerInfo{
+      .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+      .magFilter = filter,
+      .minFilter = filter,
+      .addressModeU = mode,
+      .addressModeV = mode,
+      .addressModeW = mode,
+      .mipLodBias = 0.0f,
+      .anisotropyEnable = anisotropicSamples > 0 ? true : false,
+      .maxAnisotropy = std::min(_device->getDevice().physical_device.properties.limits.maxSamplerAnisotropy,
+                                static_cast<float>(anisotropicSamples)),
+      .compareEnable = false,
+      .minLod = 0.0f,
+      .maxLod = static_cast<float>(mipMapLevels),
+      .borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE,
+      .unnormalizedCoordinates = false};
   if (mipMapLevels > 1) samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
 
   if (vkCreateSampler(_device->getLogicalDevice(), &samplerInfo, nullptr, &_sampler) != VK_SUCCESS) {
@@ -320,4 +320,4 @@ Texture::Texture(std::shared_ptr<ImageView> imageView, std::shared_ptr<Sampler> 
 
 const ImageView& Texture::getImageView() const noexcept { return *_imageView; }
 
-const Sampler& Texture::getSampler() const noexcept { return *_sampler; }
+const Sampler* Texture::getSampler() const noexcept { return _sampler.get(); }

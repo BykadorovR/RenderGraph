@@ -7,7 +7,7 @@ Timestamps::Timestamps(const Device& device) : _device(&device) {
   if (_device->getQueueFamilyProperties(vkb::QueueType::compute).timestampValidBits == 0)
     throw std::runtime_error("Compute queue doesn't support timestamps");
 
-  _timestampPeriod = _device->getDeviceProperties().limits.timestampPeriod;
+  _timestampPeriod = _device->getDevice().physical_device.properties.limits.timestampPeriod;
   VkQueryPoolCreateInfo createInfo{};
   createInfo.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
   createInfo.flags = 0;
