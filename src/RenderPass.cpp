@@ -14,16 +14,17 @@ void RenderPass::_destroyFramebuffers() {
 void RenderPass::_createFramebuffers(const std::vector<std::vector<VkImageView>>& colorImageViews,
                                      const std::vector<VkImageView>& depthImageViews,
                                      VkExtent2D extent) {
-  int count = colorImageViews.empty() ? (int)depthImageViews.size() : (int)colorImageViews[0].size();
+  int count = (int)depthImageViews.size();
+  for (auto& views : colorImageViews) count = std::max(count, (int)views.size());
   _framebuffers.resize(count);
 
   for (int i = 0; i < count; i++) {
     std::vector<VkImageView> attachmentViews;
     for (auto& colorViews : colorImageViews) {
-      attachmentViews.push_back(colorViews[i]);
+      attachmentViews.push_back(colorViews[i % colorViews.size()]);
     }
     if (!depthImageViews.empty()) {
-      attachmentViews.push_back(depthImageViews[depthImageViews.size() > 1 ? i : 0]);
+      attachmentViews.push_back(depthImageViews[i % depthImageViews.size()]);
     }
 
     VkFramebufferCreateInfo framebufferInfo{.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,

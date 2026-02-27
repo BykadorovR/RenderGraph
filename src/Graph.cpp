@@ -165,14 +165,15 @@ void GraphPassGraphic::execute(int currentFrame, const CommandBuffer& commandBuf
     int fbIndex = _graphStorage->getImageViewHolder(_colorTargets.front()).getIndex();
 
     std::vector<VkClearValue> clearValues;
+    bool hasClear = false;
     for (auto& colorTarget : _colorTargets) {
       VkClearValue cv{};
-      if (isTargetCleared(colorTarget)) cv.color = {0.f, 0.f, 0.f, 1.f};
+      if (isTargetCleared(colorTarget)) { cv.color = {0.f, 0.f, 0.f, 1.f}; hasClear = true; }
       clearValues.push_back(cv);
     }
     if (_depthTarget) {
       VkClearValue cv{};
-      cv.depthStencil = {1.f, 0};
+      if (isTargetCleared(_depthTarget.value())) { cv.depthStencil = {1.f, 0}; hasClear = true; }
       clearValues.push_back(cv);
     }
 
@@ -181,8 +182,8 @@ void GraphPassGraphic::execute(int currentFrame, const CommandBuffer& commandBuf
         .renderPass = _renderPass->getRenderPass(),
         .framebuffer = _renderPass->getFramebuffer(fbIndex),
         .renderArea = {.offset = {0, 0}, .extent = {(uint32_t)resolution.x, (uint32_t)resolution.y}},
-        .clearValueCount = (uint32_t)clearValues.size(),
-        .pClearValues = clearValues.data()};
+        .clearValueCount = hasClear ? (uint32_t)clearValues.size() : 0,
+        .pClearValues = hasClear ? clearValues.data() : nullptr};
     vkCmdBeginRenderPass(commandBuffer.getCommandBuffer(), &beginInfo, VK_SUBPASS_CONTENTS_INLINE);
     for (auto&& graphElement : _graphElements) graphElement->draw(currentFrame, commandBuffer);
     vkCmdEndRenderPass(commandBuffer.getCommandBuffer());
@@ -512,8 +513,7 @@ void Graph::calculate() {
         auto& holder = _graphStorage->getImageViewHolder(colorTarget);
         colorFormats.push_back(holder.getImageView().getImage().getFormat());
         clearColors.push_back(passGraphic->isTargetCleared(colorTarget));
-        colorFinalLayouts.push_back(holder.contains(swapchainImageViews) ? VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
-                                                                         : VK_IMAGE_LAYOUT_GENERAL);
+        colorFinalLayouts.push_back(VK_IMAGE_LAYOUT_GENERAL);
         auto views = holder.getImageViews();
         std::vector<VkImageView> vkViews;
         vkViews.reserve(views.size());
@@ -652,26 +652,31 @@ bool Graph::render() {
         if (pass->getGraphPassType() == GraphPassType::GRAPHIC) {
           auto passGraphic = static_cast<GraphPassGraphic*>(pass);
           auto colorTargets = passGraphic->getColorTargets();
-          for (auto&& colorTarget : colorTargets) {
-            auto&& imageView = _graphStorage->getImageViewHolder(colorTarget).getImageView();
-            if (imageView.getImage().getImageLayout() != VK_IMAGE_LAYOUT_GENERAL) {
-              // attachments are used in beginRendering, to avoid WAW hazard we set access mask to WRITE
-              // potentially this won't work for storage images if there is no rendering pass before usage
-              // so READ is needed as well
-              auto dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT;
-              imageView.getImage().changeLayout(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_NONE,
-                                                dstAccessMask, *commandBuffer);
-            }
-          }
+          auto transitionToGeneral = [&](auto& iv, VkAccessFlags dstMask) {
+            if (iv.getImage().getImageLayout() != VK_IMAGE_LAYOUT_GENERAL)
+              iv.getImage().changeLayout(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_NONE,
+                                         dstMask, *commandBuffer);
+          };
+          auto colorDst = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT;
+          auto depthDst = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
           auto depthTarget = passGraphic->getDepthTarget();
-          if (depthTarget) {
-            auto&& depthImageView = _graphStorage->getImageViewHolder(depthTarget.value()).getImageView();
-            if (depthImageView.getImage().getImageLayout() != VK_IMAGE_LAYOUT_GENERAL) {
-              auto dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
-                                   VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
-              depthImageView.getImage().changeLayout(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_NONE,
-                                                     dstAccessMask, *commandBuffer);
-            }
+
+          if (_renderingMode == RenderingMode::RENDER_PASS) {
+            // Transition only the view used by this frame's framebuffer (same fbIndex as execute())
+            int fbIndex = _graphStorage->getImageViewHolder(colorTargets.front()).getIndex();
+            auto transitionAtIndex = [&](const auto& holder, VkAccessFlags dstMask) {
+              auto views = holder.getImageViews();
+              transitionToGeneral(*views[fbIndex % views.size()], dstMask);
+            };
+            for (auto&& colorTarget : colorTargets)
+              transitionAtIndex(_graphStorage->getImageViewHolder(colorTarget), colorDst);
+            if (depthTarget)
+              transitionAtIndex(_graphStorage->getImageViewHolder(depthTarget.value()), depthDst);
+          } else {
+            for (auto&& colorTarget : colorTargets)
+              transitionToGeneral(_graphStorage->getImageViewHolder(colorTarget).getImageView(), colorDst);
+            if (depthTarget)
+              transitionToGeneral(_graphStorage->getImageViewHolder(depthTarget.value()).getImageView(), depthDst);
           }
         }
 
