@@ -93,7 +93,7 @@ TEST(ScenarioTest, GraphOneQueue) {
   // it should be modifiable
   pipelineGraphic.setDepthTest(true);
   pipelineGraphic.setDepthWrite(true);
-  pipelineGraphic.setTesselation(4);
+  pipelineGraphic.setTessellation(4);
   pipelineGraphic.setTopology(VK_PRIMITIVE_TOPOLOGY_PATCH_LIST);
   pipelineGraphic.setCullMode(VK_CULL_MODE_BACK_BIT);
 

@@ -74,7 +74,7 @@ void PipelineGraphic::setDepthTest(bool depthTest) noexcept { _depthStencil.dept
 
 void PipelineGraphic::setDepthWrite(bool depthWrite) noexcept { _depthStencil.depthWriteEnable = depthWrite; }
 
-void PipelineGraphic::setDepthCompateOp(VkCompareOp depthCompareOp) noexcept {
+void PipelineGraphic::setDepthCompareOp(VkCompareOp depthCompareOp) noexcept {
   // we force skybox to have the biggest possible depth = 1 so we need to draw skybox if it's depth <= 1
   _depthStencil.depthCompareOp = depthCompareOp;
 }
@@ -83,7 +83,7 @@ void PipelineGraphic::setColorBlendOp(VkBlendOp colorBlendOp) noexcept {
   _blendAttachmentState.colorBlendOp = colorBlendOp;
 }
 
-void PipelineGraphic::setTesselation(int patchControlPoints) noexcept {
+void PipelineGraphic::setTessellation(int patchControlPoints) noexcept {
   // according to specification: patchControlPoints must be greater than zero and less than or equal to
   // VkPhysicalDeviceLimits::maxTessellationPatchSize
   if (patchControlPoints == 0)
@@ -159,7 +159,7 @@ Pipeline::~Pipeline() {
 
 void Pipeline::createGraphic(const PipelineGraphic& pipelineGraphic,
                              const std::vector<VkPipelineShaderStageCreateInfo>& shaderStages,
-                             std::vector<DescriptorSetLayout*>& descriptorSetLayout,
+                             const std::vector<DescriptorSetLayout*>& descriptorSetLayout,
                              const std::unordered_map<std::string, VkPushConstantRange>& pushConstants,
                              const VkPipelineVertexInputStateCreateInfo& vertexInputInfo) {
   VkRenderPass renderPass = pipelineGraphic.getRenderPass();
@@ -234,7 +234,7 @@ void Pipeline::createGraphic(const PipelineGraphic& pipelineGraphic,
 }
 
 void Pipeline::createCompute(const VkPipelineShaderStageCreateInfo& shaderStage,
-                             std::vector<DescriptorSetLayout*>& descriptorSetLayout,
+                             const std::vector<DescriptorSetLayout*>& descriptorSetLayout,
                              const std::unordered_map<std::string, VkPushConstantRange>& pushConstants) {
   _descriptorSetLayout = descriptorSetLayout;
   _pushConstants = pushConstants;
