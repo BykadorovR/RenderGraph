@@ -23,7 +23,7 @@ void RenderPass::_createFramebuffers(const std::vector<std::vector<VkImageView>>
       attachmentViews.push_back(colorViews[i]);
     }
     if (!depthImageViews.empty()) {
-      attachmentViews.push_back(depthImageViews[i]);
+      attachmentViews.push_back(depthImageViews[depthImageViews.size() > 1 ? i : 0]);
     }
 
     VkFramebufferCreateInfo framebufferInfo{.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
