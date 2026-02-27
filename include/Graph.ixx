@@ -10,12 +10,14 @@ import CommandPool;
 import Buffer;
 import Device;
 import Window;
+import RenderPass;
 import glm;
 import <volk.h>;
 import "BS_thread_pool.hpp";
 import <map>;
 
 export namespace RenderGraph {
+
 class GraphStorage final {
  private:
   std::unordered_map<std::string, std::unique_ptr<ImageViewHolder>> _imageViewHolders;
@@ -79,7 +81,7 @@ class GraphPass {
   std::vector<CommandBuffer*> getCommandBuffers() const noexcept;
   std::string getName() const noexcept;
   virtual void execute(int currentFrame, const CommandBuffer& commandBuffer) = 0;
-  void reset(const std::vector<std::shared_ptr<RenderGraph::ImageView>>& swapchain);
+  virtual void reset(const std::vector<std::shared_ptr<RenderGraph::ImageView>>& swapchain);
   virtual ~GraphPass() = default;
 };
 
@@ -91,6 +93,7 @@ class GraphPassGraphic final : public GraphPass {
   std::unordered_map<std::string, bool> _clearTarget;
   std::unique_ptr<PipelineGraphic> _pipelineGraphic;
   const Device* _device;
+  RenderPass* _renderPass = nullptr;
 
  public:
   GraphPassGraphic(std::string_view name,
@@ -114,7 +117,10 @@ class GraphPassGraphic final : public GraphPass {
   const std::vector<std::string>& getColorTargets() const noexcept;
   std::optional<std::string> getDepthTarget() const noexcept;
   const std::vector<std::string>& getTextureInputs() const noexcept;
+  bool isTargetCleared(std::string_view name) const noexcept;
   PipelineGraphic& getPipelineGraphic(const GraphStorage& graphStorage) const noexcept;
+  void setRenderPass(RenderPass* renderPass) noexcept;
+
   void execute(int currentFrame, const CommandBuffer& commandBuffer) override;
 };
 
@@ -151,6 +157,8 @@ class GraphPassCompute final : public GraphPass {
   void execute(int currentFrame, const CommandBuffer& commandBuffer) override;
 };
 
+enum class RenderingMode { DYNAMIC, RENDER_PASS };
+
 class Graph final {
  private:
   Swapchain* _swapchain;
@@ -167,6 +175,8 @@ class Graph final {
   uint64_t _valueSemaphoreInFlight = 1;
   int _maxFramesInFlight;
   int _frameInFlight = 0;
+  RenderingMode _renderingMode = RenderingMode::DYNAMIC;
+  std::unordered_map<std::string, std::unique_ptr<RenderPass>> _renderPasses;
 
   struct Cache {
     bool queueTypeChange = false;
@@ -183,6 +193,9 @@ class Graph final {
   Graph& operator=(Graph&&) = delete;
 
   void initialize() noexcept;
+  // Must be called before calculate() to take effect
+  void setRenderingMode(RenderingMode mode) noexcept;
+  RenderingMode getRenderingMode() const noexcept;
   GraphPassGraphic& createPassGraphic(std::string_view name);
   GraphPassCompute& createPassCompute(std::string_view name, bool separate);
   GraphPassGraphic* getPassGraphic(std::string_view name) const noexcept;

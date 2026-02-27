@@ -24,6 +24,7 @@ class PipelineGraphic final {
   std::optional<VkPipelineTessellationStateCreateInfo> _tessellationState;
   std::vector<VkFormat> _colorAttachments;
   std::optional<VkFormat> _depthAttachment;
+  VkRenderPass _renderPass = VK_NULL_HANDLE;
 
  public:
   PipelineGraphic() noexcept;
@@ -44,6 +45,8 @@ class PipelineGraphic final {
   void setTesselation(int patchControlPoints) noexcept;
   void setColorAttachments(const std::vector<VkFormat>& colorAttachments) noexcept;
   void setDepthAttachment(std::optional<VkFormat> depthAttachment) noexcept;
+  // VK_NULL_HANDLE = dynamic rendering; valid handle = traditional render pass (Android)
+  void setRenderPass(VkRenderPass renderPass) noexcept;
 
   const VkPipelineDynamicStateCreateInfo& getDynamicState() const noexcept;
   const VkPipelineInputAssemblyStateCreateInfo& getInputAssembly() const noexcept;
@@ -56,6 +59,7 @@ class PipelineGraphic final {
   const std::optional<VkPipelineTessellationStateCreateInfo>& getTessellationState() const noexcept;
   const std::vector<VkFormat>& getColorAttachments() const noexcept;
   const std::optional<VkFormat>& getDepthAttachment() const noexcept;
+  VkRenderPass getRenderPass() const noexcept;
 };
 
 class Pipeline final {
