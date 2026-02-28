@@ -587,6 +587,35 @@ TEST(ImageTest, Create) {
   EXPECT_EQ(image.getImageLayout(), VK_IMAGE_LAYOUT_UNDEFINED);
 }
 
+TEST(ImageTest, LayoutResetOnRecreate) {
+  RenderGraph::Instance instance("TestApp", false);
+  RenderGraph::Window window({1920, 1080});
+  window.initialize();
+  RenderGraph::Surface surface(window, instance);
+  RenderGraph::Device device(surface, instance);
+  device.initialize();
+  RenderGraph::MemoryAllocator allocator(device, instance);
+  RenderGraph::CommandPool commandPool(vkb::QueueType::graphics, device);
+  RenderGraph::CommandBuffer commandBuffer(commandPool, device);
+  commandBuffer.beginCommands();
+
+  RenderGraph::Image image(allocator);
+  image.createImage(VK_FORMAT_R8G8B8A8_UNORM, {512, 512}, 1, 1, VK_IMAGE_ASPECT_COLOR_BIT,
+                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+  image.changeLayout(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_NONE, VK_ACCESS_NONE,
+                     commandBuffer);
+  EXPECT_EQ(image.getImageLayout(), VK_IMAGE_LAYOUT_GENERAL);
+
+  // Simulate what GraphStorage::reset() does: destroy + recreate
+  image.destroy();
+  image.createImage(VK_FORMAT_R8G8B8A8_UNORM, {512, 512}, 1, 1, VK_IMAGE_ASPECT_COLOR_BIT,
+                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+  // New VkImage is UNDEFINED — layout tracking must reflect that
+  EXPECT_EQ(image.getImageLayout(), VK_IMAGE_LAYOUT_UNDEFINED);
+
+  commandBuffer.endCommands();
+}
+
 TEST(ImageViewTest, Create) {
   RenderGraph::Instance instance("TestApp", false);
   RenderGraph::Window window({1920, 1080});

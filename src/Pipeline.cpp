@@ -1,4 +1,5 @@
 module Pipeline;
+import <volk.h>;
 using namespace RenderGraph;
 
 PipelineGraphic::PipelineGraphic() noexcept {
@@ -73,7 +74,7 @@ void PipelineGraphic::setDepthTest(bool depthTest) noexcept { _depthStencil.dept
 
 void PipelineGraphic::setDepthWrite(bool depthWrite) noexcept { _depthStencil.depthWriteEnable = depthWrite; }
 
-void PipelineGraphic::setDepthCompateOp(VkCompareOp depthCompareOp) noexcept {
+void PipelineGraphic::setDepthCompareOp(VkCompareOp depthCompareOp) noexcept {
   // we force skybox to have the biggest possible depth = 1 so we need to draw skybox if it's depth <= 1
   _depthStencil.depthCompareOp = depthCompareOp;
 }
@@ -82,7 +83,7 @@ void PipelineGraphic::setColorBlendOp(VkBlendOp colorBlendOp) noexcept {
   _blendAttachmentState.colorBlendOp = colorBlendOp;
 }
 
-void PipelineGraphic::setTesselation(int patchControlPoints) noexcept {
+void PipelineGraphic::setTessellation(int patchControlPoints) noexcept {
   // according to specification: patchControlPoints must be greater than zero and less than or equal to
   // VkPhysicalDeviceLimits::maxTessellationPatchSize
   if (patchControlPoints == 0)
@@ -102,6 +103,8 @@ void PipelineGraphic::setColorAttachments(const std::vector<VkFormat>& colorAtta
 void PipelineGraphic::setDepthAttachment(std::optional<VkFormat> depthAttachment) noexcept {
   _depthAttachment = depthAttachment;
 }
+
+void PipelineGraphic::setRenderPass(VkRenderPass renderPass) noexcept { _renderPass = renderPass; }
 
 const VkPipelineDynamicStateCreateInfo& PipelineGraphic::getDynamicState() const noexcept { return _dynamicState; }
 
@@ -133,6 +136,8 @@ const std::vector<VkFormat>& PipelineGraphic::getColorAttachments() const noexce
 
 const std::optional<VkFormat>& PipelineGraphic::getDepthAttachment() const noexcept { return _depthAttachment; }
 
+VkRenderPass PipelineGraphic::getRenderPass() const noexcept { return _renderPass; }
+
 Pipeline::Pipeline(const Device& device) noexcept : _device(&device) {}
 
 const std::vector<DescriptorSetLayout*>& Pipeline::getDescriptorSetLayout() const noexcept {
@@ -154,9 +159,10 @@ Pipeline::~Pipeline() {
 
 void Pipeline::createGraphic(const PipelineGraphic& pipelineGraphic,
                              const std::vector<VkPipelineShaderStageCreateInfo>& shaderStages,
-                             std::vector<DescriptorSetLayout*>& descriptorSetLayout,
+                             const std::vector<DescriptorSetLayout*>& descriptorSetLayout,
                              const std::unordered_map<std::string, VkPushConstantRange>& pushConstants,
                              const VkPipelineVertexInputStateCreateInfo& vertexInputInfo) {
+  VkRenderPass renderPass = pipelineGraphic.getRenderPass();
   _descriptorSetLayout = descriptorSetLayout;
   _pushConstants = pushConstants;
 
@@ -182,21 +188,24 @@ void Pipeline::createGraphic(const PipelineGraphic& pipelineGraphic,
   }
 
   // create pipeline
-  VkPipelineRenderingCreateInfo renderingInfo = {};
-  renderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
   auto colorAttachments = pipelineGraphic.getColorAttachments();
-  renderingInfo.colorAttachmentCount = colorAttachments.size();
-  renderingInfo.pColorAttachmentFormats = colorAttachments.data();
-  auto depthAttachment = pipelineGraphic.getDepthAttachment();
-  if (depthAttachment) renderingInfo.depthAttachmentFormat = depthAttachment.value();
-
   auto colorBlendingState = pipelineGraphic.getColorBlending();
   std::vector blendAttachments(colorAttachments.size(), pipelineGraphic.getBlendAttachmentState());
   colorBlendingState.attachmentCount = blendAttachments.size();
   colorBlendingState.pAttachments = blendAttachments.data();
 
+  // dynamic rendering path: VkPipelineRenderingCreateInfo in pNext, no renderPass
+  VkPipelineRenderingCreateInfo renderingInfo = {};
+  renderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+  if (renderPass == VK_NULL_HANDLE) {
+    renderingInfo.colorAttachmentCount = colorAttachments.size();
+    renderingInfo.pColorAttachmentFormats = colorAttachments.data();
+    auto depthAttachment = pipelineGraphic.getDepthAttachment();
+    if (depthAttachment) renderingInfo.depthAttachmentFormat = depthAttachment.value();
+  }
+
   VkGraphicsPipelineCreateInfo pipelineInfo{.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
-                                            .pNext = &renderingInfo,
+                                            .pNext = renderPass == VK_NULL_HANDLE ? &renderingInfo : nullptr,
                                             .stageCount = static_cast<uint32_t>(shaderStages.size()),
                                             .pStages = shaderStages.data(),
                                             .pVertexInputState = &vertexInputInfo,
@@ -208,6 +217,7 @@ void Pipeline::createGraphic(const PipelineGraphic& pipelineGraphic,
                                             .pColorBlendState = &colorBlendingState,
                                             .pDynamicState = &pipelineGraphic.getDynamicState(),
                                             .layout = _pipelineLayout,
+                                            .renderPass = renderPass,
                                             .subpass = 0,
                                             .basePipelineHandle = nullptr};
   auto desiredExtensions = _device->getDesiredExtensions();
@@ -224,7 +234,7 @@ void Pipeline::createGraphic(const PipelineGraphic& pipelineGraphic,
 }
 
 void Pipeline::createCompute(const VkPipelineShaderStageCreateInfo& shaderStage,
-                             std::vector<DescriptorSetLayout*>& descriptorSetLayout,
+                             const std::vector<DescriptorSetLayout*>& descriptorSetLayout,
                              const std::unordered_map<std::string, VkPushConstantRange>& pushConstants) {
   _descriptorSetLayout = descriptorSetLayout;
   _pushConstants = pushConstants;
