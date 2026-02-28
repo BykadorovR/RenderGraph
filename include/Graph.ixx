@@ -15,6 +15,7 @@ import glm;
 import <volk.h>;
 import "BS_thread_pool.hpp";
 import <map>;
+import <unordered_map>;
 
 export namespace RenderGraph {
 
@@ -117,7 +118,7 @@ class GraphPassGraphic final : public GraphPass {
   const std::vector<std::string>& getColorTargets() const noexcept;
   std::optional<std::string> getDepthTarget() const noexcept;
   const std::vector<std::string>& getTextureInputs() const noexcept;
-  bool isTargetCleared(std::string_view name) const noexcept;
+  const std::unordered_map<std::string, bool>& getClearTargets() const noexcept;
   PipelineGraphic& getPipelineGraphic(const GraphStorage& graphStorage) const noexcept;
   void setRenderPass(RenderPass* renderPass) noexcept;
 

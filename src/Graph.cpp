@@ -149,9 +149,8 @@ PipelineGraphic& GraphPassGraphic::getPipelineGraphic(const GraphStorage& graphS
   return *_pipelineGraphic;
 }
 
-bool GraphPassGraphic::isTargetCleared(std::string_view name) const noexcept {
-  auto it = _clearTarget.find(std::string(name));
-  return it != _clearTarget.end() && it->second;
+const std::unordered_map<std::string, bool>& GraphPassGraphic::getClearTargets() const noexcept {
+  return _clearTarget;
 }
 
 void GraphPassGraphic::setRenderPass(RenderPass* renderPass) noexcept { _renderPass = renderPass; }
@@ -168,12 +167,12 @@ void GraphPassGraphic::execute(int currentFrame, const CommandBuffer& commandBuf
     bool hasClear = false;
     for (auto& colorTarget : _colorTargets) {
       VkClearValue cv{};
-      if (isTargetCleared(colorTarget)) { cv.color = {0.f, 0.f, 0.f, 1.f}; hasClear = true; }
+      if (_clearTarget.contains(colorTarget) && _clearTarget.at(colorTarget)) { cv.color = {0.f, 0.f, 0.f, 1.f}; hasClear = true; }
       clearValues.push_back(cv);
     }
     if (_depthTarget) {
       VkClearValue cv{};
-      if (isTargetCleared(_depthTarget.value())) { cv.depthStencil = {1.f, 0}; hasClear = true; }
+      if (_clearTarget.contains(_depthTarget.value()) && _clearTarget.at(_depthTarget.value())) { cv.depthStencil = {1.f, 0}; hasClear = true; }
       clearValues.push_back(cv);
     }
 
@@ -195,7 +194,7 @@ void GraphPassGraphic::execute(int currentFrame, const CommandBuffer& commandBuf
                                      .imageLayout = imageViewHolder.getImageView().getImage().getImageLayout(),
                                      .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
                                      .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
-      if (isTargetCleared(colorTarget)) {
+      if (_clearTarget.contains(colorTarget) && _clearTarget.at(colorTarget)) {
         info.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
         info.clearValue.color = {0.f, 0.f, 0.f, 1.f};
       }
@@ -214,7 +213,7 @@ void GraphPassGraphic::execute(int currentFrame, const CommandBuffer& commandBuf
           .imageLayout = imageViewHolder.getImageView().getImage().getImageLayout(),
           .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
           .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
-      if (isTargetCleared(_depthTarget.value())) {
+      if (_clearTarget.contains(_depthTarget.value()) && _clearTarget.at(_depthTarget.value())) {
         depthAttachment->loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
         depthAttachment->clearValue.depthStencil = {1.f, 0};
       }
@@ -512,7 +511,7 @@ void Graph::calculate() {
       for (auto& colorTarget : passGraphic->getColorTargets()) {
         auto& holder = _graphStorage->getImageViewHolder(colorTarget);
         colorFormats.push_back(holder.getImageView().getImage().getFormat());
-        clearColors.push_back(passGraphic->isTargetCleared(colorTarget));
+        clearColors.push_back(passGraphic->getClearTargets().contains(colorTarget) && passGraphic->getClearTargets().at(colorTarget));
         colorFinalLayouts.push_back(VK_IMAGE_LAYOUT_GENERAL);
         auto views = holder.getImageViews();
         std::vector<VkImageView> vkViews;
@@ -527,7 +526,7 @@ void Graph::calculate() {
       if (auto depthTarget = passGraphic->getDepthTarget()) {
         auto& holder = _graphStorage->getImageViewHolder(depthTarget.value());
         depthFormat = holder.getImageView().getImage().getFormat();
-        clearDepth = passGraphic->isTargetCleared(depthTarget.value());
+        clearDepth = passGraphic->getClearTargets().contains(depthTarget.value()) && passGraphic->getClearTargets().at(depthTarget.value());
         auto views = holder.getImageViews();
         depthImageViews.reserve(views.size());
         for (auto* iv : views) depthImageViews.push_back(iv->getImageView());
