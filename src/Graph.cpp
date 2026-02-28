@@ -284,7 +284,10 @@ const std::vector<std::string>& GraphPassCompute::getStorageTextureOutputs() con
 bool GraphPassCompute::isSeparate() const noexcept { return _separate; }
 
 void GraphPassCompute::execute(int currentFrame, const CommandBuffer& commandBuffer) {
-  for (auto&& graphElement : _graphElements) graphElement->draw(currentFrame, commandBuffer);
+  for (auto&& graphElement : _graphElements) {
+    graphElement->update(currentFrame, commandBuffer);
+    graphElement->draw(currentFrame, commandBuffer);
+  }
 }
 
 Graph::Graph(int threadsNumber,
