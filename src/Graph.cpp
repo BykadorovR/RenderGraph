@@ -158,10 +158,12 @@ void GraphPassGraphic::setRenderPass(RenderPass* renderPass) noexcept { _renderP
 void GraphPassGraphic::execute(int currentFrame, const CommandBuffer& commandBuffer) {
   for (auto&& graphElement : _graphElements) graphElement->update(currentFrame, commandBuffer);
 
-  auto resolution = _graphStorage->getImageViewHolder(_colorTargets.front()).getImageView().getImage().getResolution();
+  // Depth-only passes have no color targets - use depth target for resolution/index
+  const std::string& firstTargetName = _colorTargets.empty() ? _depthTarget.value() : _colorTargets.front();
+  auto resolution = _graphStorage->getImageViewHolder(firstTargetName).getImageView().getImage().getResolution();
 
   if (_renderPass != nullptr) {
-    int fbIndex = _graphStorage->getImageViewHolder(_colorTargets.front()).getIndex();
+    int fbIndex = _graphStorage->getImageViewHolder(firstTargetName).getIndex();
 
     std::vector<VkClearValue> clearValues;
     bool hasClear = false;
@@ -489,6 +491,9 @@ void Graph::calculate() {
       if (node->getGraphPassType() == GraphPassType::GRAPHIC) {
         auto passGraphic = static_cast<GraphPassGraphic*>(node);
         inputs = passGraphic->getColorTargets();
+        // Depth-only pass: fall back to depth target if no color targets
+        if (inputs.empty() && passGraphic->getDepthTarget())
+          inputs.push_back(passGraphic->getDepthTarget().value());
       }
     }
     std::vector<GraphPass*> passNext =
@@ -535,10 +540,10 @@ void Graph::calculate() {
         for (auto* iv : views) depthImageViews.push_back(iv->getImageView());
       }
 
-      auto resolution = _graphStorage->getImageViewHolder(passGraphic->getColorTargets().front())
-                            .getImageView()
-                            .getImage()
-                            .getResolution();
+      const std::string& firstTarget = passGraphic->getColorTargets().empty()
+                                          ? passGraphic->getDepthTarget().value()
+                                          : passGraphic->getColorTargets().front();
+      auto resolution = _graphStorage->getImageViewHolder(firstTarget).getImageView().getImage().getResolution();
       VkExtent2D extent{(uint32_t)resolution.x, (uint32_t)resolution.y};
 
       auto renderPass = std::make_unique<RenderPass>(*_device);
@@ -665,7 +670,9 @@ bool Graph::render() {
 
           if (_renderingMode == RenderingMode::RENDER_PASS) {
             // Transition only the view used by this frame's framebuffer (same fbIndex as execute())
-            int fbIndex = _graphStorage->getImageViewHolder(colorTargets.front()).getIndex();
+            const std::string& firstTarget =
+                colorTargets.empty() ? depthTarget.value() : colorTargets.front();
+            int fbIndex = _graphStorage->getImageViewHolder(firstTarget).getIndex();
             auto transitionAtIndex = [&](const auto& holder, VkAccessFlags dstMask) {
               auto views = holder.getImageViews();
               transitionToGeneral(*views[fbIndex % views.size()], dstMask);
@@ -757,7 +764,7 @@ bool Graph::render() {
                                                          .oldLayout = image.getImageLayout(),
                                                          .newLayout = image.getImageLayout(),
                                                          .image = image.getImage(),
-                                                         .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}});
+                                                         .subresourceRange = {image.getAspectMask(), 0, 1, 0, 1}});
           }
 
           return imageBarriers;
@@ -788,13 +795,20 @@ bool Graph::render() {
 
         if (pass->getGraphPassType() == GraphPassType::COMPUTE) {
           auto graphPassCompute = static_cast<GraphPassCompute*>(pass);
+          // Cover writes from compute shaders, color attachments, and depth attachments (e.g. shadow map)
+          constexpr VkAccessFlags srcAccess = VK_ACCESS_SHADER_WRITE_BIT |
+                                              VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                                              VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
           auto imageBarriers = calculateImageBarriers(graphPassCompute->getStorageTextureInputs(),
-                                                      VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
+                                                      srcAccess, VK_ACCESS_SHADER_READ_BIT);
           auto bufferBarriers = calculateBufferBarriers(graphPassCompute->getStorageBufferInputs(),
                                                         VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
 
+          constexpr VkPipelineStageFlags srcStage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
+                                                    VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                                                    VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
           vkCmdPipelineBarrier(previousPass->getCommandBuffers()[_frameInFlight]->getCommandBuffer(),
-                               VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0,
+                               srcStage, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0,
                                nullptr, bufferBarriers.size(), bufferBarriers.data(), imageBarriers.size(),
                                imageBarriers.data());
         }
@@ -876,10 +890,10 @@ void Graph::reset() {
       for (auto* iv : views) depthImageViews.push_back(iv->getImageView());
     }
 
-    auto resolution = _graphStorage->getImageViewHolder(passGraphic->getColorTargets().front())
-                          .getImageView()
-                          .getImage()
-                          .getResolution();
+    const std::string& firstTarget = passGraphic->getColorTargets().empty()
+                                        ? passGraphic->getDepthTarget().value()
+                                        : passGraphic->getColorTargets().front();
+    auto resolution = _graphStorage->getImageViewHolder(firstTarget).getImageView().getImage().getResolution();
     VkExtent2D extent{(uint32_t)resolution.x, (uint32_t)resolution.y};
     renderPass->recreateFramebuffers(colorImageViews, depthImageViews, extent);
   }
