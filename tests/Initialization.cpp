@@ -295,6 +295,97 @@ TEST(DescriptorSetTest, Update) {
   commandBuffer.endCommands();
 }
 
+TEST(DescriptorSetTest, BindlessSamplers) {
+  // Bindless array: binding 0 = UBO, binding 1 = variable-count sampler array (max 16, 2 actually bound)
+  RenderGraph::Instance instance("TestApp", false);
+  RenderGraph::Window window({1920, 1080});
+  window.initialize();
+  RenderGraph::Surface surface(window, instance);
+  RenderGraph::Device device(surface, instance);
+  device.setDesiredExtensions({"VK_KHR_dynamic_rendering"});
+  device.initialize();
+  RenderGraph::MemoryAllocator allocator(device, instance);
+
+  RenderGraph::DescriptorSetLayout layout(device);
+  constexpr uint32_t kMaxSamplers = 16;
+  std::vector<VkDescriptorSetLayoutBinding> bindings{
+      {.binding = 0,
+       .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+       .descriptorCount = 1,
+       .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT},
+      {.binding = 1,
+       .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+       .descriptorCount = kMaxSamplers,
+       .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT}};
+  std::vector<VkDescriptorBindingFlags> bindingFlags{
+      0,
+      VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
+          VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT |
+          VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT};
+  layout.createCustom(bindings, bindingFlags);
+
+  EXPECT_TRUE(layout.isBindless());
+  EXPECT_EQ(layout.getVariableDescriptorCount(), kMaxSamplers);
+  EXPECT_EQ(layout.getLayoutInfo().size(), 2);
+
+  // Pool must have UPDATE_AFTER_BIND flag for bindless layouts
+  RenderGraph::DescriptorPool descriptorPool(RenderGraph::DescriptorPoolSize{}, device, /*updateAfterBind=*/true);
+
+  RenderGraph::Buffer ubo(256, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                          VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+                          allocator);
+
+  auto commandPool = std::make_shared<RenderGraph::CommandPool>(vkb::QueueType::graphics, device);
+  RenderGraph::CommandBuffer commandBuffer(*commandPool, device);
+  commandBuffer.beginCommands();
+
+  // Create 2 textures — only 2 of 16 slots will be written (partial binding)
+  auto makeTexture = [&]() {
+    auto image = std::make_unique<RenderGraph::Image>(allocator);
+    image->createImage(VK_FORMAT_R8G8B8A8_UNORM, glm::ivec2{64, 64}, 1, 1, VK_IMAGE_ASPECT_COLOR_BIT,
+                       VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
+    image->changeLayout(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_NONE,
+                        VK_ACCESS_SHADER_READ_BIT, commandBuffer);
+    auto imageView = std::make_shared<RenderGraph::ImageView>(std::move(image), device);
+    imageView->createImageView(VK_IMAGE_VIEW_TYPE_2D, 0, 0);
+    auto sampler = std::make_shared<RenderGraph::Sampler>(device);
+    sampler->createSampler(VK_SAMPLER_ADDRESS_MODE_REPEAT, 1, 1, VK_FILTER_LINEAR);
+    return std::make_unique<RenderGraph::Texture>(imageView, sampler);
+  };
+
+  auto tex0 = makeTexture();
+  auto tex1 = makeTexture();
+
+  // One DescriptorSet covering 2 frames in flight
+  RenderGraph::DescriptorSet descriptorSet({&layout}, descriptorPool, device);
+
+  std::vector<RenderGraph::Buffer*> uboVec{&ubo};
+  std::vector<RenderGraph::Texture*> texVec{tex0.get(), tex1.get()};
+
+  // Frame 0
+  descriptorSet.add(uboVec);   // binding 0 — UBO
+  descriptorSet.add(texVec);   // binding 1 — 2 out of 16 samplers
+  // Frame 1 (same resources)
+  descriptorSet.add(uboVec);
+  descriptorSet.add(texVec);
+
+  EXPECT_EQ(descriptorSet._resources.size(), 4);
+
+  descriptorSet.initialize(commandBuffer);
+
+  // Two frames allocated
+  EXPECT_EQ(descriptorSet._descriptorSet.size(), 2);
+  // Each frame has 1 set (single layout)
+  EXPECT_EQ(descriptorSet._descriptorSet[0].size(), 1);
+  EXPECT_EQ(descriptorSet._descriptorSet[1].size(), 1);
+  // Sets must be valid (non-null handles)
+  EXPECT_NE(descriptorSet._descriptorSet[0][0], nullptr);
+  EXPECT_NE(descriptorSet._descriptorSet[1][0], nullptr);
+
+  commandBuffer.endCommands();
+  vkDeviceWaitIdle(device.getLogicalDevice());
+}
+
 TEST(DescriptorBufferTest, Create) {
   RenderGraph::Instance instance("TestApp", false);
   RenderGraph::Window window({1920, 1080});

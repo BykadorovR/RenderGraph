@@ -36,6 +36,11 @@ void Device::initialize() {
   VkPhysicalDeviceBufferDeviceAddressFeatures bufferDeviceAddressFeatures{
       .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES,
       .bufferDeviceAddress = true};
+  VkPhysicalDeviceDescriptorIndexingFeatures descriptorIndexingFeatures{
+      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES,
+      .descriptorBindingSampledImageUpdateAfterBind = true,
+      .descriptorBindingPartiallyBound = true,
+      .descriptorBindingVariableDescriptorCount = true};
 
   vkb::PhysicalDeviceSelector deviceSelector(_instance->getInstance());
   deviceSelector.set_required_features(deviceFeatures);
@@ -65,6 +70,7 @@ void Device::initialize() {
   builder.add_pNext(&timelineFeatures);
   builder.add_pNext(&resetFeatures);
   builder.add_pNext(&bufferDeviceAddressFeatures);
+  builder.add_pNext(&descriptorIndexingFeatures);
   auto builderResult = builder.build();
   if (!builderResult) {
     throw std::runtime_error(builderResult.error().message());
