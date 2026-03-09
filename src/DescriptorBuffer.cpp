@@ -15,36 +15,17 @@ DescriptorSetLayout::DescriptorSetLayout(DescriptorSetLayout&& other)
   other._descriptorSetLayout = nullptr;
 }
 
-void DescriptorSetLayout::createCustom(const std::vector<VkDescriptorSetLayoutBinding>& info,
-                                       const std::vector<VkDescriptorBindingFlags>& bindingFlags) {
+void DescriptorSetLayout::createCustom(const std::vector<VkDescriptorSetLayoutBinding>& info) {
   _info = info;
 
-  VkDescriptorSetLayoutBindingFlagsCreateInfo flagsInfo{
-      .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
-      .bindingCount = (uint32_t)bindingFlags.size(),
-      .pBindingFlags = bindingFlags.data()};
-
-  VkDescriptorSetLayoutCreateInfo layoutInfo{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-                                             .bindingCount = static_cast<uint32_t>(_info.size()),
-                                             .pBindings = _info.data()};
-
-  if (!bindingFlags.empty()) {
-    _isBindless = true;
-    for (int i = 0; i < (int)bindingFlags.size(); i++) {
-      if (bindingFlags[i] & VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT) {
-        _variableDescriptorCount = _info[i].descriptorCount;
-        break;
-      }
-    }
-    layoutInfo.pNext = &flagsInfo;
-    layoutInfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
-  } else {
-    auto desiredExtensions = _device->getDesiredExtensions();
-    if (_device->isExtensionSupported("VK_EXT_descriptor_buffer") &&
-        std::find(desiredExtensions.begin(), desiredExtensions.end(), "VK_EXT_descriptor_buffer") !=
-            desiredExtensions.end())
-      layoutInfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
-  }
+  auto layoutInfo = VkDescriptorSetLayoutCreateInfo{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+                                                    .bindingCount = static_cast<uint32_t>(_info.size()),
+                                                    .pBindings = _info.data()};
+  auto desiredExtensions = _device->getDesiredExtensions();
+  if (_device->isExtensionSupported("VK_EXT_descriptor_buffer") &&
+      std::find(desiredExtensions.begin(), desiredExtensions.end(), "VK_EXT_descriptor_buffer") !=
+          desiredExtensions.end())
+    layoutInfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
 
   if (vkCreateDescriptorSetLayout(_device->getLogicalDevice(), &layoutInfo, nullptr, &_descriptorSetLayout) !=
       VK_SUCCESS) {
@@ -55,10 +36,6 @@ void DescriptorSetLayout::createCustom(const std::vector<VkDescriptorSetLayoutBi
 const std::vector<VkDescriptorSetLayoutBinding>& DescriptorSetLayout::getLayoutInfo() const noexcept { return _info; }
 
 VkDescriptorSetLayout DescriptorSetLayout::getDescriptorSetLayout() const noexcept { return _descriptorSetLayout; }
-
-bool DescriptorSetLayout::isBindless() const noexcept { return _isBindless; }
-
-uint32_t DescriptorSetLayout::getVariableDescriptorCount() const noexcept { return _variableDescriptorCount; }
 
 DescriptorSetLayout::~DescriptorSetLayout() {
   vkDestroyDescriptorSetLayout(_device->getLogicalDevice(), _descriptorSetLayout, nullptr);
@@ -257,7 +234,7 @@ void DescriptorBuffer::bind(VkPipelineBindPoint bindPoint,
                                      _descriptorLayouts.size(), bufIndex.data(), offsets.data());
 }
 
-DescriptorPool::DescriptorPool(DescriptorPoolSize poolSize, const Device& device, bool updateAfterBind) {
+DescriptorPool::DescriptorPool(DescriptorPoolSize poolSize, const Device& device) {
   _device = &device;
 
   std::vector<VkDescriptorPoolSize> poolSizes{
@@ -266,11 +243,7 @@ DescriptorPool::DescriptorPool(DescriptorPoolSize poolSize, const Device& device
       {.type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .descriptorCount = static_cast<uint32_t>(poolSize.computeImage)},
       {.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = static_cast<uint32_t>(poolSize.ssbo)}};
 
-  VkDescriptorPoolCreateFlags poolFlags = 0;
-  if (updateAfterBind) poolFlags |= VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
-
   VkDescriptorPoolCreateInfo poolInfo{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-                                      .flags = poolFlags,
                                       .maxSets = static_cast<uint32_t>(poolSize.descriptorSets),
                                       .poolSizeCount = static_cast<uint32_t>(poolSizes.size()),
                                       .pPoolSizes = poolSizes.data()};
@@ -320,15 +293,6 @@ void DescriptorSet::_allocateDescriptorSetsForNextFrame() {
                                           .descriptorPool = _descriptorPool->getDescriptorPool(),
                                           .descriptorSetCount = 1,
                                           .pSetLayouts = &descriptorLayout};
-    // For bindless layouts tell the driver the actual max variable-count descriptor count
-    VkDescriptorSetVariableDescriptorCountAllocateInfo varCountInfo{};
-    if (layout->isBindless()) {
-      uint32_t varCount = layout->getVariableDescriptorCount();
-      varCountInfo = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO,
-                      .descriptorSetCount = 1,
-                      .pDescriptorCounts = &varCount};
-      allocInfo.pNext = &varCountInfo;
-    }
     auto sts = vkAllocateDescriptorSets(_device->getLogicalDevice(), &allocInfo, &descriptorSet);
     if (sts != VK_SUCCESS) {
       std::ostringstream descriptors;
@@ -382,7 +346,7 @@ void DescriptorSet::initialize(const CommandBuffer& commandBuffer) {
           .dstSet = _descriptorSet[_frame][index],
           .dstBinding = _descriptorLayouts[index]->getLayoutInfo()[_number].binding,
           .dstArrayElement = 0,
-          .descriptorCount = (uint32_t)resource.buffers.size(),
+          .descriptorCount = _descriptorLayouts[index]->getLayoutInfo()[_number].descriptorCount,
           .descriptorType = _descriptorLayouts[index]->getLayoutInfo()[_number].descriptorType,
           .pBufferInfo = bufferInfoAcc.back().data()};
       descriptorWritesAcc.push_back(descriptorSet);
@@ -417,7 +381,7 @@ void DescriptorSet::initialize(const CommandBuffer& commandBuffer) {
           .dstSet = _descriptorSet[_frame][index],
           .dstBinding = _descriptorLayouts[index]->getLayoutInfo()[_number].binding,
           .dstArrayElement = 0,
-          .descriptorCount = (uint32_t)resource.textures.size(),
+          .descriptorCount = _descriptorLayouts[index]->getLayoutInfo()[_number].descriptorCount,
           .descriptorType = _descriptorLayouts[index]->getLayoutInfo()[_number].descriptorType,
           .pImageInfo = imageInfoAcc.back().data()};
       descriptorWritesAcc.push_back(descriptorSet);

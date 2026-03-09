@@ -17,7 +17,6 @@ class DescriptorBufferTest_DifferentSets_Test;
 class DescriptorBufferTest_Update_Test;
 class DescriptorSetTest_Create_Test;
 class DescriptorSetTest_Update_Test;
-class DescriptorSetTest_BindlessSamplers_Test;
 
 export namespace RenderGraph {
 class DescriptorSetLayout final {
@@ -25,8 +24,6 @@ class DescriptorSetLayout final {
   const Device* _device;
   VkDescriptorSetLayout _descriptorSetLayout;
   std::vector<VkDescriptorSetLayoutBinding> _info;
-  bool _isBindless = false;
-  uint32_t _variableDescriptorCount = 0;
 
  public:
   DescriptorSetLayout(const Device& device) noexcept;
@@ -36,15 +33,9 @@ class DescriptorSetLayout final {
 
   DescriptorSetLayout& operator=(DescriptorSetLayout&& other) = delete;
 
-  // If bindingFlags is non-empty, enables bindless: adds UPDATE_AFTER_BIND_POOL_BIT and
-  // VkDescriptorSetLayoutBindingFlagsCreateInfo. The binding with
-  // VARIABLE_DESCRIPTOR_COUNT_BIT determines the maximum array size.
-  void createCustom(const std::vector<VkDescriptorSetLayoutBinding>& info,
-                    const std::vector<VkDescriptorBindingFlags>& bindingFlags = {});
+  void createCustom(const std::vector<VkDescriptorSetLayoutBinding>& info);
   const std::vector<VkDescriptorSetLayoutBinding>& getLayoutInfo() const noexcept;
   VkDescriptorSetLayout getDescriptorSetLayout() const noexcept;
-  bool isBindless() const noexcept;
-  uint32_t getVariableDescriptorCount() const noexcept;
   ~DescriptorSetLayout();
 };
 
@@ -52,7 +43,6 @@ class DescriptorHandler {
  private:
   friend class ::DescriptorSetTest_Create_Test;
   friend class ::DescriptorSetTest_Update_Test;
-  friend class ::DescriptorSetTest_BindlessSamplers_Test;
  protected:
   struct Resource {
     enum class Type { BUFFER, TEXTURE } type;
@@ -125,7 +115,7 @@ class DescriptorPool final {
   int _descriptorSetsNumber = 0;
 
  public:
-  DescriptorPool(DescriptorPoolSize poolSize, const Device& device, bool updateAfterBind = false);
+  DescriptorPool(DescriptorPoolSize poolSize, const Device& device);
   DescriptorPool(const DescriptorPool&) = delete;
   DescriptorPool& operator=(const DescriptorPool&) = delete;
   DescriptorPool(DescriptorPool&&) = delete;
@@ -143,7 +133,6 @@ class DescriptorSet final : public DescriptorHandler {
  private:
   friend class ::DescriptorSetTest_Create_Test;
   friend class ::DescriptorSetTest_Update_Test;
-  friend class ::DescriptorSetTest_BindlessSamplers_Test;
  private:
   DescriptorPool* _descriptorPool;
   const Device* _device;
