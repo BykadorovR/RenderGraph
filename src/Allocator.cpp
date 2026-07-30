@@ -19,13 +19,10 @@ MemoryAllocator::MemoryAllocator(const Device& device, const Instance& instance)
       vkGetBufferMemoryRequirements2KHR,
       /// Fetch "vkGetImageMemoryRequirements 2" on Vulkan >= 1.1, fetch "vkGetImageMemoryRequirements2KHR" when using
       /// VK_KHR_dedicated_allocation extension.
-      vkGetImageMemoryRequirements2KHR,
-      vkBindBufferMemory2KHR,
+      vkGetImageMemoryRequirements2KHR, vkBindBufferMemory2KHR,
       /// Fetch "vkBindImageMemory2" on Vulkan >= 1.1, fetch "vkBindImageMemory2KHR" when using VK_KHR_bind_memory2
       /// extension.
-      vkBindImageMemory2KHR,
-      vkGetPhysicalDeviceMemoryProperties2KHR
-  };
+      vkBindImageMemory2KHR, vkGetPhysicalDeviceMemoryProperties2KHR};
   VmaAllocatorCreateInfo createInfo{
       .flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT,
       .physicalDevice = device.getPhysicalDevice(),

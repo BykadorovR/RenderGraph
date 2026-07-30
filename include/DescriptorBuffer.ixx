@@ -43,6 +43,7 @@ class DescriptorHandler {
  private:
   friend class ::DescriptorSetTest_Create_Test;
   friend class ::DescriptorSetTest_Update_Test;
+
  protected:
   struct Resource {
     enum class Type { BUFFER, TEXTURE } type;
@@ -50,6 +51,7 @@ class DescriptorHandler {
     std::vector<Texture*> textures;
   };
   std::vector<Resource> _resources;
+
  public:
   void add(std::vector<Texture*> textures);
   void add(std::vector<Buffer*> buffers);
@@ -67,6 +69,7 @@ class DescriptorBuffer final : public DescriptorHandler {
   friend class ::DescriptorBufferTest_DifferentBinning_Test;
   friend class ::DescriptorBufferTest_DifferentSets_Test;
   friend class ::DescriptorBufferTest_Update_Test;
+
  private:
   const Device* _device;
   const MemoryAllocator* _memoryAllocator;
@@ -87,6 +90,7 @@ class DescriptorBuffer final : public DescriptorHandler {
                               VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT |
                               VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
   void _add(VkDescriptorGetInfoEXT info);
+
  public:
   DescriptorBuffer(const std::vector<DescriptorSetLayout*>& layouts,
                    const MemoryAllocator& memoryAllocator,
@@ -133,13 +137,14 @@ class DescriptorSet final : public DescriptorHandler {
  private:
   friend class ::DescriptorSetTest_Create_Test;
   friend class ::DescriptorSetTest_Update_Test;
+
  private:
   DescriptorPool* _descriptorPool;
   const Device* _device;
   // frame - set
   std::vector<std::vector<VkDescriptorSet>> _descriptorSet;
   // set
-  std::vector<DescriptorSetLayout*> _descriptorLayouts;  
+  std::vector<DescriptorSetLayout*> _descriptorLayouts;
 
   int _bindingNumber = 0;
   int _frame = 0;
@@ -148,10 +153,9 @@ class DescriptorSet final : public DescriptorHandler {
 
   int _calculateDescriptorSetIndex();
   void _allocateDescriptorSetsForNextFrame();
+
  public:
-  DescriptorSet(const std::vector<DescriptorSetLayout*>& layouts,
-                DescriptorPool& descriptorPool,
-                const Device& device);
+  DescriptorSet(const std::vector<DescriptorSetLayout*>& layouts, DescriptorPool& descriptorPool, const Device& device);
   DescriptorSet(const DescriptorSet&) = delete;
   DescriptorSet& operator=(const DescriptorSet&) = delete;
   DescriptorSet(DescriptorSet&& other) = delete;
@@ -161,7 +165,7 @@ class DescriptorSet final : public DescriptorHandler {
   void bind(VkPipelineBindPoint bindPoint,
             const VkPipelineLayout& pipelineLayout,
             const CommandBuffer& commandBuffer) override;
-  
+
   ~DescriptorSet();
 };
 }  // namespace RenderGraph

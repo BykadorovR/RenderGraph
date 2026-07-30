@@ -66,8 +66,7 @@ void Shader::add(const std::vector<char>& shaderCode, const VkSpecializationInfo
   std::vector<SpvReflectDescriptorSet*> sets(descriptorCount);
   spvReflectEnumerateDescriptorSets(&module, &descriptorCount, sets.data());
 
-  if (descriptorCount > _descriptorSetLayoutBindings.size())
-    _descriptorSetLayoutBindings.resize(descriptorCount);
+  if (descriptorCount > _descriptorSetLayoutBindings.size()) _descriptorSetLayoutBindings.resize(descriptorCount);
   for (int s = 0; s < sets.size(); s++) {
     auto count = sets[s]->binding_count;
     auto bindings = std::vector<SpvReflectDescriptorBinding*>(sets[s]->bindings, sets[s]->bindings + count);

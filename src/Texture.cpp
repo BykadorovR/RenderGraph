@@ -23,21 +23,19 @@ void Image::createImage(VkFormat format,
   _usageFlags = usage;
   _imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
-  VkImageCreateInfo imageInfo{
-      .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-      .imageType = VK_IMAGE_TYPE_2D,
-      .format = format,
-      .extent = {.width = static_cast<uint32_t>(resolution.x),
-                 .height = static_cast<uint32_t>(resolution.y),
-                 .depth = 1},
-      .mipLevels = static_cast<uint32_t>(mipMapNumber),
-      .arrayLayers = static_cast<uint32_t>(layerNumber),
-      .samples = VK_SAMPLE_COUNT_1_BIT,
-      .tiling = VK_IMAGE_TILING_OPTIMAL,
-      .usage = usage,
-      .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-      .initialLayout = _imageLayout
-  };
+  VkImageCreateInfo imageInfo{.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                              .imageType = VK_IMAGE_TYPE_2D,
+                              .format = format,
+                              .extent = {.width = static_cast<uint32_t>(resolution.x),
+                                         .height = static_cast<uint32_t>(resolution.y),
+                                         .depth = 1},
+                              .mipLevels = static_cast<uint32_t>(mipMapNumber),
+                              .arrayLayers = static_cast<uint32_t>(layerNumber),
+                              .samples = VK_SAMPLE_COUNT_1_BIT,
+                              .tiling = VK_IMAGE_TILING_OPTIMAL,
+                              .usage = usage,
+                              .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+                              .initialLayout = _imageLayout};
 
   VmaAllocationCreateInfo allocCreateInfo = {};
   allocCreateInfo.usage = VMA_MEMORY_USAGE_AUTO;

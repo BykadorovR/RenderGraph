@@ -20,7 +20,7 @@ Buffer::Buffer(VkDeviceSize size,
 
   auto result = vmaCreateBuffer(_memoryAllocator->getAllocator(), &bufferInfo, &allocCreateInfo, &_buffer, &_allocation,
                                 &_allocationInfo);
-  if (result != VK_SUCCESS) throw std::runtime_error("Can't vmaCreateBuffer " + result);   
+  if (result != VK_SUCCESS) throw std::runtime_error("Can't vmaCreateBuffer " + result);
 }
 
 /*

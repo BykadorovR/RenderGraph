@@ -10,8 +10,9 @@ class Device final {
   vkb::Device _device;
   const Surface* _surface;
   const Instance* _instance;
-  std::vector<VkQueueFamilyProperties> _queueFamilyProperties;  
+  std::vector<VkQueueFamilyProperties> _queueFamilyProperties;
   std::vector<std::string> _desiredExtensions = {"VK_EXT_descriptor_buffer", "VK_KHR_dynamic_rendering"};
+
  public:
   Device(const Surface& surface, const Instance& instance);
   Device(const Device&) = delete;
@@ -21,7 +22,7 @@ class Device final {
   void initialize();
 
   void setDesiredExtensions(const std::vector<std::string>& extensions) noexcept;
-  bool isFormatFeatureSupported(VkFormat format, VkImageTiling tiling, VkFormatFeatureFlagBits featureFlagBit) const;  
+  bool isFormatFeatureSupported(VkFormat format, VkImageTiling tiling, VkFormatFeatureFlagBits featureFlagBit) const;
   const VkDevice getLogicalDevice() const noexcept;
   const VkPhysicalDevice getPhysicalDevice() const noexcept;
   const VkQueue getQueue(vkb::QueueType type) const;

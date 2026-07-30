@@ -14,6 +14,7 @@ import glm;
 import <volk.h>;
 import "BS_thread_pool.hpp";
 import <map>;
+import <unordered_set>;
 
 export namespace RenderGraph {
 class GraphStorage final {
@@ -175,8 +176,16 @@ class Graph final {
 
   std::unordered_map<GraphPass*, Cache> _cache;
 
+  // needed for ownership transfer (between different queues) barriers
+  std::unordered_map<GraphPass*, std::unordered_set<std::string>> _acquireOwnershipImages, _releaseOwnershipImages,
+      _acquireOwnershipBuffers, _releaseOwnershipBuffers;
+
  public:
-  Graph(int threadsNumber, int maxFramesInFlight, Swapchain& swapchain, const Window& window, const Device& device) noexcept;
+  Graph(int threadsNumber,
+        int maxFramesInFlight,
+        Swapchain& swapchain,
+        const Window& window,
+        const Device& device) noexcept;
   Graph(const Graph&) = delete;
   Graph& operator=(const Graph&) = delete;
   Graph(Graph&&) = delete;

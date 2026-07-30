@@ -120,9 +120,7 @@ class ImageView final {
   // componentMapping to pass BGRA texture to shader that accepts only RGBA
   // baseArrayLayer - which layer/face is used
   // baseMipMapLevel - which mip map level is used
-  void createImageView(VkImageViewType type,
-                       int baseMipMap,
-                       int baseArrayLayer);
+  void createImageView(VkImageViewType type, int baseMipMap, int baseArrayLayer);
   void wrapImageView(const VkImageView& imageView);
   VkImageView getImageView() const noexcept;
   Image& getImage() const noexcept;
@@ -137,6 +135,7 @@ class ImageViewHolder final {
  protected:
   std::vector<std::shared_ptr<ImageView>> _imageViews;
   std::function<int()> _index;
+
  public:
   ImageViewHolder(std::vector<std::shared_ptr<ImageView>> imageViews, std::function<int()> index) noexcept;
   ImageViewHolder(const ImageViewHolder&) = delete;
