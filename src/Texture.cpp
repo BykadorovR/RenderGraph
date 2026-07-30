@@ -22,7 +22,6 @@ void Image::createImage(VkFormat format,
   _aspectMask = aspectMask;
   _usageFlags = usage;
 
-  _imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
   VkImageCreateInfo imageInfo{
       .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
       .imageType = VK_IMAGE_TYPE_2D,

@@ -24,7 +24,6 @@ class PipelineGraphic final {
   std::optional<VkPipelineTessellationStateCreateInfo> _tessellationState;
   std::vector<VkFormat> _colorAttachments;
   std::optional<VkFormat> _depthAttachment;
-  VkRenderPass _renderPass = VK_NULL_HANDLE;
 
  public:
   PipelineGraphic() noexcept;
@@ -40,13 +39,11 @@ class PipelineGraphic final {
   void setDepthBias(bool depthBias) noexcept;
   void setDepthTest(bool depthTest) noexcept;
   void setDepthWrite(bool depthWrite) noexcept;
-  void setDepthCompareOp(VkCompareOp depthCompareOp) noexcept;
+  void setDepthCompateOp(VkCompareOp depthCompareOp) noexcept;
   void setColorBlendOp(VkBlendOp colorBlendOp) noexcept;
-  void setTessellation(int patchControlPoints) noexcept;
+  void setTesselation(int patchControlPoints) noexcept;
   void setColorAttachments(const std::vector<VkFormat>& colorAttachments) noexcept;
   void setDepthAttachment(std::optional<VkFormat> depthAttachment) noexcept;
-  // VK_NULL_HANDLE = dynamic rendering; valid handle = traditional render pass (Android)
-  void setRenderPass(VkRenderPass renderPass) noexcept;
 
   const VkPipelineDynamicStateCreateInfo& getDynamicState() const noexcept;
   const VkPipelineInputAssemblyStateCreateInfo& getInputAssembly() const noexcept;
@@ -59,11 +56,10 @@ class PipelineGraphic final {
   const std::optional<VkPipelineTessellationStateCreateInfo>& getTessellationState() const noexcept;
   const std::vector<VkFormat>& getColorAttachments() const noexcept;
   const std::optional<VkFormat>& getDepthAttachment() const noexcept;
-  VkRenderPass getRenderPass() const noexcept;
 };
 
 class Pipeline final {
- private:
+ protected:
   const Device* _device;
   std::vector<DescriptorSetLayout*> _descriptorSetLayout;
   std::unordered_map<std::string, VkPushConstantRange> _pushConstants;
@@ -78,11 +74,11 @@ class Pipeline final {
   Pipeline& operator=(Pipeline&&) = delete;
 
   void createCompute(const VkPipelineShaderStageCreateInfo& shaderStage,
-                     const std::vector<DescriptorSetLayout*>& descriptorSetLayout,
+                     std::vector<DescriptorSetLayout*> & descriptorSetLayout,
                      const std::unordered_map<std::string, VkPushConstantRange>& pushConstants);
   void createGraphic(const PipelineGraphic& pipelineGraphic,
                      const std::vector<VkPipelineShaderStageCreateInfo>& shaderStages,
-                     const std::vector<DescriptorSetLayout*>& descriptorSetLayout,
+                     std::vector<DescriptorSetLayout*>& descriptorSetLayout,
                      const std::unordered_map<std::string, VkPushConstantRange>& pushConstants,
                      const VkPipelineVertexInputStateCreateInfo& vertexInputInfo);
 

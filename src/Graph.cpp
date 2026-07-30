@@ -1,7 +1,6 @@
 module Graph;
 import <set>;
 import <ranges>;
-import <algorithm>;
 using namespace RenderGraph;
 
 void GraphStorage::add(std::string_view name, std::unique_ptr<ImageViewHolder> imageHolder) noexcept {
@@ -145,92 +144,60 @@ PipelineGraphic& GraphPassGraphic::getPipelineGraphic(const GraphStorage& graphS
     depthFormat = graphStorage.getImageViewHolder(_depthTarget.value()).getImageView().getImage().getFormat();
   }
   _pipelineGraphic->setDepthAttachment(depthFormat);
-
   return *_pipelineGraphic;
 }
 
-const std::unordered_map<std::string, bool>& GraphPassGraphic::getClearTargets() const noexcept {
-  return _clearTarget;
-}
-
-void GraphPassGraphic::setRenderPass(RenderPass* renderPass) noexcept { _renderPass = renderPass; }
-
 void GraphPassGraphic::execute(int currentFrame, const CommandBuffer& commandBuffer) {
-  for (auto&& graphElement : _graphElements) graphElement->update(currentFrame, commandBuffer);
-
-  auto resolution = _graphStorage->getImageViewHolder(_colorTargets.front()).getImageView().getImage().getResolution();
-
-  if (_renderPass != nullptr) {
-    int fbIndex = _graphStorage->getImageViewHolder(_colorTargets.front()).getIndex();
-
-    std::vector<VkClearValue> clearValues;
-    bool hasClear = false;
-    for (auto& colorTarget : _colorTargets) {
-      VkClearValue cv{};
-      if (_clearTarget.contains(colorTarget) && _clearTarget.at(colorTarget)) { cv.color = {0.f, 0.f, 0.f, 1.f}; hasClear = true; }
-      clearValues.push_back(cv);
+  auto createColorAttachment = [this](const auto& colorTarget) {
+    auto& imageViewHolder = _graphStorage->getImageViewHolder(colorTarget);
+    VkRenderingAttachmentInfo info{.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                                   .imageView = imageViewHolder.getImageView().getImageView(),
+                                   .imageLayout = imageViewHolder.getImageView().getImage().getImageLayout(),
+                                   .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
+                                   .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
+    if (_clearTarget.contains(colorTarget) && _clearTarget.at(colorTarget)) {
+      info.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+      info.clearValue.color = {0.f, 0.f, 0.f, 1.f};
     }
-    if (_depthTarget) {
-      VkClearValue cv{};
-      if (_clearTarget.contains(_depthTarget.value()) && _clearTarget.at(_depthTarget.value())) { cv.depthStencil = {1.f, 0}; hasClear = true; }
-      clearValues.push_back(cv);
+    return info;
+  };
+
+  std::vector<VkRenderingAttachmentInfo> colorAttachments = _colorTargets |
+                                                            std::views::transform(createColorAttachment) |
+                                                            std::ranges::to<std::vector>();
+
+  std::optional<VkRenderingAttachmentInfo> depthAttachment = std::nullopt;
+  if (_depthTarget.has_value()) {
+    auto& target = _depthTarget.value();
+    auto& imageViewHolder = _graphStorage->getImageViewHolder(target);
+
+    depthAttachment = VkRenderingAttachmentInfo{
+        .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+        .imageView = imageViewHolder.getImageView().getImageView(),
+        .imageLayout = imageViewHolder.getImageView().getImage().getImageLayout(),
+        .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
+        .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
+    if (_clearTarget.contains(target) && _clearTarget.at(target)) {
+      depthAttachment->loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+      depthAttachment->clearValue.depthStencil = {1.f, 0};
     }
-
-    VkRenderPassBeginInfo beginInfo{
-        .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
-        .renderPass = _renderPass->getRenderPass(),
-        .framebuffer = _renderPass->getFramebuffer(fbIndex),
-        .renderArea = {.offset = {0, 0}, .extent = {(uint32_t)resolution.x, (uint32_t)resolution.y}},
-        .clearValueCount = hasClear ? (uint32_t)clearValues.size() : 0,
-        .pClearValues = hasClear ? clearValues.data() : nullptr};
-    vkCmdBeginRenderPass(commandBuffer.getCommandBuffer(), &beginInfo, VK_SUBPASS_CONTENTS_INLINE);
-    for (auto&& graphElement : _graphElements) graphElement->draw(currentFrame, commandBuffer);
-    vkCmdEndRenderPass(commandBuffer.getCommandBuffer());
-  } else {
-    auto createColorAttachment = [this](const auto& colorTarget) {
-      auto& imageViewHolder = _graphStorage->getImageViewHolder(colorTarget);
-      VkRenderingAttachmentInfo info{.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-                                     .imageView = imageViewHolder.getImageView().getImageView(),
-                                     .imageLayout = imageViewHolder.getImageView().getImage().getImageLayout(),
-                                     .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
-                                     .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
-      if (_clearTarget.contains(colorTarget) && _clearTarget.at(colorTarget)) {
-        info.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        info.clearValue.color = {0.f, 0.f, 0.f, 1.f};
-      }
-      return info;
-    };
-
-    auto colorAttachments = _colorTargets | std::views::transform(createColorAttachment) |
-                            std::ranges::to<std::vector>();
-
-    std::optional<VkRenderingAttachmentInfo> depthAttachment;
-    if (_depthTarget) {
-      auto& imageViewHolder = _graphStorage->getImageViewHolder(_depthTarget.value());
-      depthAttachment = VkRenderingAttachmentInfo{
-          .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-          .imageView = imageViewHolder.getImageView().getImageView(),
-          .imageLayout = imageViewHolder.getImageView().getImage().getImageLayout(),
-          .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
-          .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
-      if (_clearTarget.contains(_depthTarget.value()) && _clearTarget.at(_depthTarget.value())) {
-        depthAttachment->loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        depthAttachment->clearValue.depthStencil = {1.f, 0};
-      }
-    }
-
-    VkRenderingInfo renderingInfo{
-        .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
-        .renderArea = {.offset = {0, 0}, .extent = {(uint32_t)resolution.x, (uint32_t)resolution.y}},
-        .layerCount = 1,
-        .colorAttachmentCount = (uint32_t)colorAttachments.size(),
-        .pColorAttachments = colorAttachments.data()};
-    if (depthAttachment) renderingInfo.pDepthAttachment = &depthAttachment.value();
-
-    vkCmdBeginRendering(commandBuffer.getCommandBuffer(), &renderingInfo);
-    for (auto&& graphElement : _graphElements) graphElement->draw(currentFrame, commandBuffer);
-    vkCmdEndRendering(commandBuffer.getCommandBuffer());
   }
+
+  VkRenderingInfo renderingInfo = {};
+  renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+  renderingInfo.renderArea.offset = {0, 0};
+  // take image resolution, it's safe
+  auto resolution = _graphStorage->getImageViewHolder(_colorTargets.front()).getImageView().getImage().getResolution();
+  renderingInfo.renderArea.extent = VkExtent2D(resolution.x, resolution.y);
+  renderingInfo.layerCount = 1;
+  renderingInfo.colorAttachmentCount = colorAttachments.size();
+  renderingInfo.pColorAttachments = colorAttachments.data();
+  if (depthAttachment.has_value()) renderingInfo.pDepthAttachment = &depthAttachment.value();
+
+  for (auto&& graphElement : _graphElements) graphElement->update(currentFrame, commandBuffer);
+  vkCmdBeginRendering(commandBuffer.getCommandBuffer(), &renderingInfo);
+  for (auto&& graphElement : _graphElements) graphElement->draw(currentFrame, commandBuffer);
+  vkCmdEndRendering(commandBuffer.getCommandBuffer());
 }
 
 GraphPassCompute::GraphPassCompute(std::string_view name,
@@ -284,7 +251,9 @@ const std::vector<std::string>& GraphPassCompute::getStorageTextureOutputs() con
 bool GraphPassCompute::isSeparate() const noexcept { return _separate; }
 
 void GraphPassCompute::execute(int currentFrame, const CommandBuffer& commandBuffer) {
-  for (auto&& graphElement : _graphElements) graphElement->draw(currentFrame, commandBuffer);
+  for (auto&& graphElement : _graphElements) {
+    graphElement->draw(currentFrame, commandBuffer);
+  }
 }
 
 Graph::Graph(int threadsNumber,
@@ -309,10 +278,6 @@ void Graph::initialize() noexcept {
                           [&] { return std::make_shared<Semaphore>(VK_SEMAPHORE_TYPE_BINARY, *_device); });
   _semaphoreInFlight = std::make_unique<Semaphore>(VK_SEMAPHORE_TYPE_TIMELINE, *_device);
 }
-
-void Graph::setRenderingMode(RenderingMode mode) noexcept { _renderingMode = mode; }
-
-RenderingMode Graph::getRenderingMode() const noexcept { return _renderingMode; }
 
 GraphStorage& Graph::getGraphStorage() const noexcept { return *_graphStorage; }
 
@@ -497,56 +462,6 @@ void Graph::calculate() {
 
   if (root) traverse(root);
 
-  // initialize render passes for RENDER_PASS mode
-  if (_renderingMode == RenderingMode::RENDER_PASS) {
-    const auto swapchainImageViews = _swapchain->getImageViews();
-    for (auto&& pass : _passesOrdered) {
-      if (pass->getGraphPassType() != GraphPassType::GRAPHIC) continue;
-      auto* passGraphic = static_cast<GraphPassGraphic*>(pass);
-
-      std::vector<VkFormat> colorFormats;
-      std::vector<bool> clearColors;
-      std::vector<VkImageLayout> colorFinalLayouts;
-      std::vector<std::vector<VkImageView>> colorImageViews;
-      for (auto& colorTarget : passGraphic->getColorTargets()) {
-        auto& holder = _graphStorage->getImageViewHolder(colorTarget);
-        colorFormats.push_back(holder.getImageView().getImage().getFormat());
-        clearColors.push_back(passGraphic->getClearTargets().contains(colorTarget) && passGraphic->getClearTargets().at(colorTarget));
-        colorFinalLayouts.push_back(VK_IMAGE_LAYOUT_GENERAL);
-        auto views = holder.getImageViews();
-        std::vector<VkImageView> vkViews;
-        vkViews.reserve(views.size());
-        for (auto* iv : views) vkViews.push_back(iv->getImageView());
-        colorImageViews.push_back(std::move(vkViews));
-      }
-
-      std::optional<VkFormat> depthFormat;
-      std::vector<VkImageView> depthImageViews;
-      bool clearDepth = false;
-      if (auto depthTarget = passGraphic->getDepthTarget()) {
-        auto& holder = _graphStorage->getImageViewHolder(depthTarget.value());
-        depthFormat = holder.getImageView().getImage().getFormat();
-        clearDepth = passGraphic->getClearTargets().contains(depthTarget.value()) && passGraphic->getClearTargets().at(depthTarget.value());
-        auto views = holder.getImageViews();
-        depthImageViews.reserve(views.size());
-        for (auto* iv : views) depthImageViews.push_back(iv->getImageView());
-      }
-
-      auto resolution = _graphStorage->getImageViewHolder(passGraphic->getColorTargets().front())
-                            .getImageView()
-                            .getImage()
-                            .getResolution();
-      VkExtent2D extent{(uint32_t)resolution.x, (uint32_t)resolution.y};
-
-      auto renderPass = std::make_unique<RenderPass>(*_device);
-      renderPass->create(colorFormats, clearColors, colorFinalLayouts, depthFormat, clearDepth, colorImageViews,
-                         depthImageViews, extent);
-      passGraphic->getPipelineGraphic(*_graphStorage).setRenderPass(renderPass->getRenderPass());
-      passGraphic->setRenderPass(renderPass.get());
-      _renderPasses[passGraphic->getName()] = std::move(renderPass);
-    }
-  }
-
   // set semaphores between passes
   bool flagWaitForSwapchain = true;
   bool queueTypeChange = false;
@@ -647,35 +562,31 @@ bool Graph::render() {
         auto commandBuffer = pass->getCommandBuffers()[_frameInFlight];
         if (commandBuffer->getActive() == false) commandBuffer->beginCommands();
 
-        // change layouts if needed (attachments and/or swapchain), handles reset as well
+        // change layouts for dynamic rendering if needed (attachments and/or swapchain), handles reset as well
         if (pass->getGraphPassType() == GraphPassType::GRAPHIC) {
           auto passGraphic = static_cast<GraphPassGraphic*>(pass);
           auto colorTargets = passGraphic->getColorTargets();
-          auto transitionToGeneral = [&](auto& iv, VkAccessFlags dstMask) {
-            if (iv.getImage().getImageLayout() != VK_IMAGE_LAYOUT_GENERAL)
-              iv.getImage().changeLayout(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_NONE,
-                                         dstMask, *commandBuffer);
-          };
-          auto colorDst = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT;
-          auto depthDst = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+          for (auto&& colorTarget : colorTargets) {
+            auto&& imageView = _graphStorage->getImageViewHolder(colorTarget).getImageView();
+            if (imageView.getImage().getImageLayout() != VK_IMAGE_LAYOUT_GENERAL) {
+              // attachments are used in beginRendering, to avoid WAW hazard we set access mask to WRITE
+              // potentially this won't work for storage images if there is no rendering pass before usage
+              // so READ is needed as well
+              auto dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT;
+              imageView.getImage().changeLayout(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_NONE,
+                                                dstAccessMask, *commandBuffer);
+            }
+          }
           auto depthTarget = passGraphic->getDepthTarget();
+          if (depthTarget) {
+            auto&& depthImageView = _graphStorage->getImageViewHolder(depthTarget.value()).getImageView();
+            if (depthImageView.getImage().getImageLayout() != VK_IMAGE_LAYOUT_GENERAL) {
+              auto dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
+                                   VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
 
-          if (_renderingMode == RenderingMode::RENDER_PASS) {
-            // Transition only the view used by this frame's framebuffer (same fbIndex as execute())
-            int fbIndex = _graphStorage->getImageViewHolder(colorTargets.front()).getIndex();
-            auto transitionAtIndex = [&](const auto& holder, VkAccessFlags dstMask) {
-              auto views = holder.getImageViews();
-              transitionToGeneral(*views[fbIndex % views.size()], dstMask);
-            };
-            for (auto&& colorTarget : colorTargets)
-              transitionAtIndex(_graphStorage->getImageViewHolder(colorTarget), colorDst);
-            if (depthTarget)
-              transitionAtIndex(_graphStorage->getImageViewHolder(depthTarget.value()), depthDst);
-          } else {
-            for (auto&& colorTarget : colorTargets)
-              transitionToGeneral(_graphStorage->getImageViewHolder(colorTarget).getImageView(), colorDst);
-            if (depthTarget)
-              transitionToGeneral(_graphStorage->getImageViewHolder(depthTarget.value()).getImageView(), depthDst);
+              depthImageView.getImage().changeLayout(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_NONE,
+                                                     dstAccessMask, *commandBuffer);
+            }
           }
         }
 
@@ -852,32 +763,5 @@ void Graph::reset() {
   _graphStorage->reset(oldSwapchain, _swapchain->getImageViews());
   for (auto&& pass : _passesOrdered) {
     pass->reset(_swapchain->getImageViews());
-  }
-
-  for (auto& [passName, renderPass] : _renderPasses) {
-    auto* passGraphic = getPassGraphic(passName);
-
-    std::vector<std::vector<VkImageView>> colorImageViews;
-    for (auto& colorTarget : passGraphic->getColorTargets()) {
-      auto views = _graphStorage->getImageViewHolder(colorTarget).getImageViews();
-      std::vector<VkImageView> vkViews;
-      vkViews.reserve(views.size());
-      for (auto* iv : views) vkViews.push_back(iv->getImageView());
-      colorImageViews.push_back(std::move(vkViews));
-    }
-
-    std::vector<VkImageView> depthImageViews;
-    if (auto depthTarget = passGraphic->getDepthTarget()) {
-      auto views = _graphStorage->getImageViewHolder(depthTarget.value()).getImageViews();
-      depthImageViews.reserve(views.size());
-      for (auto* iv : views) depthImageViews.push_back(iv->getImageView());
-    }
-
-    auto resolution = _graphStorage->getImageViewHolder(passGraphic->getColorTargets().front())
-                          .getImageView()
-                          .getImage()
-                          .getResolution();
-    VkExtent2D extent{(uint32_t)resolution.x, (uint32_t)resolution.y};
-    renderPass->recreateFramebuffers(colorImageViews, depthImageViews, extent);
   }
 }
