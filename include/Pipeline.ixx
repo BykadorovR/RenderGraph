@@ -74,7 +74,7 @@ class Pipeline final {
   Pipeline& operator=(Pipeline&&) = delete;
 
   void createCompute(const VkPipelineShaderStageCreateInfo& shaderStage,
-                     std::vector<DescriptorSetLayout*> & descriptorSetLayout,
+                     std::vector<DescriptorSetLayout*>& descriptorSetLayout,
                      const std::unordered_map<std::string, VkPushConstantRange>& pushConstants);
   void createGraphic(const PipelineGraphic& pipelineGraphic,
                      const std::vector<VkPipelineShaderStageCreateInfo>& shaderStages,

@@ -7,7 +7,6 @@ import Device;
 import Instance;
 import <volk.h>;
 
-
 export namespace RenderGraph {
 class MemoryAllocator final {
  private:

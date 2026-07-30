@@ -39,7 +39,8 @@ class Shader final {
   // for instancing
   const VkPipelineVertexInputStateCreateInfo* getVertexInputInfo(
       std::vector<std::pair<VkVertexInputRate, int>> typeElements);
-  // provides information about attributes and their format (position, UV) + (RGBA32, RG32), used during pipeline creation
+  // provides information about attributes and their format (position, UV) + (RGBA32, RG32), used during pipeline
+  // creation
   const VkPipelineVertexInputStateCreateInfo* getVertexInputInfo();
   ~Shader();
 };

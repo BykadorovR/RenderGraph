@@ -9,7 +9,8 @@ import <volk.h>;
 import <VkBootstrap.h>;
 import <memory>;
 
-export namespace RenderGraph{class Swapchain {
+export namespace RenderGraph {
+class Swapchain {
  private:
   const MemoryAllocator* _allocator;
   const Device* _device;

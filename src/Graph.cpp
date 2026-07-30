@@ -389,6 +389,41 @@ void Graph::print() const noexcept {
 }
 
 void Graph::calculate() {
+  auto getDependencies = [](GraphPass* value) {
+    std::unordered_set<std::string> dependenciesBuffer, dependenciesTexture;
+    if (value->getGraphPassType() == GraphPassType::COMPUTE) {
+      auto passCompute = static_cast<GraphPassCompute*>(value);
+      for (auto&& nameResource : passCompute->getStorageBufferInputs()) {
+        dependenciesBuffer.insert(nameResource);
+      }
+      for (auto&& nameResource : passCompute->getStorageTextureInputs()) {
+        dependenciesTexture.insert(nameResource);
+      }
+      for (auto&& nameResource : passCompute->getStorageBufferOutputs()) {
+        dependenciesBuffer.insert(nameResource);
+      }
+      for (auto&& nameResource : passCompute->getStorageTextureOutputs()) {
+        dependenciesTexture.insert(nameResource);
+      }
+    }
+
+    if (value->getGraphPassType() == GraphPassType::GRAPHIC) {
+      auto passGraphic = static_cast<GraphPassGraphic*>(value);
+      for (auto&& nameResource : passGraphic->getTextureInputs()) {
+        dependenciesTexture.insert(nameResource);
+      }
+      for (auto&& nameResource : passGraphic->getColorTargets()) {
+        dependenciesTexture.insert(nameResource);
+      }
+
+      auto depth = passGraphic->getDepthTarget();
+      if (depth) {
+        dependenciesTexture.insert(depth.value());
+      }
+    }
+    return std::pair{dependenciesTexture, dependenciesBuffer};
+  };
+
   auto getInputs = [this](std::string_view nameNode) -> std::vector<std::string> {
     auto it = std::find_if(
         _passes.rbegin(), _passes.rend(),
@@ -462,39 +497,54 @@ void Graph::calculate() {
 
   if (root) traverse(root);
 
-  // set semaphores between passes
+  // set semaphores between passes + fill ownership transfer barriers
   bool flagWaitForSwapchain = true;
-  bool queueTypeChange = false;
   GraphPass* previousPass = nullptr;
+  std::unordered_map<std::string, GraphPass*> texturesOwnership, buffersOwnership;
   for (auto&& pass : _passesOrdered) {
-    // find if we need to change queue -> add semaphore
-    if (previousPass) {
-      if (pass->getGraphPassType() != previousPass->getGraphPassType()) {
-        if ((previousPass->getGraphPassType() == GraphPassType::COMPUTE &&
-             static_cast<GraphPassCompute*>(previousPass)->isSeparate()) ||
-            (pass->getGraphPassType() == GraphPassType::COMPUTE && static_cast<GraphPassCompute*>(pass)->isSeparate()))
-          queueTypeChange = true;
-      } else {
-        if (previousPass->getGraphPassType() == GraphPassType::COMPUTE &&
-            pass->getGraphPassType() == GraphPassType::COMPUTE &&
-            static_cast<GraphPassCompute*>(previousPass)->isSeparate() !=
-                static_cast<GraphPassCompute*>(pass)->isSeparate())
-          queueTypeChange = true;
+    // check resource ownership and fill ownership transfer barriers
+    auto usesSeparateQueue = [](GraphPass* pass) {
+      return pass->getGraphPassType() == GraphPassType::COMPUTE && static_cast<GraphPassCompute*>(pass)->isSeparate();
+    };
+
+    auto [currentTextures, currentBuffers] = getDependencies(pass);
+    for (const auto& texture : currentTextures) {
+      auto owner = texturesOwnership.find(texture);
+
+      if (owner != texturesOwnership.end() && usesSeparateQueue(owner->second) != usesSeparateQueue(pass)) {
+        _acquireOwnershipImages[pass].insert(texture);
+        _releaseOwnershipImages[owner->second].insert(texture);
       }
+
+      texturesOwnership[texture] = pass;
     }
+
+    for (const auto& buffer : currentBuffers) {
+      auto owner = buffersOwnership.find(buffer);
+
+      if (owner != buffersOwnership.end() && usesSeparateQueue(owner->second) != usesSeparateQueue(pass)) {
+        _acquireOwnershipBuffers[pass].insert(buffer);
+        _releaseOwnershipBuffers[owner->second].insert(buffer);
+      }
+
+      buffersOwnership[buffer] = pass;
+    }
+    //
+
+    // find if we need to change queue -> add semaphore + check for neccessity of the ownership transfer
+    bool queueTypeChange = previousPass && usesSeparateQueue(previousPass) != usesSeparateQueue(pass);
 
     _cache[pass] = {queueTypeChange, previousPass};
 
-    // signal semaphore for the previous pass
-    // wait semaphore for the current pass
-    // only if there are separate queues for compute and graphic
     if (queueTypeChange) {
+      // signal semaphore for the previous pass
+      // wait semaphore for the current pass
+      // only if there are separate queues for compute and graphic
       std::vector<std::shared_ptr<Semaphore>> semaphoreQueueType(_maxFramesInFlight);
       std::ranges::generate(semaphoreQueueType,
                             [&] { return std::make_shared<Semaphore>(VK_SEMAPHORE_TYPE_BINARY, *_device); });
       pass->addWaitSemaphore(semaphoreQueueType, [this]() { return _frameInFlight; });
       previousPass->addSignalSemaphore(semaphoreQueueType, [this]() { return _frameInFlight; });
-      queueTypeChange = false;
     }
     // special case if we read from swapchain
     // who first interact with swapchain that should wait for the semaphore

@@ -13,14 +13,11 @@ CommandBuffer::CommandBuffer(const CommandPool& pool, const Device& device) : _p
 }
 
 CommandBuffer::CommandBuffer(CommandBuffer&& commandBuffer) noexcept
-    : _buffer(commandBuffer._buffer),
-      _pool(commandBuffer._pool),
-      _device(commandBuffer._device),
-      _active(commandBuffer._active) {
-    commandBuffer._buffer = nullptr;
-    commandBuffer._pool = nullptr;
-    commandBuffer._device = nullptr;
-    commandBuffer._active = false;
+    : _buffer(std::exchange(commandBuffer._buffer, nullptr)),
+      _pool(std::exchange(commandBuffer._pool, nullptr)),
+      _device(std::exchange(commandBuffer._device, nullptr)),
+      _active(std::exchange(commandBuffer._active, false)) {
+  ;
 }
 
 void CommandBuffer::beginCommands() noexcept {
@@ -42,5 +39,6 @@ const VkCommandBuffer& CommandBuffer::getCommandBuffer() const noexcept { return
 
 CommandBuffer::~CommandBuffer() {
   _active = false;
-  vkFreeCommandBuffers(_device->getLogicalDevice(), _pool->getCommandPool(), 1, &_buffer);
+  if (_device && _pool && _buffer)
+    vkFreeCommandBuffers(_device->getLogicalDevice(), _pool->getCommandPool(), 1, &_buffer);
 }
