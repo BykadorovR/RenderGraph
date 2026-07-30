@@ -21,6 +21,7 @@ void Image::createImage(VkFormat format,
   _layerNumber = layerNumber;
   _aspectMask = aspectMask;
   _usageFlags = usage;
+  _imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
   VkImageCreateInfo imageInfo{
       .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
@@ -35,7 +36,7 @@ void Image::createImage(VkFormat format,
       .tiling = VK_IMAGE_TILING_OPTIMAL,
       .usage = usage,
       .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-      .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+      .initialLayout = _imageLayout
   };
 
   VmaAllocationCreateInfo allocCreateInfo = {};
