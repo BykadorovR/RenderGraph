@@ -296,6 +296,11 @@ TEST(ScenarioTest, GraphSeparateQueues) {
   EXPECT_EQ(guiPass.getPipelineGraphic(graph.getGraphStorage()).getColorAttachments().size(), 1);
 
   graph.calculate();
+  // check ownership transfer
+  EXPECT_TRUE(graph._releaseOwnershipImages.at(&renderPass).contains("Swapchain"));
+  EXPECT_TRUE(graph._acquireOwnershipImages.at(&postprocessingPass).contains("Swapchain"));
+  EXPECT_TRUE(graph._releaseOwnershipImages.at(&postprocessingPass).contains("Swapchain"));
+  EXPECT_TRUE(graph._acquireOwnershipImages.at(&guiPass).contains("Swapchain"));
   // wait swapchain semaphore
   EXPECT_EQ(renderPass.getWaitSemaphores().size(), 1);
   EXPECT_EQ(renderPass.getSignalSemaphores().size(), 1);
@@ -369,6 +374,79 @@ TEST(ScenarioTest, GraphSeparateQueues) {
 
   // wait device idle before destroying resources
   vkDeviceWaitIdle(device.getLogicalDevice());
+}
+
+TEST(ScenarioTest, BufferOwnershipTransferUsesLastResourceOwner) {
+  glm::ivec2 resolution(1920, 1080);
+
+  RenderGraph::Instance instance("TestApp", false);
+
+  RenderGraph::Window window(resolution);
+  window.initialize();
+
+  RenderGraph::Surface surface(window, instance);
+
+  RenderGraph::Device device(surface, instance);
+  device.initialize();
+
+  RenderGraph::MemoryAllocator allocator(device, instance);
+
+  RenderGraph::Swapchain swapchain(resolution, allocator, device);
+  swapchain.initialize();
+
+  constexpr int framesInFlight = 2;
+  RenderGraph::Graph graph(4, framesInFlight, swapchain, window, device);
+  graph.initialize();
+
+  /*
+   * X, Y, Link are resources we want to pass between First, Middle, Last passes.
+   * Passes flow is: First -> Middle -> Last
+   *
+   * graphics queue: First(writes: X, writes: Link) -> Middle(reads: Link, writes: Y)
+   * compute queue: Last(reads: X, Y)
+   *
+   * Ownership transfers: X: First -> Last, Y: Middle -> Last.
+   * Link stays on the graphics queue and requires no transfer.
+   */
+
+  auto& firstPass = graph.createPassCompute("First", false);
+  firstPass.addStorageBufferOutput("X");
+  firstPass.addStorageBufferOutput("Link");
+
+  auto& middlePass = graph.createPassCompute("Middle", false);
+  middlePass.addStorageBufferInput("Link");
+  middlePass.addStorageBufferOutput("Y");
+
+  auto& lastPass = graph.createPassCompute("Last", true);
+
+  // Preserve the First -> Middle -> Last dependency traversal.
+  lastPass.addStorageBufferInput("Y");
+  lastPass.addStorageBufferInput("X");
+
+  graph.calculate();
+
+  ASSERT_EQ(graph._releaseOwnershipBuffers.size(), 2);
+  ASSERT_EQ(graph._acquireOwnershipBuffers.size(), 1);
+
+  // X must be released by its actual last owner, not by the adjacent pass.
+  ASSERT_TRUE(graph._releaseOwnershipBuffers.contains(&firstPass));
+  EXPECT_EQ(graph._releaseOwnershipBuffers.at(&firstPass).size(), 1);
+  EXPECT_TRUE(graph._releaseOwnershipBuffers.at(&firstPass).contains("X"));
+
+  ASSERT_TRUE(graph._releaseOwnershipBuffers.contains(&middlePass));
+  EXPECT_EQ(graph._releaseOwnershipBuffers.at(&middlePass).size(), 1);
+  EXPECT_TRUE(graph._releaseOwnershipBuffers.at(&middlePass).contains("Y"));
+
+  ASSERT_TRUE(graph._acquireOwnershipBuffers.contains(&lastPass));
+  EXPECT_EQ(graph._acquireOwnershipBuffers.at(&lastPass).size(), 2);
+  EXPECT_TRUE(graph._acquireOwnershipBuffers.at(&lastPass).contains("X"));
+  EXPECT_TRUE(graph._acquireOwnershipBuffers.at(&lastPass).contains("Y"));
+
+  // Link is used only on the graphics queue family.
+  EXPECT_FALSE(graph._releaseOwnershipBuffers.at(&firstPass).contains("Link"));
+
+  EXPECT_TRUE(graph._releaseOwnershipImages.empty());
+  EXPECT_TRUE(graph._acquireOwnershipImages.empty());
 }
 
 TEST(ScenarioTest, GraphReset) {

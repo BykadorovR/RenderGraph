@@ -46,11 +46,17 @@ std::string GraphStorage::find(const std::vector<std::shared_ptr<ImageView>>& im
   return std::string{};
 }
 
-const ImageViewHolder& GraphStorage::getImageViewHolder(std::string_view name) const noexcept {
+bool GraphStorage::containsImageViewHolder(std::string_view name) const noexcept {
+  return _imageViewHolders.contains(std::string(name));
+}
+
+const ImageViewHolder& GraphStorage::getImageViewHolder(std::string_view name) const {
   return *_imageViewHolders.at(std::string(name));
 }
 
-std::vector<Buffer*> GraphStorage::getBuffer(std::string_view name) const noexcept {
+bool GraphStorage::containsBuffer(std::string_view name) const noexcept { return _buffers.contains(std::string(name)); }
+
+std::vector<Buffer*> GraphStorage::getBuffer(std::string_view name) const {
   // std::ranges::to makes vector by itself
   return _buffers.at(std::string(name)) | std::views::transform([](auto& p) { return p.get(); }) |
          std::ranges::to<std::vector>();
@@ -329,19 +335,32 @@ void Graph::print() const noexcept {
   if (_passesOrdered.empty()) return;
 
   auto printImages = [this](const auto& keys, std::string_view keyTag) {
-    for (auto&& name : keys) {
+    for (const auto& name : keys) {
       std::cout << keyTag << name << "; ";
-      for (auto&& imageView : _graphStorage->getImageViewHolder(name).getImageViews()) {
+      if (!_graphStorage->containsImageViewHolder(name)) {
+        std::cout << "<not registered>" << std::endl;
+        continue;
+      }
+      for (const auto& imageView : _graphStorage->getImageViewHolder(name).getImageViews()) {
         std::cout << imageView->getImage().getImage() << " ";
       }
       std::cout << std::endl;
     }
   };
   auto printBuffers = [this](const auto& keys, std::string_view keyTag) {
-    for (auto&& name : keys) {
+    for (const auto& name : keys) {
       std::cout << keyTag << name << "; ";
-      for (auto&& resource : _graphStorage->getBuffer(name)) {
-        std::cout << resource->getBuffer() << " ";
+      if (!_graphStorage->containsBuffer(name)) {
+        std::cout << "<not registered>" << std::endl;
+        continue;
+      }
+      const auto buffers = _graphStorage->getBuffer(name);
+      if (buffers.empty()) {
+        std::cout << "<empty>" << std::endl;
+        continue;
+      }
+      for (const auto* buffer : buffers) {
+        std::cout << buffer->getBuffer() << " ";
       }
       std::cout << std::endl;
     }
@@ -606,6 +625,7 @@ bool Graph::render() {
 
   auto swapchainIndex = _swapchain->getSwapchainIndex();
   _timestamps->resetQueryPool();
+
   // run all passes' execution functions
   std::vector<std::future<void>> futureTasks =
       _passesOrdered | std::views::transform([this, swapchainIndex](auto& pass) {
@@ -642,7 +662,9 @@ bool Graph::render() {
 
         return _threadPool->submit([this, pass, commandBuffer]() {
           _timestamps->pushTimestamp(pass->getName(), *commandBuffer);
+          _recordAcquireOwnershipBarriers(pass, *commandBuffer);
           pass->execute(_frameInFlight, *commandBuffer);
+          _recordReleaseOwnershipBarriers(pass, *commandBuffer);
           _timestamps->popTimestamp(pass->getName(), *commandBuffer);
         });
       }) |
@@ -661,12 +683,13 @@ bool Graph::render() {
     }
 
     // determine wait stages
-    std::vector<VkPipelineStageFlags> waitStages(waitSemaphores.size(), VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    std::vector<VkPipelineStageFlags> waitStages(waitSemaphores.size(), VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
     auto queueType = vkb::QueueType::graphics;
     if (previousPass->getGraphPassType() == GraphPassType::COMPUTE) {
-      auto passComputePrevious = static_cast<GraphPassCompute*>(previousPass);
-      std::ranges::fill(waitStages, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
-      if (passComputePrevious->isSeparate()) queueType = vkb::QueueType::compute;
+      auto* passComputePrevious = static_cast<GraphPassCompute*>(previousPass);
+      if (passComputePrevious->isSeparate()) {
+        queueType = vkb::QueueType::compute;
+      }
     }
 
     // submit + semaphores
@@ -814,4 +837,129 @@ void Graph::reset() {
   for (auto&& pass : _passesOrdered) {
     pass->reset(_swapchain->getImageViews());
   }
+}
+
+void Graph::_recordAcquireOwnershipBarriers(GraphPass* pass, const CommandBuffer& commandBuffer) {
+  const bool separateCompute = pass->getGraphPassType() == GraphPassType::COMPUTE &&
+                               static_cast<GraphPassCompute*>(pass)->isSeparate();
+
+  // current pass takes ownership
+  const uint32_t srcQueueFamilyIndex = static_cast<uint32_t>(
+      _device->getQueueIndex(separateCompute ? vkb::QueueType::graphics : vkb::QueueType::compute));
+
+  const uint32_t dstQueueFamilyIndex = static_cast<uint32_t>(
+      _device->getQueueIndex(separateCompute ? vkb::QueueType::compute : vkb::QueueType::graphics));
+
+  std::vector<VkImageMemoryBarrier> imageBarriers;
+  std::vector<VkBufferMemoryBarrier> bufferBarriers;
+
+  const auto imagesIt = _acquireOwnershipImages.find(pass);
+  if (imagesIt != _acquireOwnershipImages.end()) {
+    imageBarriers.reserve(imagesIt->second.size());
+
+    for (const auto& name : imagesIt->second) {
+      auto& image = _graphStorage->getImageViewHolder(name).getImageView().getImage();
+
+      imageBarriers.push_back(VkImageMemoryBarrier{
+          .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+          .pNext = nullptr,
+          .srcAccessMask = 0,
+          .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+          .oldLayout = image.getImageLayout(),
+          .newLayout = image.getImageLayout(),
+          .srcQueueFamilyIndex = srcQueueFamilyIndex,
+          .dstQueueFamilyIndex = dstQueueFamilyIndex,
+          .image = image.getImage(),
+          .subresourceRange = VkImageSubresourceRange{.aspectMask = image.getAspectMask(),
+                                                      .baseMipLevel = 0,
+                                                      .levelCount = static_cast<uint32_t>(image.getMipMapNumber()),
+                                                      .baseArrayLayer = 0,
+                                                      .layerCount = static_cast<uint32_t>(image.getLayerNumber())}});
+    }
+  }
+
+  const auto buffersIt = _acquireOwnershipBuffers.find(pass);
+  if (buffersIt != _acquireOwnershipBuffers.end()) {
+    bufferBarriers.reserve(buffersIt->second.size());
+    for (const auto& name : buffersIt->second) {
+      auto buffer = _graphStorage->getBuffer(name)[_frameInFlight];
+      bufferBarriers.push_back(
+          VkBufferMemoryBarrier{.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+                                .pNext = nullptr,
+                                .srcAccessMask = 0,
+                                .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+                                .srcQueueFamilyIndex = srcQueueFamilyIndex,
+                                .dstQueueFamilyIndex = dstQueueFamilyIndex,
+                                .buffer = buffer->getBuffer(),
+                                .offset = 0,
+                                .size = buffer->getSize()});
+    }
+  }
+
+  vkCmdPipelineBarrier(commandBuffer.getCommandBuffer(), VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                       VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, static_cast<uint32_t>(bufferBarriers.size()),
+                       bufferBarriers.data(), static_cast<uint32_t>(imageBarriers.size()), imageBarriers.data());
+}
+
+void Graph::_recordReleaseOwnershipBarriers(GraphPass* pass, const CommandBuffer& commandBuffer) {
+  const bool separateCompute = pass->getGraphPassType() == GraphPassType::COMPUTE &&
+                               static_cast<GraphPassCompute*>(pass)->isSeparate();
+
+  // Current pass transfer ownership
+  const uint32_t srcQueueFamilyIndex = static_cast<uint32_t>(
+      _device->getQueueIndex(separateCompute ? vkb::QueueType::compute : vkb::QueueType::graphics));
+
+  const uint32_t dstQueueFamilyIndex = static_cast<uint32_t>(
+      _device->getQueueIndex(separateCompute ? vkb::QueueType::graphics : vkb::QueueType::compute));
+
+  std::vector<VkImageMemoryBarrier> imageBarriers;
+  std::vector<VkBufferMemoryBarrier> bufferBarriers;
+
+  const auto imagesIt = _releaseOwnershipImages.find(pass);
+  if (imagesIt != _releaseOwnershipImages.end()) {
+    imageBarriers.reserve(imagesIt->second.size());
+
+    for (const auto& name : imagesIt->second) {
+      auto& image = _graphStorage->getImageViewHolder(name).getImageView().getImage();
+
+      imageBarriers.push_back(VkImageMemoryBarrier{
+          .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+          .pNext = nullptr,
+          .srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+          .dstAccessMask = 0,
+          .oldLayout = image.getImageLayout(),
+          .newLayout = image.getImageLayout(),
+          .srcQueueFamilyIndex = srcQueueFamilyIndex,
+          .dstQueueFamilyIndex = dstQueueFamilyIndex,
+          .image = image.getImage(),
+          .subresourceRange = VkImageSubresourceRange{.aspectMask = image.getAspectMask(),
+                                                      .baseMipLevel = 0,
+                                                      .levelCount = static_cast<uint32_t>(image.getMipMapNumber()),
+                                                      .baseArrayLayer = 0,
+                                                      .layerCount = static_cast<uint32_t>(image.getLayerNumber())}});
+    }
+  }
+
+  const auto buffersIt = _releaseOwnershipBuffers.find(pass);
+  if (buffersIt != _releaseOwnershipBuffers.end()) {
+    bufferBarriers.reserve(buffersIt->second.size());
+    for (const auto& name : buffersIt->second) {
+      auto buffer = _graphStorage->getBuffer(name)[_frameInFlight];
+      bufferBarriers.push_back(
+          VkBufferMemoryBarrier{.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+                                .pNext = nullptr,
+                                .srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+                                .dstAccessMask = 0,
+                                .srcQueueFamilyIndex = srcQueueFamilyIndex,
+                                .dstQueueFamilyIndex = dstQueueFamilyIndex,
+                                .buffer = buffer->getBuffer(),
+                                .offset = 0,
+                                .size = buffer->getSize()});
+    }
+  }
+
+  vkCmdPipelineBarrier(commandBuffer.getCommandBuffer(), VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                       VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr,
+                       static_cast<uint32_t>(bufferBarriers.size()), bufferBarriers.data(),
+                       static_cast<uint32_t>(imageBarriers.size()), imageBarriers.data());
 }
