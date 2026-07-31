@@ -18,31 +18,35 @@ void Device::initialize() {
       .samplerAnisotropy = true,
   };
 
-  // Vulkan 1.0+ features
-  VkPhysicalDeviceDynamicRenderingFeatures dynamicRenderingFeature{
-      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES,
-      .dynamicRendering = true};
-  VkPhysicalDeviceTimelineSemaphoreFeatures timelineFeatures = {
-      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES,
-      .timelineSemaphore = true,
-  };
-  // for timestamps reset
-  VkPhysicalDeviceHostQueryResetFeatures resetFeatures = {
-      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_HOST_QUERY_RESET_FEATURES,
-      .hostQueryReset = true};
+  // Vulkan 1.2 features
+  VkPhysicalDeviceVulkan12Features features12{};
+  features12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+  features12.hostQueryReset = true;
+  features12.timelineSemaphore = true;
+  features12.bufferDeviceAddress = true;
+
+  // Vulkan 1.3 features
+  VkPhysicalDeviceVulkan13Features features13{};
+  features13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
+  features13.synchronization2 = true;
+  features13.dynamicRendering = true;
+
+  // Not part of Vulkan 1.3 core
   VkPhysicalDeviceDescriptorBufferFeaturesEXT descriptorBufferFeatures{
       .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT,
       .descriptorBuffer = true};
-  VkPhysicalDeviceBufferDeviceAddressFeatures bufferDeviceAddressFeatures{
-      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES,
-      .bufferDeviceAddress = true};
 
   vkb::PhysicalDeviceSelector deviceSelector(_instance->getInstance());
+  // vk-bootstrap propagates features used as physical-device selection
+  // criteria into logical-device creation, so builder.add_pNext is not
+  // needed for these core features.
   deviceSelector.set_required_features(deviceFeatures);
+  deviceSelector.set_required_features_12(features12);
+  deviceSelector.set_required_features_13(features13);
   deviceSelector.allow_any_gpu_device_type(false);
   // not part of Vulkan 1.3 core
-  if (std::find(_desiredExtensions.begin(), _desiredExtensions.end(), "VK_EXT_descriptor_buffer") !=
-      _desiredExtensions.end())
+  if (std::find(_optionalExtensions.begin(), _optionalExtensions.end(), "VK_EXT_descriptor_buffer") !=
+      _optionalExtensions.end())
     deviceSelector.add_desired_extension("VK_EXT_descriptor_buffer");
   // VK_KHR_SWAPCHAIN_EXTENSION_NAME is added by default
   deviceSelector.set_surface(_surface->getSurface());
@@ -54,17 +58,10 @@ void Device::initialize() {
 
   vkb::DeviceBuilder builder{devicePhysical};
   if (devicePhysical.is_extension_present("VK_EXT_descriptor_buffer") &&
-      std::find(_desiredExtensions.begin(), _desiredExtensions.end(), "VK_EXT_descriptor_buffer") !=
-          _desiredExtensions.end())
+      std::find(_optionalExtensions.begin(), _optionalExtensions.end(), "VK_EXT_descriptor_buffer") !=
+          _optionalExtensions.end())
     builder.add_pNext(&descriptorBufferFeatures);
-  if (devicePhysical.is_extension_present("VK_KHR_dynamic_rendering") &&
-      std::find(_desiredExtensions.begin(), _desiredExtensions.end(), "VK_KHR_dynamic_rendering") !=
-          _desiredExtensions.end())
-    builder.add_pNext(&dynamicRenderingFeature);
-  // rest should be available
-  builder.add_pNext(&timelineFeatures);
-  builder.add_pNext(&resetFeatures);
-  builder.add_pNext(&bufferDeviceAddressFeatures);
+
   auto builderResult = builder.build();
   if (!builderResult) {
     throw std::runtime_error(builderResult.error().message());
@@ -78,8 +75,8 @@ void Device::initialize() {
   vkGetPhysicalDeviceQueueFamilyProperties(getPhysicalDevice(), &queueFamilyCount, _queueFamilyProperties.data());
 }
 
-void Device::setDesiredExtensions(const std::vector<std::string>& extensions) noexcept {
-  _desiredExtensions = extensions;
+void Device::setOptionalExtensions(const std::vector<std::string>& extensions) noexcept {
+  _optionalExtensions = extensions;
 }
 
 const VkQueueFamilyProperties& Device::getQueueFamilyProperties(vkb::QueueType type) const noexcept {
@@ -90,7 +87,7 @@ bool Device::isExtensionSupported(std::string name) const {
   return _device.physical_device.is_extension_present(name.c_str());
 }
 
-std::vector<std::string> Device::getDesiredExtensions() const noexcept { return _desiredExtensions; }
+std::vector<std::string> Device::getOptionalExtensions() const noexcept { return _optionalExtensions; }
 
 bool Device::isFormatFeatureSupported(VkFormat format,
                                       VkImageTiling tiling,

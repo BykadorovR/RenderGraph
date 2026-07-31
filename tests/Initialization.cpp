@@ -246,7 +246,7 @@ TEST(DescriptorSetTest, Create) {
   window.initialize();
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(surface, instance);
-  device.setDesiredExtensions({"VK_KHR_dynamic_rendering"});
+  device.setOptionalExtensions({"VK_KHR_dynamic_rendering"});
   device.initialize();
   RenderGraph::DescriptorPoolSize poolSize;
   RenderGraph::DescriptorPool descriptorPool(poolSize, device);
@@ -268,7 +268,7 @@ TEST(DescriptorSetTest, Update) {
   window.initialize();
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(surface, instance);
-  device.setDesiredExtensions({"VK_KHR_dynamic_rendering"});
+  device.setOptionalExtensions({"VK_KHR_dynamic_rendering"});
   device.initialize();
   RenderGraph::MemoryAllocator allocator(device, instance);
   RenderGraph::Buffer buffer(1024, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,

@@ -21,10 +21,10 @@ void DescriptorSetLayout::createCustom(const std::vector<VkDescriptorSetLayoutBi
   auto layoutInfo = VkDescriptorSetLayoutCreateInfo{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
                                                     .bindingCount = static_cast<uint32_t>(_info.size()),
                                                     .pBindings = _info.data()};
-  auto desiredExtensions = _device->getDesiredExtensions();
+  auto optionalExtensions = _device->getOptionalExtensions();
   if (_device->isExtensionSupported("VK_EXT_descriptor_buffer") &&
-      std::find(desiredExtensions.begin(), desiredExtensions.end(), "VK_EXT_descriptor_buffer") !=
-          desiredExtensions.end())
+      std::find(optionalExtensions.begin(), optionalExtensions.end(), "VK_EXT_descriptor_buffer") !=
+          optionalExtensions.end())
     layoutInfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
 
   if (vkCreateDescriptorSetLayout(_device->getLogicalDevice(), &layoutInfo, nullptr, &_descriptorSetLayout) !=
