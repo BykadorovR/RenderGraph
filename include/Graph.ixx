@@ -16,6 +16,10 @@ import "BS_thread_pool.hpp";
 import <map>;
 import <unordered_set>;
 
+// Forward declarations for test classes, not visible outside this module
+class ScenarioTest_GraphSeparateQueues_Test;
+class ScenarioTest_BufferOwnershipTransferUsesLastResourceOwner_Test;
+
 export namespace RenderGraph {
 class GraphStorage final {
  private:
@@ -35,9 +39,11 @@ class GraphStorage final {
   void reset(std::vector<std::shared_ptr<ImageView>> oldSwapchain,
              std::vector<std::shared_ptr<ImageView>> newSwapchain) noexcept;
   std::string find(const std::vector<std::shared_ptr<ImageView>>& imageViews) noexcept;
-  const ImageViewHolder& getImageViewHolder(std::string_view name) const noexcept;
+  bool containsImageViewHolder(std::string_view name) const noexcept;
+  const ImageViewHolder& getImageViewHolder(std::string_view name) const;
+  bool containsBuffer(std::string_view name) const noexcept;
   // NVRO
-  std::vector<Buffer*> getBuffer(std::string_view name) const noexcept;
+  std::vector<Buffer*> getBuffer(std::string_view name) const;
 };
 
 class GraphElement {
@@ -154,6 +160,9 @@ class GraphPassCompute final : public GraphPass {
 
 class Graph final {
  private:
+  friend class ::ScenarioTest_GraphSeparateQueues_Test;
+  friend class ::ScenarioTest_BufferOwnershipTransferUsesLastResourceOwner_Test;
+
   Swapchain* _swapchain;
   const Device* _device;
   const Window* _window;
@@ -179,6 +188,8 @@ class Graph final {
   // needed for ownership transfer (between different queues) barriers
   std::unordered_map<GraphPass*, std::unordered_set<std::string>> _acquireOwnershipImages, _releaseOwnershipImages,
       _acquireOwnershipBuffers, _releaseOwnershipBuffers;
+  void _recordAcquireOwnershipBarriers(GraphPass* pass, const CommandBuffer& commandBuffer);
+  void _recordReleaseOwnershipBarriers(GraphPass* pass, const CommandBuffer& commandBuffer);
 
  public:
   Graph(int threadsNumber,
