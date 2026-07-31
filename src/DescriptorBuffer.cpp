@@ -173,7 +173,7 @@ void DescriptorBuffer::initialize(const CommandBuffer& commandBuffer) {
             dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
                             VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
           }
-          image.changeLayout(image.getImageLayout(), VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_NONE, dstAccessMask,
+          image.changeLayout(image.getImageLayout(), VK_IMAGE_LAYOUT_GENERAL, 0, dstAccessMask,
                              commandBuffer);
         }
         // generate mip maps if needed
@@ -363,7 +363,7 @@ void DescriptorSet::initialize(const CommandBuffer& commandBuffer) {
             dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
                             VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
           }
-          image.changeLayout(image.getImageLayout(), VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_NONE, dstAccessMask,
+          image.changeLayout(image.getImageLayout(), VK_IMAGE_LAYOUT_GENERAL, 0, dstAccessMask,
                              commandBuffer);
         }
         // generate mip maps if needed

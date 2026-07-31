@@ -25,7 +25,7 @@ void Timestamps::resetQueryPool() noexcept {
 void Timestamps::pushTimestamp(std::string_view name, const CommandBuffer& commandBuffer) {
   std::unique_lock<std::mutex> lock(_mutexPush);
   int currentIndex = _timestampIndex;
-  vkCmdWriteTimestamp(commandBuffer.getCommandBuffer(), VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, _queryPool, currentIndex);
+  vkCmdWriteTimestamp2(commandBuffer.getCommandBuffer(), VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, _queryPool, currentIndex);
   _timestampRanges[std::string(name)].x = currentIndex;
   _timestampIndex++;
 }
@@ -33,7 +33,7 @@ void Timestamps::pushTimestamp(std::string_view name, const CommandBuffer& comma
 void Timestamps::popTimestamp(std::string_view name, const CommandBuffer& commandBuffer) {
   std::unique_lock<std::mutex> lock(_mutexPush);
   int currentIndex = _timestampIndex;
-  vkCmdWriteTimestamp(commandBuffer.getCommandBuffer(), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, _queryPool, currentIndex);
+  vkCmdWriteTimestamp2(commandBuffer.getCommandBuffer(), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, _queryPool, currentIndex);
   _timestampRanges.at(std::string(name)).y = currentIndex;
   _timestampIndex++;
 }

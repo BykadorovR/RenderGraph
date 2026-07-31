@@ -20,7 +20,7 @@ Buffer::Buffer(VkDeviceSize size,
 
   auto result = vmaCreateBuffer(_memoryAllocator->getAllocator(), &bufferInfo, &allocCreateInfo, &_buffer, &_allocation,
                                 &_allocationInfo);
-  if (result != VK_SUCCESS) throw std::runtime_error("Can't vmaCreateBuffer " + result);
+  if (result != VK_SUCCESS) throw std::runtime_error("Can't vmaCreateBuffer " + std::to_string(result));
 }
 
 /*
@@ -57,20 +57,24 @@ void Buffer::setData(std::span<const std::byte> data, const CommandBuffer& comma
   if (memPropFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) {
     // Calling vmaCopyMemoryToAllocation() does vmaMapMemory(), memcpy(), vmaUnmapMemory(), and vmaFlushAllocation().
     auto result = vmaCopyMemoryToAllocation(_memoryAllocator->getAllocator(), data.data(), _allocation, 0, data.size());
-    if (result != VK_SUCCESS) throw std::runtime_error("Can't vmaCopyMemoryToAllocation " + result);
+    if (result != VK_SUCCESS) throw std::runtime_error("Can't vmaCopyMemoryToAllocation " + std::to_string(result));
 
-    VkBufferMemoryBarrier barrierCopy = {.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
-                                         .srcAccessMask = VK_ACCESS_HOST_WRITE_BIT,
-                                         .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
-                                         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                                         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                                         .buffer = _buffer,
-                                         .offset = 0,
-                                         .size = data.size()};
+    VkBufferMemoryBarrier2 barrierCopy = {.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+                                          .srcStageMask = VK_PIPELINE_STAGE_HOST_BIT,
+                                          .srcAccessMask = VK_ACCESS_HOST_WRITE_BIT,
+                                          .dstStageMask = VK_PIPELINE_STAGE_ALL_SHADER_BITS,
+                                          .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+                                          .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                          .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                          .buffer = _buffer,
+                                          .offset = 0,
+                                          .size = data.size()};
+    VkDependencyInfo dependencyInfo{.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                                    .bufferMemoryBarrierCount = 1,
+                                    .pBufferMemoryBarriers = &barrierCopy};
 
     // It's important to insert a buffer memory barrier here to ensure writing to the buffer has finished.
-    vkCmdPipelineBarrier(commandBufferTransfer.getCommandBuffer(), VK_PIPELINE_STAGE_HOST_BIT,
-                         VK_PIPELINE_STAGE_ALL_SHADER_BITS, 0, 0, nullptr, 1, &barrierCopy, 0, nullptr);
+    vkCmdPipelineBarrier2(commandBufferTransfer.getCommandBuffer(), &dependencyInfo);
   } else {
     _bufferStaging = std::make_unique<Buffer>(
         data.size(), VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
@@ -79,37 +83,45 @@ void Buffer::setData(std::span<const std::byte> data, const CommandBuffer& comma
     // Calling vmaCopyMemoryToAllocation() does vmaMapMemory(), memcpy(), vmaUnmapMemory(), and vmaFlushAllocation().
     auto result = vmaCopyMemoryToAllocation(_memoryAllocator->getAllocator(), data.data(),
                                             _bufferStaging->getAllocation(), 0, data.size());
-    if (result != VK_SUCCESS) throw std::runtime_error("Can't vmaCopyMemoryToAllocation " + result);
+    if (result != VK_SUCCESS) throw std::runtime_error("Can't vmaCopyMemoryToAllocation " + std::to_string(result));
 
-    VkBufferMemoryBarrier barrierStage = {VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
-    barrierStage.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
-    barrierStage.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-    barrierStage.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrierStage.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrierStage.buffer = _bufferStaging->getBuffer();
-    barrierStage.offset = 0;
-    barrierStage.size = data.size();
+    VkBufferMemoryBarrier2 barrierStage{.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+                                        .srcStageMask = VK_PIPELINE_STAGE_HOST_BIT,
+                                        .srcAccessMask = VK_ACCESS_HOST_WRITE_BIT,
+                                        .dstStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                        .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+                                        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                        .buffer = _bufferStaging->getBuffer(),
+                                        .offset = 0,
+                                        .size = data.size()};
+    VkDependencyInfo stagingDependencyInfo{.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                                           .bufferMemoryBarrierCount = 1,
+                                           .pBufferMemoryBarriers = &barrierStage};
 
     // Insert a buffer memory barrier to make sure writing to the staging buffer has finished.
-    vkCmdPipelineBarrier(commandBufferTransfer.getCommandBuffer(), VK_PIPELINE_STAGE_HOST_BIT,
-                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 1, &barrierStage, 0, nullptr);
+    vkCmdPipelineBarrier2(commandBufferTransfer.getCommandBuffer(), &stagingDependencyInfo);
 
     // copy from staging buffer to current buffer
     VkBufferCopy copyRegion{.srcOffset = 0, .dstOffset = 0, .size = data.size()};
     vkCmdCopyBuffer(commandBufferTransfer.getCommandBuffer(), _bufferStaging->getBuffer(), _buffer, 1, &copyRegion);
 
-    VkBufferMemoryBarrier barrierCopy = {.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
-                                         .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-                                         .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
-                                         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                                         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                                         .buffer = _buffer,
-                                         .offset = 0,
-                                         .size = data.size()};
+    VkBufferMemoryBarrier2 barrierCopy = {.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+                                          .srcStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                          .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                                          .dstStageMask = VK_PIPELINE_STAGE_ALL_SHADER_BITS,
+                                          .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+                                          .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                          .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                          .buffer = _buffer,
+                                          .offset = 0,
+                                          .size = data.size()};
+    VkDependencyInfo copyDependencyInfo{.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                                        .bufferMemoryBarrierCount = 1,
+                                        .pBufferMemoryBarriers = &barrierCopy};
 
     // Make sure copying from staging buffer to the actual buffer has finished by inserting a buffer memory barrier.
-    vkCmdPipelineBarrier(commandBufferTransfer.getCommandBuffer(), VK_PIPELINE_STAGE_TRANSFER_BIT,
-                         VK_PIPELINE_STAGE_ALL_SHADER_BITS, 0, 0, nullptr, 1, &barrierCopy, 0, nullptr);
+    vkCmdPipelineBarrier2(commandBufferTransfer.getCommandBuffer(), &copyDependencyInfo);
   }
 }
 

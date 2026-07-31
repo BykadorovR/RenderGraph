@@ -63,7 +63,7 @@ TEST(ScenarioTest, GraphOneQueue) {
     auto positionImage = std::make_unique<RenderGraph::Image>(allocator);
     positionImage->createImage(VK_FORMAT_R16G16B16A16_SFLOAT, resolution, 1, 1, VK_IMAGE_ASPECT_COLOR_BIT,
                                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
-    positionImage->changeLayout(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_NONE, VK_ACCESS_NONE,
+    positionImage->changeLayout(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, 0, 0,
                                 commandBuffer[graph.getFrameInFlight()]);
     auto positionImageView = std::make_shared<RenderGraph::ImageView>(std::move(positionImage), device);
     positionImageView->createImageView(VK_IMAGE_VIEW_TYPE_2D, 0, 0);
@@ -139,20 +139,20 @@ TEST(ScenarioTest, GraphOneQueue) {
 
   auto loadSemaphore = RenderGraph::Semaphore(VK_SEMAPHORE_TYPE_TIMELINE, device);
   uint64_t loadCounter = 1;
-  VkTimelineSemaphoreSubmitInfo timelineInfo = {
-      .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
-      .signalSemaphoreValueCount = 1,
-      .pSignalSemaphoreValues = &loadCounter,
-  };
-
   auto semaphore = loadSemaphore.getSemaphore();
-  VkSubmitInfo submitInfo = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-                             .pNext = &timelineInfo,
-                             .commandBufferCount = 1,
-                             .pCommandBuffers = &commandBuffer[graph.getFrameInFlight()].getCommandBuffer(),
-                             .signalSemaphoreCount = 1,
-                             .pSignalSemaphores = &semaphore};
-  vkQueueSubmit(device.getQueue(vkb::QueueType::graphics), 1, &submitInfo, nullptr);
+  VkCommandBufferSubmitInfo commandBufferInfo{
+      .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+      .commandBuffer = commandBuffer[graph.getFrameInFlight()].getCommandBuffer()};
+  VkSemaphoreSubmitInfo signalSemaphoreInfo{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+                                             .semaphore = semaphore,
+                                             .value = loadCounter,
+                                             .stageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT};
+  VkSubmitInfo2 submitInfo{.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+                           .commandBufferInfoCount = 1,
+                           .pCommandBufferInfos = &commandBufferInfo,
+                           .signalSemaphoreInfoCount = 1,
+                           .pSignalSemaphoreInfos = &signalSemaphoreInfo};
+  vkQueueSubmit2(device.getQueue(vkb::QueueType::graphics), 1, &submitInfo, nullptr);
 
   VkSemaphoreWaitInfo waitInfo = {
       .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
@@ -239,7 +239,7 @@ TEST(ScenarioTest, GraphSeparateQueues) {
     auto positionImage = std::make_unique<RenderGraph::Image>(allocator);
     positionImage->createImage(VK_FORMAT_R16G16B16A16_SFLOAT, resolution, 1, 1, VK_IMAGE_ASPECT_COLOR_BIT,
                                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
-    positionImage->changeLayout(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_NONE, VK_ACCESS_NONE,
+    positionImage->changeLayout(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, 0, 0,
                                 commandBuffer[graph.getFrameInFlight()]);
     auto positionImageView = std::make_shared<RenderGraph::ImageView>(std::move(positionImage), device);
     positionImageView->createImageView(VK_IMAGE_VIEW_TYPE_2D, 0, 0);
@@ -312,20 +312,20 @@ TEST(ScenarioTest, GraphSeparateQueues) {
 
   auto loadSemaphore = RenderGraph::Semaphore(VK_SEMAPHORE_TYPE_TIMELINE, device);
   uint64_t loadCounter = 1;
-  VkTimelineSemaphoreSubmitInfo timelineInfo = {
-      .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
-      .signalSemaphoreValueCount = 1,
-      .pSignalSemaphoreValues = &loadCounter,
-  };
-
   auto semaphore = loadSemaphore.getSemaphore();
-  VkSubmitInfo submitInfo = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-                             .pNext = &timelineInfo,
-                             .commandBufferCount = 1,
-                             .pCommandBuffers = &commandBuffer[graph.getFrameInFlight()].getCommandBuffer(),
-                             .signalSemaphoreCount = 1,
-                             .pSignalSemaphores = &semaphore};
-  vkQueueSubmit(device.getQueue(vkb::QueueType::graphics), 1, &submitInfo, nullptr);
+  VkCommandBufferSubmitInfo commandBufferInfo{
+      .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+      .commandBuffer = commandBuffer[graph.getFrameInFlight()].getCommandBuffer()};
+  VkSemaphoreSubmitInfo signalSemaphoreInfo{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+                                             .semaphore = semaphore,
+                                             .value = loadCounter,
+                                             .stageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT};
+  VkSubmitInfo2 submitInfo{.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+                           .commandBufferInfoCount = 1,
+                           .pCommandBufferInfos = &commandBufferInfo,
+                           .signalSemaphoreInfoCount = 1,
+                           .pSignalSemaphoreInfos = &signalSemaphoreInfo};
+  vkQueueSubmit2(device.getQueue(vkb::QueueType::graphics), 1, &submitInfo, nullptr);
 
   VkSemaphoreWaitInfo waitInfo = {
       .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
@@ -485,7 +485,7 @@ TEST(ScenarioTest, GraphReset) {
     auto positionImage = std::make_unique<RenderGraph::Image>(allocator);
     positionImage->createImage(VK_FORMAT_R16G16B16A16_SFLOAT, resolution, 1, 1, VK_IMAGE_ASPECT_COLOR_BIT,
                                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
-    positionImage->changeLayout(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_NONE, VK_ACCESS_NONE,
+    positionImage->changeLayout(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, 0, 0,
                                 commandBuffer[graph.getFrameInFlight()]);
     auto positionImageView = std::make_shared<RenderGraph::ImageView>(std::move(positionImage), device);
     positionImageView->createImageView(VK_IMAGE_VIEW_TYPE_2D, 0, 0);
@@ -519,20 +519,20 @@ TEST(ScenarioTest, GraphReset) {
 
   auto loadSemaphore = RenderGraph::Semaphore(VK_SEMAPHORE_TYPE_TIMELINE, device);
   uint64_t loadCounter = 1;
-  VkTimelineSemaphoreSubmitInfo timelineInfo = {
-      .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
-      .signalSemaphoreValueCount = 1,
-      .pSignalSemaphoreValues = &loadCounter,
-  };
-
   auto semaphore = loadSemaphore.getSemaphore();
-  VkSubmitInfo submitInfo = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-                             .pNext = &timelineInfo,
-                             .commandBufferCount = 1,
-                             .pCommandBuffers = &commandBuffer[graph.getFrameInFlight()].getCommandBuffer(),
-                             .signalSemaphoreCount = 1,
-                             .pSignalSemaphores = &semaphore};
-  vkQueueSubmit(device.getQueue(vkb::QueueType::graphics), 1, &submitInfo, nullptr);
+  VkCommandBufferSubmitInfo commandBufferInfo{
+      .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+      .commandBuffer = commandBuffer[graph.getFrameInFlight()].getCommandBuffer()};
+  VkSemaphoreSubmitInfo signalSemaphoreInfo{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+                                             .semaphore = semaphore,
+                                             .value = loadCounter,
+                                             .stageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT};
+  VkSubmitInfo2 submitInfo{.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+                           .commandBufferInfoCount = 1,
+                           .pCommandBufferInfos = &commandBufferInfo,
+                           .signalSemaphoreInfoCount = 1,
+                           .pSignalSemaphoreInfos = &signalSemaphoreInfo};
+  vkQueueSubmit2(device.getQueue(vkb::QueueType::graphics), 1, &submitInfo, nullptr);
 
   VkSemaphoreWaitInfo waitInfo = {
       .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
@@ -634,7 +634,7 @@ TEST(ScenarioTest, DepthExistance) {
                                VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT);
   // set layout to depth image
   depthAttachment->changeLayout(depthAttachment->getImageLayout(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-                                VK_ACCESS_NONE, VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                                0, VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
                                 commandBuffer[graph.getFrameInFlight()]);
 
   auto depthAttachmentImageView = std::make_shared<RenderGraph::ImageView>(std::move(depthAttachment), device);
@@ -656,20 +656,20 @@ TEST(ScenarioTest, DepthExistance) {
 
   auto loadSemaphore = RenderGraph::Semaphore(VK_SEMAPHORE_TYPE_TIMELINE, device);
   uint64_t loadCounter = 1;
-  VkTimelineSemaphoreSubmitInfo timelineInfo = {
-      .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
-      .signalSemaphoreValueCount = 1,
-      .pSignalSemaphoreValues = &loadCounter,
-  };
-
   auto semaphore = loadSemaphore.getSemaphore();
-  VkSubmitInfo submitInfo = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-                             .pNext = &timelineInfo,
-                             .commandBufferCount = 1,
-                             .pCommandBuffers = &commandBuffer[graph.getFrameInFlight()].getCommandBuffer(),
-                             .signalSemaphoreCount = 1,
-                             .pSignalSemaphores = &semaphore};
-  vkQueueSubmit(device.getQueue(vkb::QueueType::graphics), 1, &submitInfo, nullptr);
+  VkCommandBufferSubmitInfo commandBufferInfo{
+      .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+      .commandBuffer = commandBuffer[graph.getFrameInFlight()].getCommandBuffer()};
+  VkSemaphoreSubmitInfo signalSemaphoreInfo{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+                                             .semaphore = semaphore,
+                                             .value = loadCounter,
+                                             .stageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT};
+  VkSubmitInfo2 submitInfo{.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+                           .commandBufferInfoCount = 1,
+                           .pCommandBufferInfos = &commandBufferInfo,
+                           .signalSemaphoreInfoCount = 1,
+                           .pSignalSemaphoreInfos = &signalSemaphoreInfo};
+  vkQueueSubmit2(device.getQueue(vkb::QueueType::graphics), 1, &submitInfo, nullptr);
 
   VkSemaphoreWaitInfo waitInfo = {
       .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
