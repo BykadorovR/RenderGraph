@@ -8,6 +8,7 @@ import Command;
 import Device;
 import <span>;
 import <memory>;
+import <string>;
 import <stdexcept>;
 import <volk.h>;
 
@@ -22,7 +23,7 @@ class Buffer final {
   VmaAllocationInfo _allocationInfo;
   VkDeviceSize _size;
   std::unique_ptr<Buffer> _bufferStaging;
-  static constexpr VkPipelineStageFlags VK_PIPELINE_STAGE_ALL_SHADER_BITS =
+  static constexpr VkPipelineStageFlags2 VK_PIPELINE_STAGE_ALL_SHADER_BITS =
       VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_GEOMETRY_SHADER_BIT |
       VK_PIPELINE_STAGE_TESSELLATION_CONTROL_SHADER_BIT | VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT;

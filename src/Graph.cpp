@@ -612,7 +612,10 @@ bool Graph::render() {
         .pValues = &waitValue,
     };
 
-    vkWaitSemaphores(_device->getLogicalDevice(), &waitInfo, std::numeric_limits<std::uint64_t>::max());
+    auto result = vkWaitSemaphores(_device->getLogicalDevice(), &waitInfo, std::numeric_limits<std::uint64_t>::max());
+    if (result != VK_SUCCESS) {
+      throw std::runtime_error("vkWaitSemaphores failed: " + std::to_string(result));
+    }
   }
 
   auto status = _swapchain->acquireNextImage(*_semaphoreImageAvailable[_frameInFlight]);
@@ -643,8 +646,8 @@ bool Graph::render() {
               // potentially this won't work for storage images if there is no rendering pass before usage
               // so READ is needed as well
               auto dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT;
-              imageView.getImage().changeLayout(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_NONE,
-                                                dstAccessMask, *commandBuffer);
+              imageView.getImage().changeLayout(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, 0, dstAccessMask,
+                                                *commandBuffer);
             }
           }
           auto depthTarget = passGraphic->getDepthTarget();
@@ -654,7 +657,7 @@ bool Graph::render() {
               auto dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
                                    VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
 
-              depthImageView.getImage().changeLayout(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_NONE,
+              depthImageView.getImage().changeLayout(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, 0,
                                                      dstAccessMask, *commandBuffer);
             }
           }
@@ -673,17 +676,36 @@ bool Graph::render() {
   auto submitPassToQueue = [this](GraphPass* previousPass, const std::vector<CommandBuffer*>& commandBufferSubmit,
                                   const std::vector<VkSemaphore>& waitSemaphores,
                                   const std::vector<VkSemaphore>& signalSemaphores,
-                                  std::optional<VkTimelineSemaphoreSubmitInfo> signalTimelineInfo = std::nullopt) {
+                                  const std::optional<std::vector<uint64_t>> signalValues = std::nullopt) {
     // need to end command buffers before submit
-    std::vector<VkCommandBuffer> commandBufferRawSubmit;
-    commandBufferRawSubmit.reserve(commandBufferSubmit.size());
+    std::vector<VkCommandBufferSubmitInfo> commandBufferInfos;
+    commandBufferInfos.reserve(commandBufferSubmit.size());
     for (auto&& commandBuffer : commandBufferSubmit) {
       commandBuffer->endCommands();
-      commandBufferRawSubmit.push_back(commandBuffer->getCommandBuffer());
+      commandBufferInfos.push_back(VkCommandBufferSubmitInfo{
+          .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+          .commandBuffer = commandBuffer->getCommandBuffer(),
+      });
     }
 
-    // determine wait stages
-    std::vector<VkPipelineStageFlags> waitStages(waitSemaphores.size(), VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+    std::vector<VkSemaphoreSubmitInfo> waitSemaphoreInfos;
+    waitSemaphoreInfos.reserve(waitSemaphores.size());
+    for (auto semaphore : waitSemaphores) {
+      waitSemaphoreInfos.push_back(VkSemaphoreSubmitInfo{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+                                                         .semaphore = semaphore,
+                                                         .value = 0,
+                                                         .stageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT});
+    }
+
+    std::vector<VkSemaphoreSubmitInfo> signalSemaphoreInfos;
+    signalSemaphoreInfos.reserve(signalSemaphores.size());
+    for (size_t i = 0; i < signalSemaphores.size(); i++) {
+      signalSemaphoreInfos.push_back(VkSemaphoreSubmitInfo{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+                                                           .semaphore = signalSemaphores[i],
+                                                           .value = signalValues ? signalValues.value()[i] : 0,
+                                                           .stageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT});
+    }
+
     auto queueType = vkb::QueueType::graphics;
     if (previousPass->getGraphPassType() == GraphPassType::COMPUTE) {
       auto* passComputePrevious = static_cast<GraphPassCompute*>(previousPass);
@@ -693,17 +715,18 @@ bool Graph::render() {
     }
 
     // submit + semaphores
-    VkSubmitInfo submitInfo{.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-                            .pNext = signalTimelineInfo ? &signalTimelineInfo.value() : nullptr,
-                            .waitSemaphoreCount = (uint32_t)waitSemaphores.size(),
-                            .pWaitSemaphores = waitSemaphores.data(),
-                            .pWaitDstStageMask = waitStages.data(),
-                            .commandBufferCount = (uint32_t)commandBufferRawSubmit.size(),
-                            .pCommandBuffers = commandBufferRawSubmit.data(),
-                            .signalSemaphoreCount = (uint32_t)signalSemaphores.size(),
-                            .pSignalSemaphores = signalSemaphores.data()};
+    VkSubmitInfo2 submitInfo{.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+                             .waitSemaphoreInfoCount = static_cast<uint32_t>(waitSemaphoreInfos.size()),
+                             .pWaitSemaphoreInfos = waitSemaphoreInfos.data(),
+                             .commandBufferInfoCount = static_cast<uint32_t>(commandBufferInfos.size()),
+                             .pCommandBufferInfos = commandBufferInfos.data(),
+                             .signalSemaphoreInfoCount = static_cast<uint32_t>(signalSemaphoreInfos.size()),
+                             .pSignalSemaphoreInfos = signalSemaphoreInfos.data()};
 
-    vkQueueSubmit(_device->getQueue(queueType), 1, &submitInfo, nullptr);
+    auto result = vkQueueSubmit2(_device->getQueue(queueType), 1, &submitInfo, nullptr);
+    if (result != VK_SUCCESS) {
+      throw std::runtime_error("vkQueueSubmit2 failed: " + std::to_string(result));
+    }
   };
 
   // command buffer from passes
@@ -718,6 +741,7 @@ bool Graph::render() {
     auto [queueTypeChange, previousPass] = _cache[pass];
 
     if (previousPass) {
+      // we put semaphore only if queue family is changed
       if (queueTypeChange) {
         submitPassToQueue(previousPass, commandBufferSubmit, waitSemaphores, signalSemaphores);
         //
@@ -728,57 +752,45 @@ bool Graph::render() {
         // put EXECUTION AND MEMORY barriers if needed (not layout transition ones)
         // IMPORTANT: we should add any barrier to the previous stage because potentially all command buffer are already
         // recorded. So we need to add barrier to the end of the previous command buffer.
-        auto calculateImageBarriers = [this](auto range, VkAccessFlags srcMask, VkAccessFlags dstMask) {
-          std::vector<VkImageMemoryBarrier> imageBarriers;
-          for (auto&& item : range) {
-            auto& image = _graphStorage->getImageViewHolder(item).getImageView().getImage();
-            imageBarriers.push_back(VkImageMemoryBarrier{.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-                                                         .srcAccessMask = srcMask,
-                                                         .dstAccessMask = dstMask,
-                                                         .oldLayout = image.getImageLayout(),
-                                                         .newLayout = image.getImageLayout(),
-                                                         .image = image.getImage(),
-                                                         .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}});
-          }
 
-          return imageBarriers;
-        };
+        // Full global barrier between passes executed on the same VkQueue.
+        // TODO: think about the situation:
+        // Compute (A) -> Compute (B) -> Graphic(A, B)
+        // we have to consider every resource usage from all previous stages
+        VkPipelineStageFlags dstStageMask = 0;
 
-        auto calculateBufferBarriers = [this](auto range, VkAccessFlags srcMask, VkAccessFlags dstMask) {
-          std::vector<VkBufferMemoryBarrier> bufferBarriers;
-          for (auto&& item : range) {
-            auto buffer = _graphStorage->getBuffer(item)[_frameInFlight];
-            bufferBarriers.push_back(VkBufferMemoryBarrier{.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
-                                                           .srcAccessMask = srcMask,
-                                                           .dstAccessMask = dstMask,
-                                                           .buffer = buffer->getBuffer(),
-                                                           .size = buffer->getSize()});
-          }
-
-          return bufferBarriers;
-        };
-
-        if (pass->getGraphPassType() == GraphPassType::GRAPHIC) {
-          auto graphPassGraphic = static_cast<GraphPassGraphic*>(pass);
-          auto imageBarriers = calculateImageBarriers(graphPassGraphic->getTextureInputs(),
-                                                      VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
-          vkCmdPipelineBarrier(commandBufferSubmit.back()->getCommandBuffer(),
-                               VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
-                               0, nullptr, 0, nullptr, imageBarriers.size(), imageBarriers.data());
+        switch (pass->getGraphPassType()) {
+          case GraphPassType::GRAPHIC:
+            dstStageMask = VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT;
+            break;
+          case GraphPassType::COMPUTE:
+            dstStageMask = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+            break;
+          default:
+            dstStageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+            break;
         }
-
-        if (pass->getGraphPassType() == GraphPassType::COMPUTE) {
-          auto graphPassCompute = static_cast<GraphPassCompute*>(pass);
-          auto imageBarriers = calculateImageBarriers(graphPassCompute->getStorageTextureInputs(),
-                                                      VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
-          auto bufferBarriers = calculateBufferBarriers(graphPassCompute->getStorageBufferInputs(),
-                                                        VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
-
-          vkCmdPipelineBarrier(previousPass->getCommandBuffers()[_frameInFlight]->getCommandBuffer(),
-                               VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0,
-                               nullptr, bufferBarriers.size(), bufferBarriers.data(), imageBarriers.size(),
-                               imageBarriers.data());
-        }
+        VkMemoryBarrier2 memoryBarrier{
+            .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+            .pNext = nullptr,
+            .srcStageMask = VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT,
+            .dstStageMask = dstStageMask,
+            .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+        };
+        VkDependencyInfo dependencyInfo{
+            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+            .pNext = nullptr,
+            .dependencyFlags = 0,
+            .memoryBarrierCount = 1,
+            .pMemoryBarriers = &memoryBarrier,
+            .bufferMemoryBarrierCount = 0,
+            .pBufferMemoryBarriers = nullptr,
+            .imageMemoryBarrierCount = 0,
+            .pImageMemoryBarriers = nullptr,
+        };
+        VkCommandBuffer barrierCommandBuffer = previousPass->getCommandBuffers()[_frameInFlight]->getCommandBuffer();
+        vkCmdPipelineBarrier2(barrierCommandBuffer, &dependencyInfo);
       }
     }
 
@@ -791,18 +803,14 @@ bool Graph::render() {
   if (_swapchain->getImage(swapchainIndex).getImageLayout() != VK_IMAGE_LAYOUT_PRESENT_SRC_KHR) {
     _swapchain->getImage(swapchainIndex)
         .changeLayout(_swapchain->getImage(swapchainIndex).getImageLayout(), VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-                      VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_NONE, *commandBufferSubmit.back());
+                      VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, 0, *commandBufferSubmit.back());
   }
 
   // submit last pass
   std::vector<uint64_t> signalValues(signalSemaphores.size() + 1, 0);
   signalValues[signalSemaphores.size()] = _valueSemaphoreInFlight;
   signalSemaphores.push_back(_semaphoreInFlight->getSemaphore());
-  VkTimelineSemaphoreSubmitInfo timelineSignalInfo = {.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
-                                                      .signalSemaphoreValueCount = (uint32_t)signalSemaphores.size(),
-                                                      .pSignalSemaphoreValues = signalValues.data()};
-
-  submitPassToQueue(_passesOrdered.back(), commandBufferSubmit, waitSemaphores, signalSemaphores, timelineSignalInfo);
+  submitPassToQueue(_passesOrdered.back(), commandBufferSubmit, waitSemaphores, signalSemaphores, signalValues);
   _timestamps->fetchTimestamps();
 
   auto semaphoreRenderFinished = _semaphoreRenderFinished[swapchainIndex]->getSemaphore();
@@ -850,8 +858,8 @@ void Graph::_recordAcquireOwnershipBarriers(GraphPass* pass, const CommandBuffer
   const uint32_t dstQueueFamilyIndex = static_cast<uint32_t>(
       _device->getQueueIndex(separateCompute ? vkb::QueueType::compute : vkb::QueueType::graphics));
 
-  std::vector<VkImageMemoryBarrier> imageBarriers;
-  std::vector<VkBufferMemoryBarrier> bufferBarriers;
+  std::vector<VkImageMemoryBarrier2> imageBarriers;
+  std::vector<VkBufferMemoryBarrier2> bufferBarriers;
 
   const auto imagesIt = _acquireOwnershipImages.find(pass);
   if (imagesIt != _acquireOwnershipImages.end()) {
@@ -860,10 +868,12 @@ void Graph::_recordAcquireOwnershipBarriers(GraphPass* pass, const CommandBuffer
     for (const auto& name : imagesIt->second) {
       auto& image = _graphStorage->getImageViewHolder(name).getImageView().getImage();
 
-      imageBarriers.push_back(VkImageMemoryBarrier{
-          .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+      imageBarriers.push_back(VkImageMemoryBarrier2{
+          .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
           .pNext = nullptr,
+          .srcStageMask = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
           .srcAccessMask = 0,
+          .dstStageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
           .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
           .oldLayout = image.getImageLayout(),
           .newLayout = image.getImageLayout(),
@@ -884,21 +894,26 @@ void Graph::_recordAcquireOwnershipBarriers(GraphPass* pass, const CommandBuffer
     for (const auto& name : buffersIt->second) {
       auto buffer = _graphStorage->getBuffer(name)[_frameInFlight];
       bufferBarriers.push_back(
-          VkBufferMemoryBarrier{.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
-                                .pNext = nullptr,
-                                .srcAccessMask = 0,
-                                .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
-                                .srcQueueFamilyIndex = srcQueueFamilyIndex,
-                                .dstQueueFamilyIndex = dstQueueFamilyIndex,
-                                .buffer = buffer->getBuffer(),
-                                .offset = 0,
-                                .size = buffer->getSize()});
+          VkBufferMemoryBarrier2{.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+                                 .pNext = nullptr,
+                                 .srcStageMask = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                                 .srcAccessMask = 0,
+                                 .dstStageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                                 .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+                                 .srcQueueFamilyIndex = srcQueueFamilyIndex,
+                                 .dstQueueFamilyIndex = dstQueueFamilyIndex,
+                                 .buffer = buffer->getBuffer(),
+                                 .offset = 0,
+                                 .size = buffer->getSize()});
     }
   }
 
-  vkCmdPipelineBarrier(commandBuffer.getCommandBuffer(), VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                       VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, static_cast<uint32_t>(bufferBarriers.size()),
-                       bufferBarriers.data(), static_cast<uint32_t>(imageBarriers.size()), imageBarriers.data());
+  VkDependencyInfo dependencyInfo{.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                                  .bufferMemoryBarrierCount = static_cast<uint32_t>(bufferBarriers.size()),
+                                  .pBufferMemoryBarriers = bufferBarriers.data(),
+                                  .imageMemoryBarrierCount = static_cast<uint32_t>(imageBarriers.size()),
+                                  .pImageMemoryBarriers = imageBarriers.data()};
+  vkCmdPipelineBarrier2(commandBuffer.getCommandBuffer(), &dependencyInfo);
 }
 
 void Graph::_recordReleaseOwnershipBarriers(GraphPass* pass, const CommandBuffer& commandBuffer) {
@@ -912,8 +927,8 @@ void Graph::_recordReleaseOwnershipBarriers(GraphPass* pass, const CommandBuffer
   const uint32_t dstQueueFamilyIndex = static_cast<uint32_t>(
       _device->getQueueIndex(separateCompute ? vkb::QueueType::graphics : vkb::QueueType::compute));
 
-  std::vector<VkImageMemoryBarrier> imageBarriers;
-  std::vector<VkBufferMemoryBarrier> bufferBarriers;
+  std::vector<VkImageMemoryBarrier2> imageBarriers;
+  std::vector<VkBufferMemoryBarrier2> bufferBarriers;
 
   const auto imagesIt = _releaseOwnershipImages.find(pass);
   if (imagesIt != _releaseOwnershipImages.end()) {
@@ -922,10 +937,12 @@ void Graph::_recordReleaseOwnershipBarriers(GraphPass* pass, const CommandBuffer
     for (const auto& name : imagesIt->second) {
       auto& image = _graphStorage->getImageViewHolder(name).getImageView().getImage();
 
-      imageBarriers.push_back(VkImageMemoryBarrier{
-          .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+      imageBarriers.push_back(VkImageMemoryBarrier2{
+          .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
           .pNext = nullptr,
+          .srcStageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
           .srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+          .dstStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
           .dstAccessMask = 0,
           .oldLayout = image.getImageLayout(),
           .newLayout = image.getImageLayout(),
@@ -946,20 +963,24 @@ void Graph::_recordReleaseOwnershipBarriers(GraphPass* pass, const CommandBuffer
     for (const auto& name : buffersIt->second) {
       auto buffer = _graphStorage->getBuffer(name)[_frameInFlight];
       bufferBarriers.push_back(
-          VkBufferMemoryBarrier{.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
-                                .pNext = nullptr,
-                                .srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
-                                .dstAccessMask = 0,
-                                .srcQueueFamilyIndex = srcQueueFamilyIndex,
-                                .dstQueueFamilyIndex = dstQueueFamilyIndex,
-                                .buffer = buffer->getBuffer(),
-                                .offset = 0,
-                                .size = buffer->getSize()});
+          VkBufferMemoryBarrier2{.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+                                 .pNext = nullptr,
+                                 .srcStageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                                 .srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+                                 .dstStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                                 .dstAccessMask = 0,
+                                 .srcQueueFamilyIndex = srcQueueFamilyIndex,
+                                 .dstQueueFamilyIndex = dstQueueFamilyIndex,
+                                 .buffer = buffer->getBuffer(),
+                                 .offset = 0,
+                                 .size = buffer->getSize()});
     }
   }
 
-  vkCmdPipelineBarrier(commandBuffer.getCommandBuffer(), VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                       VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr,
-                       static_cast<uint32_t>(bufferBarriers.size()), bufferBarriers.data(),
-                       static_cast<uint32_t>(imageBarriers.size()), imageBarriers.data());
+  VkDependencyInfo dependencyInfo{.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                                  .bufferMemoryBarrierCount = static_cast<uint32_t>(bufferBarriers.size()),
+                                  .pBufferMemoryBarriers = bufferBarriers.data(),
+                                  .imageMemoryBarrierCount = static_cast<uint32_t>(imageBarriers.size()),
+                                  .pImageMemoryBarriers = imageBarriers.data()};
+  vkCmdPipelineBarrier2(commandBuffer.getCommandBuffer(), &dependencyInfo);
 }

@@ -83,8 +83,8 @@ class Image final {
                 const CommandBuffer& commandBuffer);
   void changeLayout(VkImageLayout oldLayout,
                     VkImageLayout newLayout,
-                    VkAccessFlags srcAccessMask,
-                    VkAccessFlags dstAccessMask,
+                    VkAccessFlags2 srcAccessMask,
+                    VkAccessFlags2 dstAccessMask,
                     const CommandBuffer& commandBuffer);
   void generateMipmaps(const CommandBuffer& commandBuffer);
 
