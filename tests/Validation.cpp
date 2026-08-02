@@ -276,6 +276,66 @@ TEST_P(ValidationScenarioTest, FullGraphPipelineHasNoValidationErrorsAcrossReset
   EXPECT_TRUE(errors.empty()) << joinErrors(errors);
 }
 
+TEST(ValidationTest, OffscreenComputeGraphPresentsWithoutWritingSwapchain) {
+  ValidationErrorCollector validationErrors;
+  RenderGraph::Instance instance("ValidationOffscreenGraphTest", true);
+  if (!instance.isDebug()) {
+    GTEST_SKIP() << "Vulkan validation layers or VK_EXT_debug_utils are unavailable";
+  }
+
+  ValidationMessenger validationMessenger(instance.getInstance().instance, validationErrors);
+
+  {
+    constexpr int framesInFlight = 3;
+    constexpr int framesBeforeReset = framesInFlight + 2;
+    constexpr int framesAfterReset = framesInFlight + 1;
+    const glm::ivec2 resolution(1280, 720);
+
+    RenderGraph::Window window(resolution);
+    window.initialize();
+    RenderGraph::Surface surface(window, instance);
+    RenderGraph::Device device(surface, instance);
+    device.initialize();
+    RenderGraph::MemoryAllocator allocator(device, instance);
+    RenderGraph::Swapchain swapchain(resolution, allocator, device);
+    swapchain.initialize();
+    RenderGraph::Graph graph(2, framesInFlight, swapchain, window, device);
+    graph.initialize();
+
+    std::vector<std::unique_ptr<RenderGraph::Buffer>> storageBuffers;
+    storageBuffers.reserve(framesInFlight);
+    for (int frameIndex = 0; frameIndex < framesInFlight; ++frameIndex) {
+      storageBuffers.push_back(std::make_unique<RenderGraph::Buffer>(
+          4096, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
+          allocator));
+    }
+    graph.getGraphStorage().add("Data", storageBuffers);
+
+    auto graphElement = std::make_shared<ValidationGraphElement>();
+    auto& computePass = graph.createPassCompute("OffscreenCompute", false);
+    computePass.addStorageBufferOutput("Data");
+    computePass.registerGraphElement(graphElement);
+    graph.calculate();
+
+    for (int frameIndex = 0; frameIndex < framesBeforeReset; ++frameIndex) {
+      ASSERT_FALSE(graph.render());
+    }
+
+    ASSERT_NO_THROW(graph.reset());
+
+    for (int frameIndex = 0; frameIndex < framesAfterReset; ++frameIndex) {
+      ASSERT_FALSE(graph.render());
+    }
+
+    EXPECT_EQ(graphElement->getDrawCount(), framesBeforeReset + framesAfterReset);
+    EXPECT_EQ(graphElement->getResetCount(), 1);
+    ASSERT_EQ(vkDeviceWaitIdle(device.getLogicalDevice()), VK_SUCCESS);
+  }
+
+  const std::vector<std::string> errors = validationErrors.getErrors();
+  EXPECT_TRUE(errors.empty()) << joinErrors(errors);
+}
+
 INSTANTIATE_TEST_SUITE_P(
     QueueModes, ValidationScenarioTest, testing::Values(false, true),
     [](const testing::TestParamInfo<ValidationScenarioTest::ParamType>& info) {
