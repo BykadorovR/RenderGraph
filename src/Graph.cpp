@@ -166,8 +166,14 @@ void GraphPassGraphic::execute(int currentFrame, const CommandBuffer& commandBuf
   VkRenderingInfo renderingInfo = {};
   renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
   renderingInfo.renderArea.offset = {0, 0};
-  // take image resolution, it's safe
-  auto resolution = _graphStorage->getImageViewHolder(_colorTargets.front()).getImageView().getImage().getResolution();
+  glm::ivec2 resolution;
+  if (!_colorTargets.empty()) {
+    resolution = _graphStorage->getImageViewHolder(_colorTargets.front()).getImageView().getImage().getResolution();
+  } else if (_depthTarget) {
+    resolution = _graphStorage->getImageViewHolder(*_depthTarget).getImageView().getImage().getResolution();
+  } else {
+    throw std::logic_error("Graphic pass has no attachments: " + _name);
+  }
   renderingInfo.renderArea.extent = VkExtent2D(resolution.x, resolution.y);
   renderingInfo.layerCount = 1;
   renderingInfo.colorAttachmentCount = colorAttachments.size();
@@ -272,7 +278,9 @@ int Graph::getFrameInFlight() const noexcept { return _frameInFlight; }
 GraphPassGraphic& Graph::createPassGraphic(std::string_view name) {
   auto it = std::find_if(_passes.begin(), _passes.end(),
                          [name = name](std::unique_ptr<GraphPass>& graphPass) { return graphPass->getName() == name; });
-  if (it != _passes.end()) return static_cast<GraphPassGraphic&>(**it);
+  if (it != _passes.end()) {
+    throw std::logic_error("Pass name is already in use: " + std::string(name));
+  }
 
   _passes.push_back(std::make_unique<GraphPassGraphic>(name, _maxFramesInFlight, *_graphStorage, *_device));
   return static_cast<GraphPassGraphic&>(*_passes.back());
@@ -281,7 +289,9 @@ GraphPassGraphic& Graph::createPassGraphic(std::string_view name) {
 GraphPassCompute& Graph::createPassCompute(std::string_view name, bool separate) {
   auto it = std::find_if(_passes.begin(), _passes.end(),
                          [name = name](std::unique_ptr<GraphPass>& graphPass) { return graphPass->getName() == name; });
-  if (it != _passes.end()) return static_cast<GraphPassCompute&>(**it);
+  if (it != _passes.end()) {
+    throw std::logic_error("Pass name is already in use: " + std::string(name));
+  }
 
   _passes.push_back(std::make_unique<GraphPassCompute>(name, _maxFramesInFlight, separate, *_graphStorage, *_device));
   return static_cast<GraphPassCompute&>(*_passes.back());
@@ -641,6 +651,10 @@ void Graph::calculate() {
   _passesOrdered.clear();
   _sync.clear();
 
+  if (_passes.empty()) {
+    return;
+  }
+
   auto addResources = [this](GraphPass* pass, const auto& names, Resource::Type type, Resource::Operation operation) {
     for (const auto& name : names) {
       _resources[pass].add({
@@ -723,6 +737,12 @@ void Graph::calculate() {
     GraphPass* pass;
     Resource resource;
   };
+
+  struct ResourceUsage {
+    VkPipelineStageFlags2 stageMask = 0;
+    VkAccessFlags2 accessMask = 0;
+  };
+
   std::unordered_map<std::string, LastUsage> lastImageUsage;
   std::unordered_map<std::string, LastUsage> lastBufferUsage;
   std::unordered_map<std::string, LastUsage> imageOwnership;
@@ -732,40 +752,73 @@ void Graph::calculate() {
     return (resource.operation & static_cast<uint8_t>(operation)) != 0;
   };
 
-  auto getAccessMask = [&](const Resource& resource) -> VkAccessFlags2 {
-    VkAccessFlags2 accessMask = 0;
-    if (hasOperation(resource, Resource::Operation::READ)) {
-      accessMask |= static_cast<VkAccessFlags2>(VK_ACCESS_MEMORY_READ_BIT);
-    }
-    if (hasOperation(resource, Resource::Operation::WRITE)) {
-      accessMask |= static_cast<VkAccessFlags2>(VK_ACCESS_MEMORY_WRITE_BIT);
-    }
+  auto getResourceUsage = [&](GraphPass* pass, const Resource& resource) -> ResourceUsage {
+    ResourceUsage usage;
 
-    return accessMask;
-  };
-
-  auto getStageMask = [](GraphPass* pass) -> VkPipelineStageFlags2 {
     if (pass->getGraphPassType() == GraphPassType::COMPUTE) {
-      return static_cast<VkPipelineStageFlags2>(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
-    }
+      auto* compute = static_cast<GraphPassCompute*>(pass);
+      usage.stageMask = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
 
-    return static_cast<VkPipelineStageFlags2>(VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT);
-  };
+      if (resource.type == Resource::Type::BUFFER) {
+        if (std::ranges::contains(compute->getStorageBufferInputs(), resource.name)) {
+          usage.accessMask |= VK_ACCESS_SHADER_READ_BIT;
+        }
+        if (std::ranges::contains(compute->getStorageBufferOutputs(), resource.name)) {
+          usage.accessMask |= VK_ACCESS_SHADER_WRITE_BIT;
+        }
+      } else {
+        if (std::ranges::contains(compute->getStorageTextureInputs(), resource.name)) {
+          usage.accessMask |= VK_ACCESS_SHADER_READ_BIT;
+        }
+        if (std::ranges::contains(compute->getStorageTextureOutputs(), resource.name)) {
+          usage.accessMask |= VK_ACCESS_SHADER_WRITE_BIT;
+        }
+      }
+    } else if (pass->getGraphPassType() == GraphPassType::GRAPHIC) {
+      auto* graphic = static_cast<GraphPassGraphic*>(pass);
 
-  auto getImageAspect = [&](std::string_view resourceName) -> VkImageAspectFlags {
-    for (GraphPass* pass : _passesOrdered) {
-      if (pass->getGraphPassType() != GraphPassType::GRAPHIC) {
-        continue;
+      if (resource.type != Resource::Type::IMAGE) {
+        throw std::runtime_error("Graphic pass uses unsupported buffer resource: " + resource.name);
       }
 
-      auto* graphicPass = static_cast<GraphPassGraphic*>(pass);
-      const auto depthTarget = graphicPass->getDepthTarget();
-      if (depthTarget && depthTarget.value() == resourceName) {
-        return VK_IMAGE_ASPECT_DEPTH_BIT;
+      if (std::ranges::contains(graphic->getTextureInputs(), resource.name)) {
+        // The exact shader stage is currently unknown, so include both
+        // shader stages that may consume a graphics texture input.
+        usage.stageMask |= VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        usage.accessMask |= VK_ACCESS_SHADER_READ_BIT;
+      }
+
+      if (std::ranges::contains(graphic->getColorTargets(), resource.name)) {
+        usage.stageMask |= VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+
+        if (hasOperation(resource, Resource::Operation::READ)) {
+          usage.accessMask |= VK_ACCESS_COLOR_ATTACHMENT_READ_BIT;
+        }
+        if (hasOperation(resource, Resource::Operation::WRITE)) {
+          usage.accessMask |= VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        }
+      }
+
+      const auto depthTarget = graphic->getDepthTarget();
+
+      if (depthTarget && *depthTarget == resource.name) {
+        usage.stageMask |= VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+
+        if (hasOperation(resource, Resource::Operation::READ)) {
+          usage.accessMask |= VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+        }
+        if (hasOperation(resource, Resource::Operation::WRITE)) {
+          usage.accessMask |= VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        }
       }
     }
 
-    return VK_IMAGE_ASPECT_COLOR_BIT;
+    if (usage.stageMask == 0 || usage.accessMask == 0) {
+      throw std::runtime_error("Unable to determine usage of resource " + resource.name + " in pass " +
+                               std::string(pass->getName()));
+    }
+
+    return usage;
   };
 
   // Creates barrier array for a resource and stores it in the corresponding Sync object.
@@ -821,7 +874,16 @@ void Graph::calculate() {
     return static_cast<uint32_t>(_device->getQueueIndex(queueType));
   };
 
-  bool flagWaitForSwapchain = true;
+  // Wait before the first swapchain use, or on the root pass when only its final
+  // layout transition touches the acquired image.
+  const auto acquireWaitIt = std::ranges::find_if(_passesOrdered, [this](GraphPass* pass) {
+    return std::ranges::any_of(_resources.at(pass).getNames(Resource::Type::IMAGE), [this](const auto& name) {
+      return _graphStorage->getImageViewHolder(name).contains(_swapchain->getImageViews());
+    });
+  });
+  GraphPass* acquireWaitPass = acquireWaitIt != _passesOrdered.end() ? *acquireWaitIt : root;
+  _sync[acquireWaitPass].addWaitSemaphore(_semaphoreImageAvailable, [this]() { return _frameInFlight; });
+
   GraphPass* previousPass = nullptr;
   for (auto&& pass : _passesOrdered) {
     const bool queueTypeChange = previousPass && _usesSeparateQueue(previousPass) != _usesSeparateQueue(pass);
@@ -850,14 +912,16 @@ void Graph::calculate() {
         const uint32_t srcQueueFamilyIndex = getQueueFamilyIndex(owner.pass);
         const uint32_t dstQueueFamilyIndex = getQueueFamilyIndex(pass);
         if (srcQueueFamilyIndex != dstQueueFamilyIndex) {
+          const ResourceUsage ownerUsage = getResourceUsage(owner.pass, owner.resource);
+          const ResourceUsage currentUsage = getResourceUsage(pass, resource);
           // RELEASE:
           // executed after the last source-family use.
-          addResourceBarrier(owner.pass, false, owner.resource, getStageMask(owner.pass), getAccessMask(owner.resource),
-                             0, 0, srcQueueFamilyIndex, dstQueueFamilyIndex);
+          addResourceBarrier(owner.pass, false, owner.resource, ownerUsage.stageMask, ownerUsage.accessMask, 0, 0,
+                             srcQueueFamilyIndex, dstQueueFamilyIndex);
 
           // ACQUIRE:
           // executed before the first destination-family use.
-          addResourceBarrier(pass, true, resource, 0, 0, getStageMask(pass), getAccessMask(resource),
+          addResourceBarrier(pass, true, resource, 0, 0, currentUsage.stageMask, currentUsage.accessMask,
                              srcQueueFamilyIndex, dstQueueFamilyIndex);
         }
       }
@@ -877,9 +941,12 @@ void Graph::calculate() {
 
         // READ -> READ needs no memory barrier.
         if (previousWrites || currentWrites) {
-          addResourceBarrier(pass, true, resource, getStageMask(previous.pass), getAccessMask(previous.resource),
-                             getStageMask(pass), getAccessMask(resource), std::numeric_limits<uint32_t>::max(),
-                             std::numeric_limits<uint32_t>::max());
+          const ResourceUsage sourceUsage = getResourceUsage(previous.pass, previous.resource);
+          const ResourceUsage destinationUsage = getResourceUsage(pass, resource);
+
+          addResourceBarrier(pass, true, resource, sourceUsage.stageMask, sourceUsage.accessMask,
+                             destinationUsage.stageMask, destinationUsage.accessMask,
+                             std::numeric_limits<uint32_t>::max(), std::numeric_limits<uint32_t>::max());
         }
       }
 
@@ -887,21 +954,6 @@ void Graph::calculate() {
           .pass = pass,
           .resource = resource,
       };
-    }
-
-    // first pass interacting with the swapchain waits for it
-    if (flagWaitForSwapchain) {
-      bool swapchainFound = false;
-      for (const auto& name : _resources.at(pass).getNames(Resource::Type::IMAGE)) {
-        if (_graphStorage->getImageViewHolder(name).contains(_swapchain->getImageViews())) {
-          swapchainFound = true;
-          break;
-        }
-      }
-      if (swapchainFound) {
-        _sync[pass].addWaitSemaphore(_semaphoreImageAvailable, [this]() { return _frameInFlight; });
-        flagWaitForSwapchain = false;
-      }
     }
 
     // end node should signal end semaphore

@@ -58,6 +58,15 @@ DescriptorBuffer::DescriptorBuffer(const std::vector<DescriptorSetLayout*>& layo
   _device = &device;
   _descriptorLayouts = layouts;
 
+  auto descriptorBufferProperties = VkPhysicalDeviceDescriptorBufferPropertiesEXT{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_PROPERTIES_EXT};
+  device.getFeatureProperties(descriptorBufferProperties);
+
+  const VkDeviceSize alignment = descriptorBufferProperties.descriptorBufferOffsetAlignment;
+  const auto alignUp = [](VkDeviceSize value, VkDeviceSize alignment) {
+    return (value + alignment - 1) / alignment * alignment;
+  };
+
   // one buffer for the entire shader, but separate offsets for the sets inside the buffer
   _offsets.resize(layouts.size());
   _layoutSize.resize(layouts.size());
@@ -74,7 +83,7 @@ DescriptorBuffer::DescriptorBuffer(const std::vector<DescriptorSetLayout*>& layo
 
     VkDeviceSize layoutSize;
     vkGetDescriptorSetLayoutSizeEXT(device.getLogicalDevice(), layout->getDescriptorSetLayout(), &layoutSize);
-    _layoutSize[id] += layoutSize;
+    _layoutSize[id] = alignUp(layoutSize, alignment);
   }
 }
 

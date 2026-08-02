@@ -136,7 +136,7 @@ TEST_P(ValidationScenarioTest, FullGraphPipelineHasNoValidationErrorsAcrossReset
 
   {
     constexpr int framesInFlight = 3;
-    constexpr int passCount = 6;
+    constexpr int passCount = 7;
     constexpr int resetCycleCount = 3;
     const glm::ivec2 resolution(1280, 720);
 
@@ -236,6 +236,12 @@ TEST_P(ValidationScenarioTest, FullGraphPipelineHasNoValidationErrorsAcrossReset
     compositePass.addColorTarget("Swapchain");
     compositePass.clearTarget("Swapchain");
     compositePass.registerGraphElement(graphElement);
+
+    auto& depthOnlyPass = graph.createPassGraphic("DepthOnly");
+    depthOnlyPass.addTextureInput("Swapchain");
+    depthOnlyPass.setDepthTarget("Depth");
+    depthOnlyPass.clearTarget("Depth");
+    depthOnlyPass.registerGraphElement(graphElement);
 
     graph.calculate();
     graph.calculate();
