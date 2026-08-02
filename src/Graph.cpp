@@ -1,6 +1,7 @@
 module Graph;
 import <set>;
 import <ranges>;
+import <limits>;
 using namespace RenderGraph;
 
 void GraphStorage::add(std::string_view name, std::unique_ptr<ImageViewHolder> imageHolder) noexcept {
@@ -79,34 +80,7 @@ void GraphPass::reset(const std::vector<std::shared_ptr<RenderGraph::ImageView>>
   }
 }
 
-void GraphPass::addSignalSemaphore(std::vector<std::shared_ptr<Semaphore>>& signalSemaphore,
-                                   std::function<int()> index) noexcept {
-  _signalSemaphores.push_back({signalSemaphore, index});
-}
-
-void GraphPass::addWaitSemaphore(std::vector<std::shared_ptr<Semaphore>>& waitSemaphore,
-                                 std::function<int()> index) noexcept {
-  _waitSemaphores.push_back({waitSemaphore, index});
-}
-
 GraphPassType GraphPass::getGraphPassType() const noexcept { return _graphPassType; }
-
-std::vector<Semaphore*> GraphPass::getSignalSemaphores() const noexcept {
-  // similar to getBuffer
-  return _signalSemaphores | std::views::transform([](auto& pair) {
-           auto& [semaphores, index] = pair;
-           return semaphores[index()].get();
-         }) |
-         std::ranges::to<std::vector>();
-}
-
-std::vector<Semaphore*> GraphPass::getWaitSemaphores() const noexcept {
-  return _waitSemaphores | std::views::transform([](auto& pair) {
-           auto& [semaphores, index] = pair;
-           return semaphores[index()].get();
-         }) |
-         std::ranges::to<std::vector>();
-}
 
 std::vector<CommandBuffer*> GraphPass::getCommandBuffers() const noexcept {
   return _commandBuffers | std::views::transform([](auto& p) { return p.get(); }) | std::ranges::to<std::vector>();
@@ -278,6 +252,8 @@ Graph::Graph(int threadsNumber,
 
 void Graph::initialize() noexcept {
   // create 3 special semaphores
+  // Image-available semaphores are indexed by frame-in-flight slot,
+  // because they are not tied to a specific swapchain image.
   std::ranges::generate_n(std::back_inserter(_semaphoreImageAvailable), _maxFramesInFlight,
                           [&] { return std::make_shared<Semaphore>(VK_SEMAPHORE_TYPE_BINARY, *_device); });
   std::ranges::generate_n(std::back_inserter(_semaphoreRenderFinished), _swapchain->getImageCount(),
@@ -331,8 +307,149 @@ GraphPassCompute* Graph::getPassCompute(std::string_view name) const noexcept {
   return nullptr;
 }
 
+void Graph::Resources::add(Resource resource) {
+  auto it = std::find_if(_resources.begin(), _resources.end(),
+                         [&resource](const Resource& current) { return current.name == resource.name; });
+
+  if (it == _resources.end()) {
+    _resources.push_back(resource);
+    return;
+  }
+
+  if (it->type != resource.type) {
+    throw std::logic_error("Resource with the same name has a different type: " + resource.name);
+  }
+
+  it->operation |= resource.operation;
+}
+
+bool Graph::Resources::contains(std::string_view name, Resource::Type type, Resource::Operation operation) const {
+  const uint8_t operationMask = static_cast<uint8_t>(operation);
+  return std::ranges::any_of(_resources, [&](const Resource& resource) {
+    return resource.name == name && resource.type == type && (resource.operation & operationMask) != 0;
+  });
+}
+
+const std::vector<Graph::Resource>& Graph::Resources::getResources() const noexcept { return _resources; }
+
+std::vector<Graph::Resource> Graph::Resources::getResources(Graph::Resource::Operation operation) const {
+  const auto operationMask = static_cast<uint8_t>(operation);
+  std::vector<Resource> result;
+  result.reserve(_resources.size());
+  for (auto&& resource : _resources) {
+    if ((resource.operation & operationMask) != 0) {
+      result.push_back(resource);
+    }
+  }
+  return result;
+}
+
+std::vector<std::string> Graph::Resources::getNames(Graph::Resource::Type type) const {
+  std::vector<std::string> result;
+  result.reserve(_resources.size());
+
+  for (const Resource& resource : _resources) {
+    if (resource.type == type) {
+      result.push_back(resource.name);
+    }
+  }
+
+  return result;
+}
+
+void Graph::Sync::addSignalSemaphore(std::vector<std::shared_ptr<Semaphore>>& signalSemaphore,
+                                     std::function<int()> index) noexcept {
+  _signalSemaphores.emplace_back(signalSemaphore, index);
+}
+
+void Graph::Sync::addWaitSemaphore(std::vector<std::shared_ptr<Semaphore>>& waitSemaphore,
+                                   std::function<int()> index) noexcept {
+  _waitSemaphores.emplace_back(waitSemaphore, index);
+}
+
+void Graph::Sync::addBarrierBefore(std::vector<Barrier>& barriers, std::function<int()> index) noexcept {
+  _barriersBefore.emplace_back(barriers, index);
+}
+
+void Graph::Sync::addBarrierAfter(std::vector<Barrier>& barriers, std::function<int()> index) noexcept {
+  _barriersAfter.emplace_back(barriers, index);
+}
+
+std::vector<Semaphore*> Graph::Sync::getSignalSemaphores() const noexcept {
+  return _signalSemaphores | std::views::transform([](auto& pair) {
+           auto& [semaphores, index] = pair;
+           return semaphores[index()].get();
+         }) |
+         std::ranges::to<std::vector>();
+}
+
+std::vector<Semaphore*> Graph::Sync::getWaitSemaphores() const noexcept {
+  return _waitSemaphores | std::views::transform([](auto& pair) {
+           auto& [semaphores, index] = pair;
+           return semaphores[index()].get();
+         }) |
+         std::ranges::to<std::vector>();
+}
+
+std::vector<const Barrier*> Graph::Sync::getBarriersBefore() const noexcept {
+  return _barriersBefore | std::views::transform([](const auto& pair) {
+           const auto& [barriers, index] = pair;
+           return &barriers[index()];
+         }) |
+         std::ranges::to<std::vector>();
+}
+
+std::vector<const Barrier*> Graph::Sync::getBarriersAfter() const noexcept {
+  return _barriersAfter | std::views::transform([](const auto& pair) {
+           const auto& [barriers, index] = pair;
+           return &barriers[index()];
+         }) |
+         std::ranges::to<std::vector>();
+}
+
 void Graph::print() const noexcept {
   if (_passesOrdered.empty()) return;
+
+  auto findBufferName = [this](VkBuffer targetBuffer) -> std::string {
+    for (const auto& [pass, resources] : _resources) {
+      for (const Resource& resource : resources.getResources()) {
+        if (resource.type != Resource::Type::BUFFER) {
+          continue;
+        }
+        if (!_graphStorage->containsBuffer(resource.name)) {
+          continue;
+        }
+        for (const auto* buffer : _graphStorage->getBuffer(resource.name)) {
+          if (buffer->getBuffer() == targetBuffer) {
+            return resource.name;
+          }
+        }
+      }
+    }
+
+    return "<unknown>";
+  };
+
+  auto findImageName = [this](VkImage targetImage) -> std::string {
+    for (const auto& [pass, resources] : _resources) {
+      for (const Resource& resource : resources.getResources()) {
+        if (resource.type != Resource::Type::IMAGE) {
+          continue;
+        }
+        if (!_graphStorage->containsImageViewHolder(resource.name)) {
+          continue;
+        }
+        const auto& imageViews = _graphStorage->getImageViewHolder(resource.name).getImageViews();
+        for (const auto& imageView : imageViews) {
+          if (imageView->getImage().getImage() == targetImage) {
+            return resource.name;
+          }
+        }
+      }
+    }
+
+    return "<unknown>";
+  };
 
   auto printImages = [this](const auto& keys, std::string_view keyTag) {
     for (const auto& name : keys) {
@@ -347,6 +464,7 @@ void Graph::print() const noexcept {
       std::cout << std::endl;
     }
   };
+
   auto printBuffers = [this](const auto& keys, std::string_view keyTag) {
     for (const auto& name : keys) {
       std::cout << keyTag << name << "; ";
@@ -365,234 +483,430 @@ void Graph::print() const noexcept {
       std::cout << std::endl;
     }
   };
+
   auto printRange = [](std::string_view label, const auto& range, auto getter) {
     std::cout << label;
+    if (std::ranges::empty(range)) {
+      std::cout << "<none>" << std::endl;
+      return;
+    }
+    bool first = true;
     for (auto&& item : range) {
-      std::cout << getter(item) << " ";
+      if (!first) {
+        std::cout << " ";
+      }
+      std::cout << getter(item);
+      first = false;
     }
     std::cout << std::endl;
   };
 
-  for (auto&& value : _passesOrdered) {
-    std::cout << "Name: " << value->getName()
-              << ", Stage : " << (value->getGraphPassType() == GraphPassType::GRAPHIC ? "GRAPHIC" : "COMPUTE")
-              << std::endl;
-    if (value->getGraphPassType() == GraphPassType::COMPUTE)
-      std::cout << " separate: " << (static_cast<GraphPassCompute*>(value)->isSeparate() ? "true" : "false")
-                << std::endl;
+  auto accessToString = [](VkAccessFlags2 accessMask) -> std::string_view {
+    const bool read = (accessMask & static_cast<VkAccessFlags2>(VK_ACCESS_MEMORY_READ_BIT)) != 0;
+    const bool write = (accessMask & static_cast<VkAccessFlags2>(VK_ACCESS_MEMORY_WRITE_BIT)) != 0;
+    if (read && write) return "RW";
+    if (read) return "R";
+    if (write) return "W";
 
-    printRange(" wait semaphores: ", value->getWaitSemaphores(), [](auto* s) { return s->getSemaphore(); });
-    printRange(" signal semaphores: ", value->getSignalSemaphores(), [](auto* s) { return s->getSemaphore(); });
-    printRange(" command buffers: ", value->getCommandBuffers(), [](auto* c) { return c->getCommandBuffer(); });
+    return "0";
+  };
+
+  auto ownershipOperation = [](VkAccessFlags2 srcAccessMask, VkAccessFlags2 dstAccessMask) -> std::string_view {
+    if (srcAccessMask != 0 && dstAccessMask == 0) {
+      return "release";
+    }
+    if (srcAccessMask == 0 && dstAccessMask != 0) {
+      return "acquire";
+    }
+    return "transfer";
+  };
+
+  auto printBarrier = [&](const Barrier* barrier, std::size_t barrierIndex) {
+    if (barrier == nullptr) {
+      std::cout << "  [" << barrierIndex << "] <null>" << std::endl;
+      return;
+    }
+
+    for (const auto& bufferBarrier : barrier->getBufferBarriers()) {
+      const bool ownershipTransfer = bufferBarrier.srcQueueFamilyIndex != std::numeric_limits<uint32_t>::max() ||
+                                     bufferBarrier.dstQueueFamilyIndex != std::numeric_limits<uint32_t>::max();
+      std::cout << "  [" << barrierIndex << "] "
+                << "buffer " << findBufferName(bufferBarrier.buffer) << "[frame " << _frameInFlight << "] ("
+                << bufferBarrier.buffer << ") ";
+      if (ownershipTransfer) {
+        std::cout << "ownership " << ownershipOperation(bufferBarrier.srcAccessMask, bufferBarrier.dstAccessMask)
+                  << " ";
+      } else {
+        std::cout << "memory ";
+      }
+      std::cout << accessToString(bufferBarrier.srcAccessMask) << " -> " << accessToString(bufferBarrier.dstAccessMask);
+      if (ownershipTransfer) {
+        std::cout << ", queue " << bufferBarrier.srcQueueFamilyIndex << " -> " << bufferBarrier.dstQueueFamilyIndex;
+      }
+      std::cout << std::endl;
+    }
+
+    for (const auto& imageBarrier : barrier->getImageBarriers()) {
+      const bool ownershipTransfer = imageBarrier.srcQueueFamilyIndex != std::numeric_limits<uint32_t>::max() ||
+                                     imageBarrier.dstQueueFamilyIndex != std::numeric_limits<uint32_t>::max();
+      std::cout << "  [" << barrierIndex << "] "
+                << "image " << findImageName(imageBarrier.image) << " (" << imageBarrier.image << ") ";
+      if (ownershipTransfer) {
+        std::cout << "ownership " << ownershipOperation(imageBarrier.srcAccessMask, imageBarrier.dstAccessMask) << " ";
+      } else {
+        std::cout << "memory ";
+      }
+      std::cout << accessToString(imageBarrier.srcAccessMask) << " -> " << accessToString(imageBarrier.dstAccessMask);
+      if (ownershipTransfer) {
+        std::cout << ", queue " << imageBarrier.srcQueueFamilyIndex << " -> " << imageBarrier.dstQueueFamilyIndex;
+      }
+      if (imageBarrier.oldLayout != imageBarrier.newLayout) {
+        std::cout << ", layout " << static_cast<int>(imageBarrier.oldLayout) << " -> "
+                  << static_cast<int>(imageBarrier.newLayout);
+      }
+      std::cout << std::endl;
+    }
+  };
+
+  auto printBarriers = [&](std::string_view label, const auto& barriers) {
+    std::cout << label;
+    if (std::ranges::empty(barriers)) {
+      std::cout << "<none>" << std::endl;
+      return;
+    }
+    std::cout << std::endl;
+    for (std::size_t index = 0; index < barriers.size(); ++index) {
+      printBarrier(barriers[index], index);
+    }
+  };
+
+  for (auto* value : _passesOrdered) {
+    std::cout << "========================================" << std::endl;
+    std::cout << "Name: " << value->getName()
+              << ", Stage: " << (value->getGraphPassType() == GraphPassType::GRAPHIC ? "GRAPHIC" : "COMPUTE")
+              << std::endl;
+    if (value->getGraphPassType() == GraphPassType::COMPUTE) {
+      const auto* computePass = static_cast<GraphPassCompute*>(value);
+      std::cout << " separate: " << (computePass->isSeparate() ? "true" : "false") << std::endl;
+    }
+    const auto syncIt = _sync.find(value);
+    if (syncIt != _sync.end()) {
+      const auto& sync = syncIt->second;
+      printRange(" wait semaphores: ", sync.getWaitSemaphores(),
+                 [](const auto* semaphore) { return semaphore->getSemaphore(); });
+      printRange(" signal semaphores: ", sync.getSignalSemaphores(),
+                 [](const auto* semaphore) { return semaphore->getSemaphore(); });
+      printBarriers(" barriers before: ", sync.getBarriersBefore());
+      printBarriers(" barriers after: ", sync.getBarriersAfter());
+    } else {
+      std::cout << " wait semaphores: <none>" << std::endl;
+      std::cout << " signal semaphores: <none>" << std::endl;
+      std::cout << " barriers before: <none>" << std::endl;
+      std::cout << " barriers after: <none>" << std::endl;
+    }
+
+    printRange(" command buffers: ", value->getCommandBuffers(),
+               [](const auto* commandBuffer) { return commandBuffer->getCommandBuffer(); });
     if (value->getGraphPassType() == GraphPassType::GRAPHIC) {
-      auto passGraphic = static_cast<GraphPassGraphic*>(value);
+      auto* passGraphic = static_cast<GraphPassGraphic*>(value);
       printImages(passGraphic->getColorTargets(), " color target: ");
-      {
-        auto name = passGraphic->getDepthTarget();
-        if (name)
-          std::cout << " depth target: " << name.value() << "; "
-                    << _graphStorage->getImageViewHolder(name.value()).getImageView().getImage().getImage()
-                    << std::endl;
+      const auto& depthTarget = passGraphic->getDepthTarget();
+      if (depthTarget) {
+        std::cout << " depth target: " << *depthTarget << "; ";
+        if (_graphStorage->containsImageViewHolder(*depthTarget)) {
+          std::cout << _graphStorage->getImageViewHolder(*depthTarget).getImageView().getImage().getImage();
+        } else {
+          std::cout << "<not registered>";
+        }
+        std::cout << std::endl;
       }
       printImages(passGraphic->getTextureInputs(), " texture input: ");
     }
 
     if (value->getGraphPassType() == GraphPassType::COMPUTE) {
-      auto passCompute = static_cast<GraphPassCompute*>(value);
+      auto* passCompute = static_cast<GraphPassCompute*>(value);
       printBuffers(passCompute->getStorageBufferInputs(), " storage buffer input: ");
       printBuffers(passCompute->getStorageBufferOutputs(), " storage buffer output: ");
       printImages(passCompute->getStorageTextureInputs(), " storage texture input: ");
       printImages(passCompute->getStorageTextureOutputs(), " storage texture output: ");
     }
   }
+
+  std::cout << "========================================" << std::endl;
 }
 
 void Graph::calculate() {
-  auto getDependencies = [](GraphPass* value) {
-    std::unordered_set<std::string> dependenciesBuffer, dependenciesTexture;
-    if (value->getGraphPassType() == GraphPassType::COMPUTE) {
-      auto passCompute = static_cast<GraphPassCompute*>(value);
-      for (auto&& nameResource : passCompute->getStorageBufferInputs()) {
-        dependenciesBuffer.insert(nameResource);
-      }
-      for (auto&& nameResource : passCompute->getStorageTextureInputs()) {
-        dependenciesTexture.insert(nameResource);
-      }
-      for (auto&& nameResource : passCompute->getStorageBufferOutputs()) {
-        dependenciesBuffer.insert(nameResource);
-      }
-      for (auto&& nameResource : passCompute->getStorageTextureOutputs()) {
-        dependenciesTexture.insert(nameResource);
-      }
-    }
+  // store resources in a convinient way
+  _resources.clear();
+  _passesOrdered.clear();
+  _sync.clear();
 
-    if (value->getGraphPassType() == GraphPassType::GRAPHIC) {
-      auto passGraphic = static_cast<GraphPassGraphic*>(value);
-      for (auto&& nameResource : passGraphic->getTextureInputs()) {
-        dependenciesTexture.insert(nameResource);
-      }
-      for (auto&& nameResource : passGraphic->getColorTargets()) {
-        dependenciesTexture.insert(nameResource);
-      }
-
-      auto depth = passGraphic->getDepthTarget();
-      if (depth) {
-        dependenciesTexture.insert(depth.value());
-      }
+  auto addResources = [this](GraphPass* pass, const auto& names, Resource::Type type, Resource::Operation operation) {
+    for (const auto& name : names) {
+      _resources[pass].add({
+          .name = name,
+          .type = type,
+          .operation = static_cast<uint8_t>(operation),
+      });
     }
-    return std::pair{dependenciesTexture, dependenciesBuffer};
   };
 
-  auto getInputs = [this](std::string_view nameNode) -> std::vector<std::string> {
-    auto it = std::find_if(
-        _passes.rbegin(), _passes.rend(),
-        [nameNode = nameNode](std::unique_ptr<GraphPass>& graphPass) { return graphPass->getName() == nameNode; });
-    auto value = (*it).get();
-
-    std::vector<std::string> dependencies;
-    if (value->getGraphPassType() == GraphPassType::COMPUTE) {
-      auto passCompute = static_cast<GraphPassCompute*>(value);
-      for (auto&& nameResource : passCompute->getStorageBufferInputs()) {
-        dependencies.push_back(nameResource);
-      }
-      for (auto&& nameResource : passCompute->getStorageTextureInputs()) {
-        dependencies.push_back(nameResource);
-      }
-    }
-
-    if (value->getGraphPassType() == GraphPassType::GRAPHIC) {
-      auto passGraphic = static_cast<GraphPassGraphic*>(value);
-      for (auto&& nameResource : passGraphic->getTextureInputs()) {
-        dependencies.push_back(nameResource);
+  for (auto&& pass : _passes) {
+    if (pass->getGraphPassType() == GraphPassType::COMPUTE) {
+      auto* compute = static_cast<GraphPassCompute*>(pass.get());
+      addResources(pass.get(), compute->getStorageBufferInputs(), Resource::Type::BUFFER, Resource::Operation::READ);
+      addResources(pass.get(), compute->getStorageTextureInputs(), Resource::Type::IMAGE, Resource::Operation::READ);
+      addResources(pass.get(), compute->getStorageBufferOutputs(), Resource::Type::BUFFER, Resource::Operation::WRITE);
+      addResources(pass.get(), compute->getStorageTextureOutputs(), Resource::Type::IMAGE, Resource::Operation::WRITE);
+    } else if (pass->getGraphPassType() == GraphPassType::GRAPHIC) {
+      auto* graphic = static_cast<GraphPassGraphic*>(pass.get());
+      addResources(pass.get(), graphic->getTextureInputs(), Resource::Type::IMAGE, Resource::Operation::READ);
+      addResources(pass.get(), graphic->getColorTargets(), Resource::Type::IMAGE, Resource::Operation::WRITE);
+      if (const auto& depth = graphic->getDepthTarget()) {
+        _resources[pass.get()].add({
+            .name = *depth,
+            .type = Resource::Type::IMAGE,
+            .operation = static_cast<uint8_t>(Resource::Operation::WRITE),
+        });
       }
     }
+  }
 
-    return dependencies;
-  };
-
-  auto findTarget = [](std::vector<GraphPass*> passes, std::string_view findName) -> GraphPass* {
-    for (auto pass : std::views::reverse(passes)) {
-      if (pass->getGraphPassType() == GraphPassType::GRAPHIC) {
-        auto passGraphic = static_cast<GraphPassGraphic*>(pass);
-        if (std::ranges::contains(passGraphic->getColorTargets(), findName) ||
-            passGraphic->getDepthTarget() == findName)
-          return pass;
-      }
-
-      if (pass->getGraphPassType() == GraphPassType::COMPUTE) {
-        auto passCompute = static_cast<GraphPassCompute*>(pass);
-        if (std::ranges::contains(passCompute->getStorageBufferOutputs(), findName) ||
-            std::ranges::contains(passCompute->getStorageTextureOutputs(), findName))
-          return pass;
+  const auto passes = _passes | std::views::transform([](const auto& pass) { return pass.get(); }) |
+                      std::ranges::to<std::vector<GraphPass*>>();
+  auto findTarget = [this, &passes](GraphPass* consumer, const Resource& resource) -> GraphPass* {
+    const auto consumerIt = std::ranges::find(passes, consumer);
+    // Search only among passes located before the consumer.
+    for (auto it = std::make_reverse_iterator(consumerIt); it != passes.rend(); ++it) {
+      GraphPass* candidate = *it;
+      if (_resources.at(candidate).contains(resource.name, resource.type, Resource::Operation::WRITE)) {
+        return candidate;
       }
     }
     return nullptr;
   };
 
   GraphPass* root = _passes.back().get();
-  auto passesBackup = _passes | std::views::transform([](auto& p) { return p.get(); }) |
-                      std::ranges::to<std::vector<GraphPass*>>();
-  // we should for every root pass run traversal process
+  std::unordered_set<GraphPass*> visited;
   std::function<void(GraphPass*)> traverse = [&](GraphPass* node) {
-    if (passesBackup.empty()) return;
+    if (!visited.insert(node).second) {
+      return;
+    }
 
-    passesBackup.erase(std::remove(passesBackup.begin(), passesBackup.end(), node), passesBackup.end());
-    _passesOrdered.push_front(node);
+    auto resources = _resources.at(node).getResources(Resource::Operation::READ);
+    // Special case for the final pass which only writes
+    // to the swapchain.
+    if (node == root && resources.empty()) {
+      resources = _resources.at(node).getResources();
+    }
 
-    auto inputs = getInputs(node->getName());
-    if (inputs.empty()) {
-      // this means that stage depends only on it's frame buffer attachment
-      if (node->getGraphPassType() == GraphPassType::GRAPHIC) {
-        auto passGraphic = static_cast<GraphPassGraphic*>(node);
-        inputs = passGraphic->getColorTargets();
+    std::vector<GraphPass*> producers;
+    for (const Resource& resource : resources) {
+      GraphPass* producer = findTarget(node, resource);
+      if (producer != nullptr && !std::ranges::contains(producers, producer)) {
+        producers.push_back(producer);
       }
     }
-    std::vector<GraphPass*> passNext =
-        inputs | std::views::transform([&](auto& input) { return findTarget(passesBackup, input); }) |
-        std::views::filter([](GraphPass* p) { return p != nullptr; }) | std::ranges::to<std::vector>();
 
-    for (auto&& pass : passNext) traverse(pass);
+    for (GraphPass* producer : producers) {
+      traverse(producer);
+    }
+    // Add the consumer only after all its producers.
+    _passesOrdered.push_back(node);
   };
 
-  if (root) traverse(root);
+  // Start from the last node.
+  traverse(root);
 
-  // set semaphores between passes + fill ownership transfer barriers
+  // set semaphores between passes + fill barriers
+  struct LastUsage {
+    GraphPass* pass;
+    Resource resource;
+  };
+  std::unordered_map<std::string, LastUsage> lastImageUsage;
+  std::unordered_map<std::string, LastUsage> lastBufferUsage;
+  std::unordered_map<std::string, LastUsage> imageOwnership;
+  std::unordered_map<std::string, LastUsage> bufferOwnership;
+
+  auto hasOperation = [](const Resource& resource, Resource::Operation operation) {
+    return (resource.operation & static_cast<uint8_t>(operation)) != 0;
+  };
+
+  auto getAccessMask = [&](const Resource& resource) -> VkAccessFlags2 {
+    VkAccessFlags2 accessMask = 0;
+    if (hasOperation(resource, Resource::Operation::READ)) {
+      accessMask |= static_cast<VkAccessFlags2>(VK_ACCESS_MEMORY_READ_BIT);
+    }
+    if (hasOperation(resource, Resource::Operation::WRITE)) {
+      accessMask |= static_cast<VkAccessFlags2>(VK_ACCESS_MEMORY_WRITE_BIT);
+    }
+
+    return accessMask;
+  };
+
+  auto getStageMask = [](GraphPass* pass) -> VkPipelineStageFlags2 {
+    if (pass->getGraphPassType() == GraphPassType::COMPUTE) {
+      return static_cast<VkPipelineStageFlags2>(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+    }
+
+    return static_cast<VkPipelineStageFlags2>(VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT);
+  };
+
+  auto getImageAspect = [&](std::string_view resourceName) -> VkImageAspectFlags {
+    for (GraphPass* pass : _passesOrdered) {
+      if (pass->getGraphPassType() != GraphPassType::GRAPHIC) {
+        continue;
+      }
+
+      auto* graphicPass = static_cast<GraphPassGraphic*>(pass);
+      const auto depthTarget = graphicPass->getDepthTarget();
+      if (depthTarget && depthTarget.value() == resourceName) {
+        return VK_IMAGE_ASPECT_DEPTH_BIT;
+      }
+    }
+
+    return VK_IMAGE_ASPECT_COLOR_BIT;
+  };
+
+  // Creates barrier array for a resource and stores it in the corresponding Sync object.
+  auto addResourceBarrier = [&](GraphPass* barrierPass, bool beforePass, const Resource& resource,
+                                VkPipelineStageFlags2 srcStageMask, VkAccessFlags2 srcAccessMask,
+                                VkPipelineStageFlags2 dstStageMask, VkAccessFlags2 dstAccessMask,
+                                uint32_t srcQueueFamilyIndex, uint32_t dstQueueFamilyIndex) {
+    if (resource.type == Resource::Type::BUFFER) {
+      const auto buffers = _graphStorage->getBuffer(resource.name);
+      std::vector<Barrier> barriers(_maxFramesInFlight);
+      for (int frameIndex = 0; frameIndex < _maxFramesInFlight; ++frameIndex) {
+        barriers[frameIndex].addBuffer(buffers[frameIndex], srcStageMask, srcAccessMask, dstStageMask, dstAccessMask,
+                                       srcQueueFamilyIndex, dstQueueFamilyIndex, 0, buffers[frameIndex]->getSize());
+      }
+
+      if (beforePass) {
+        _sync[barrierPass].addBarrierBefore(barriers, [this]() { return _frameInFlight; });
+      } else {
+        _sync[barrierPass].addBarrierAfter(barriers, [this]() { return _frameInFlight; });
+      }
+
+      return;
+    }
+
+    const auto& imageHolder = _graphStorage->getImageViewHolder(resource.name);
+    const auto imageViews = imageHolder.getImageViews();
+    std::vector<Barrier> barriers(imageViews.size());
+    for (std::size_t imageIndex = 0; imageIndex < imageViews.size(); ++imageIndex) {
+      auto& image = imageViews[imageIndex]->getImage();
+      const VkImageSubresourceRange subresourceRange{
+          image.getAspectMask(),
+          0,
+          static_cast<uint32_t>(image.getMipMapNumber()),
+          0,
+          static_cast<uint32_t>(image.getLayerNumber()),
+      };
+      barriers[imageIndex].addImage(image.getImage(), srcStageMask, srcAccessMask, dstStageMask, dstAccessMask,
+                                    VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, subresourceRange,
+                                    srcQueueFamilyIndex, dstQueueFamilyIndex);
+    }
+
+    auto indexFunction = imageHolder.getIndexFunction();
+    if (beforePass) {
+      _sync[barrierPass].addBarrierBefore(barriers, indexFunction);
+    } else {
+      _sync[barrierPass].addBarrierAfter(barriers, indexFunction);
+    }
+  };
+
+  auto getQueueFamilyIndex = [this](GraphPass* pass) -> uint32_t {
+    const auto queueType = _usesSeparateQueue(pass) ? vkb::QueueType::compute : vkb::QueueType::graphics;
+
+    return static_cast<uint32_t>(_device->getQueueIndex(queueType));
+  };
+
   bool flagWaitForSwapchain = true;
   GraphPass* previousPass = nullptr;
-  std::unordered_map<std::string, GraphPass*> texturesOwnership, buffersOwnership;
   for (auto&& pass : _passesOrdered) {
-    // check resource ownership and fill ownership transfer barriers
-    auto usesSeparateQueue = [](GraphPass* pass) {
-      return pass->getGraphPassType() == GraphPassType::COMPUTE && static_cast<GraphPassCompute*>(pass)->isSeparate();
-    };
-
-    auto [currentTextures, currentBuffers] = getDependencies(pass);
-    for (const auto& texture : currentTextures) {
-      auto owner = texturesOwnership.find(texture);
-
-      if (owner != texturesOwnership.end() && usesSeparateQueue(owner->second) != usesSeparateQueue(pass)) {
-        _acquireOwnershipImages[pass].insert(texture);
-        _releaseOwnershipImages[owner->second].insert(texture);
-      }
-
-      texturesOwnership[texture] = pass;
-    }
-
-    for (const auto& buffer : currentBuffers) {
-      auto owner = buffersOwnership.find(buffer);
-
-      if (owner != buffersOwnership.end() && usesSeparateQueue(owner->second) != usesSeparateQueue(pass)) {
-        _acquireOwnershipBuffers[pass].insert(buffer);
-        _releaseOwnershipBuffers[owner->second].insert(buffer);
-      }
-
-      buffersOwnership[buffer] = pass;
-    }
-    //
-
-    // find if we need to change queue -> add semaphore + check for neccessity of the ownership transfer
-    bool queueTypeChange = previousPass && usesSeparateQueue(previousPass) != usesSeparateQueue(pass);
-
-    _cache[pass] = {queueTypeChange, previousPass};
-
+    const bool queueTypeChange = previousPass && _usesSeparateQueue(previousPass) != _usesSeparateQueue(pass);
     if (queueTypeChange) {
       // signal semaphore for the previous pass
       // wait semaphore for the current pass
-      // only if there are separate queues for compute and graphic
       std::vector<std::shared_ptr<Semaphore>> semaphoreQueueType(_maxFramesInFlight);
       std::ranges::generate(semaphoreQueueType,
                             [&] { return std::make_shared<Semaphore>(VK_SEMAPHORE_TYPE_BINARY, *_device); });
-      pass->addWaitSemaphore(semaphoreQueueType, [this]() { return _frameInFlight; });
-      previousPass->addSignalSemaphore(semaphoreQueueType, [this]() { return _frameInFlight; });
+      _sync[pass].addWaitSemaphore(semaphoreQueueType, [this]() { return _frameInFlight; });
+      _sync[previousPass].addSignalSemaphore(semaphoreQueueType, [this]() { return _frameInFlight; });
+
+      // clear all barriers because of semaphore
+      lastImageUsage.clear();
+      lastBufferUsage.clear();
     }
-    // special case if we read from swapchain
-    // who first interact with swapchain that should wait for the semaphore
+
+    // add barriers
+    for (const Resource& resource : _resources.at(pass).getResources()) {
+      auto& lastUsage = resource.type == Resource::Type::IMAGE ? lastImageUsage : lastBufferUsage;
+      auto& ownership = resource.type == Resource::Type::IMAGE ? imageOwnership : bufferOwnership;
+      // Queue-family ownership transfer.
+      const auto ownerIt = ownership.find(resource.name);
+      if (ownerIt != ownership.end()) {
+        const LastUsage& owner = ownerIt->second;
+        const uint32_t srcQueueFamilyIndex = getQueueFamilyIndex(owner.pass);
+        const uint32_t dstQueueFamilyIndex = getQueueFamilyIndex(pass);
+        if (srcQueueFamilyIndex != dstQueueFamilyIndex) {
+          // RELEASE:
+          // executed after the last source-family use.
+          addResourceBarrier(owner.pass, false, owner.resource, getStageMask(owner.pass), getAccessMask(owner.resource),
+                             0, 0, srcQueueFamilyIndex, dstQueueFamilyIndex);
+
+          // ACQUIRE:
+          // executed before the first destination-family use.
+          addResourceBarrier(pass, true, resource, 0, 0, getStageMask(pass), getAccessMask(resource),
+                             srcQueueFamilyIndex, dstQueueFamilyIndex);
+        }
+      }
+
+      // The current pass becomes the latest owner/use.
+      ownership[resource.name] = {
+          .pass = pass,
+          .resource = resource,
+      };
+
+      // Normal same-queue hazards.
+      const auto previousUsage = lastUsage.find(resource.name);
+      if (previousUsage != lastUsage.end()) {
+        const LastUsage& previous = previousUsage->second;
+        const bool previousWrites = hasOperation(previous.resource, Resource::Operation::WRITE);
+        const bool currentWrites = hasOperation(resource, Resource::Operation::WRITE);
+
+        // READ -> READ needs no memory barrier.
+        if (previousWrites || currentWrites) {
+          addResourceBarrier(pass, true, resource, getStageMask(previous.pass), getAccessMask(previous.resource),
+                             getStageMask(pass), getAccessMask(resource), std::numeric_limits<uint32_t>::max(),
+                             std::numeric_limits<uint32_t>::max());
+        }
+      }
+
+      lastUsage[resource.name] = {
+          .pass = pass,
+          .resource = resource,
+      };
+    }
+
+    // first pass interacting with the swapchain waits for it
     if (flagWaitForSwapchain) {
       bool swapchainFound = false;
-      auto checkSwapchain = [this](const auto& input) -> bool {
-        for (auto&& name : input)
-          if (_graphStorage->getImageViewHolder(name).contains(_swapchain->getImageViews())) return true;
-        return false;
-      };
-      if (pass->getGraphPassType() == GraphPassType::GRAPHIC) {
-        auto passGraphic = static_cast<GraphPassGraphic*>(pass);
-        if (checkSwapchain(passGraphic->getColorTargets()) || checkSwapchain(passGraphic->getTextureInputs()))
+      for (const auto& name : _resources.at(pass).getNames(Resource::Type::IMAGE)) {
+        if (_graphStorage->getImageViewHolder(name).contains(_swapchain->getImageViews())) {
           swapchainFound = true;
-      }
-      if (pass->getGraphPassType() == GraphPassType::COMPUTE) {
-        auto passCompute = static_cast<GraphPassCompute*>(pass);
-        if (checkSwapchain(passCompute->getStorageTextureInputs()) ||
-            checkSwapchain(passCompute->getStorageTextureOutputs()))
-          swapchainFound = true;
+          break;
+        }
       }
       if (swapchainFound) {
-        pass->addWaitSemaphore(_semaphoreImageAvailable, [this]() { return _frameInFlight; });
+        _sync[pass].addWaitSemaphore(_semaphoreImageAvailable, [this]() { return _frameInFlight; });
         flagWaitForSwapchain = false;
       }
     }
+
     // end node should signal end semaphore
     if (pass == root) {
-      pass->addSignalSemaphore(_semaphoreRenderFinished, [this]() { return _swapchain->getSwapchainIndex(); });
+      _sync[pass].addSignalSemaphore(_semaphoreRenderFinished, [this]() { return _swapchain->getSwapchainIndex(); });
     }
 
     previousPass = pass;
@@ -604,14 +918,14 @@ bool Graph::render() {
   if (_valueSemaphoreInFlight > _maxFramesInFlight) {
     uint64_t waitValue = _valueSemaphoreInFlight - _maxFramesInFlight;
     auto semaphoreInFlight = _semaphoreInFlight->getSemaphore();
-    VkSemaphoreWaitInfo waitInfo = {
+
+    VkSemaphoreWaitInfo waitInfo{
         .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
         .flags = 0,
         .semaphoreCount = 1,
         .pSemaphores = &semaphoreInFlight,
         .pValues = &waitValue,
     };
-
     auto result = vkWaitSemaphores(_device->getLogicalDevice(), &waitInfo, std::numeric_limits<std::uint64_t>::max());
     if (result != VK_SUCCESS) {
       throw std::runtime_error("vkWaitSemaphores failed: " + std::to_string(result));
@@ -619,55 +933,56 @@ bool Graph::render() {
   }
 
   auto status = _swapchain->acquireNextImage(*_semaphoreImageAvailable[_frameInFlight]);
-  // notify about reset needed
   if (status == VK_ERROR_OUT_OF_DATE_KHR) {
     return true;
-  } else if (status != VK_SUCCESS && status != VK_SUBOPTIMAL_KHR) {
+  }
+  if (status != VK_SUCCESS && status != VK_SUBOPTIMAL_KHR) {
     throw std::runtime_error("failed to acquire swap chain image");
   }
 
   auto swapchainIndex = _swapchain->getSwapchainIndex();
   _timestamps->resetQueryPool();
-
-  // run all passes' execution functions
+  // Record all pass command buffers.
   std::vector<std::future<void>> futureTasks =
-      _passesOrdered | std::views::transform([this, swapchainIndex](auto& pass) {
+      _passesOrdered | std::views::transform([this](GraphPass* pass) {
         auto commandBuffer = pass->getCommandBuffers()[_frameInFlight];
-        if (commandBuffer->getActive() == false) commandBuffer->beginCommands();
+        if (!commandBuffer->getActive()) {
+          commandBuffer->beginCommands();
+        }
 
-        // change layouts for dynamic rendering if needed (attachments and/or swapchain), handles reset as well
+        // Change layouts required for dynamic rendering.
         if (pass->getGraphPassType() == GraphPassType::GRAPHIC) {
-          auto passGraphic = static_cast<GraphPassGraphic*>(pass);
-          auto colorTargets = passGraphic->getColorTargets();
-          for (auto&& colorTarget : colorTargets) {
-            auto&& imageView = _graphStorage->getImageViewHolder(colorTarget).getImageView();
-            if (imageView.getImage().getImageLayout() != VK_IMAGE_LAYOUT_GENERAL) {
-              // attachments are used in beginRendering, to avoid WAW hazard we set access mask to WRITE
-              // potentially this won't work for storage images if there is no rendering pass before usage
-              // so READ is needed as well
-              auto dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT;
-              imageView.getImage().changeLayout(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, 0, dstAccessMask,
-                                                *commandBuffer);
+          auto* passGraphic = static_cast<GraphPassGraphic*>(pass);
+          for (const auto& colorTarget : passGraphic->getColorTargets()) {
+            auto& imageView = _graphStorage->getImageViewHolder(colorTarget).getImageView();
+            auto& image = imageView.getImage();
+            if (image.getImageLayout() != VK_IMAGE_LAYOUT_GENERAL) {
+              const auto dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT;
+              image.changeLayout(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, 0, dstAccessMask, *commandBuffer);
             }
           }
-          auto depthTarget = passGraphic->getDepthTarget();
-          if (depthTarget) {
-            auto&& depthImageView = _graphStorage->getImageViewHolder(depthTarget.value()).getImageView();
-            if (depthImageView.getImage().getImageLayout() != VK_IMAGE_LAYOUT_GENERAL) {
-              auto dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
-                                   VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
-
-              depthImageView.getImage().changeLayout(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, 0,
-                                                     dstAccessMask, *commandBuffer);
+          if (const auto& depthTarget = passGraphic->getDepthTarget()) {
+            auto& imageView = _graphStorage->getImageViewHolder(*depthTarget).getImageView();
+            auto& image = imageView.getImage();
+            if (image.getImageLayout() != VK_IMAGE_LAYOUT_GENERAL) {
+              const auto dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
+                                         VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+              image.changeLayout(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, 0, dstAccessMask, *commandBuffer);
             }
           }
         }
 
-        return _threadPool->submit([this, pass, commandBuffer]() {
+        // execute and add barriers
+        auto sync = _sync.at(pass);
+        return _threadPool->submit([this, pass, commandBuffer, sync]() {
           _timestamps->pushTimestamp(pass->getName(), *commandBuffer);
-          _recordAcquireOwnershipBarriers(pass, *commandBuffer);
+          for (auto&& barrier : sync.getBarriersBefore()) {
+            barrier->execute(commandBuffer->getCommandBuffer());
+          }
           pass->execute(_frameInFlight, *commandBuffer);
-          _recordReleaseOwnershipBarriers(pass, *commandBuffer);
+          for (auto&& barrier : sync.getBarriersAfter()) {
+            barrier->execute(commandBuffer->getCommandBuffer());
+          }
           _timestamps->popTimestamp(pass->getName(), *commandBuffer);
         });
       }) |
@@ -677,12 +992,11 @@ bool Graph::render() {
                                   const std::vector<VkSemaphore>& waitSemaphores,
                                   const std::vector<VkSemaphore>& signalSemaphores,
                                   const std::optional<std::vector<uint64_t>> signalValues = std::nullopt) {
-    // need to end command buffers before submit
     std::vector<VkCommandBufferSubmitInfo> commandBufferInfos;
     commandBufferInfos.reserve(commandBufferSubmit.size());
-    for (auto&& commandBuffer : commandBufferSubmit) {
+    for (CommandBuffer* commandBuffer : commandBufferSubmit) {
       commandBuffer->endCommands();
-      commandBufferInfos.push_back(VkCommandBufferSubmitInfo{
+      commandBufferInfos.push_back({
           .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
           .commandBuffer = commandBuffer->getCommandBuffer(),
       });
@@ -690,38 +1004,42 @@ bool Graph::render() {
 
     std::vector<VkSemaphoreSubmitInfo> waitSemaphoreInfos;
     waitSemaphoreInfos.reserve(waitSemaphores.size());
-    for (auto semaphore : waitSemaphores) {
-      waitSemaphoreInfos.push_back(VkSemaphoreSubmitInfo{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
-                                                         .semaphore = semaphore,
-                                                         .value = 0,
-                                                         .stageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT});
+    for (VkSemaphore semaphore : waitSemaphores) {
+      waitSemaphoreInfos.push_back({
+          .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+          .semaphore = semaphore,
+          .value = 0,
+          .stageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+      });
     }
-
     std::vector<VkSemaphoreSubmitInfo> signalSemaphoreInfos;
     signalSemaphoreInfos.reserve(signalSemaphores.size());
-    for (size_t i = 0; i < signalSemaphores.size(); i++) {
-      signalSemaphoreInfos.push_back(VkSemaphoreSubmitInfo{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
-                                                           .semaphore = signalSemaphores[i],
-                                                           .value = signalValues ? signalValues.value()[i] : 0,
-                                                           .stageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT});
+    for (std::size_t i = 0; i < signalSemaphores.size(); ++i) {
+      signalSemaphoreInfos.push_back({
+          .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+          .semaphore = signalSemaphores[i],
+          .value = signalValues ? signalValues->at(i) : 0,
+          .stageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+      });
     }
 
     auto queueType = vkb::QueueType::graphics;
     if (previousPass->getGraphPassType() == GraphPassType::COMPUTE) {
-      auto* passComputePrevious = static_cast<GraphPassCompute*>(previousPass);
-      if (passComputePrevious->isSeparate()) {
+      auto* passCompute = static_cast<GraphPassCompute*>(previousPass);
+      if (passCompute->isSeparate()) {
         queueType = vkb::QueueType::compute;
       }
     }
 
-    // submit + semaphores
-    VkSubmitInfo2 submitInfo{.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
-                             .waitSemaphoreInfoCount = static_cast<uint32_t>(waitSemaphoreInfos.size()),
-                             .pWaitSemaphoreInfos = waitSemaphoreInfos.data(),
-                             .commandBufferInfoCount = static_cast<uint32_t>(commandBufferInfos.size()),
-                             .pCommandBufferInfos = commandBufferInfos.data(),
-                             .signalSemaphoreInfoCount = static_cast<uint32_t>(signalSemaphoreInfos.size()),
-                             .pSignalSemaphoreInfos = signalSemaphoreInfos.data()};
+    const VkSubmitInfo2 submitInfo{
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+        .waitSemaphoreInfoCount = static_cast<uint32_t>(waitSemaphoreInfos.size()),
+        .pWaitSemaphoreInfos = waitSemaphoreInfos.data(),
+        .commandBufferInfoCount = static_cast<uint32_t>(commandBufferInfos.size()),
+        .pCommandBufferInfos = commandBufferInfos.data(),
+        .signalSemaphoreInfoCount = static_cast<uint32_t>(signalSemaphoreInfos.size()),
+        .pSignalSemaphoreInfos = signalSemaphoreInfos.data(),
+    };
 
     auto result = vkQueueSubmit2(_device->getQueue(queueType), 1, &submitInfo, nullptr);
     if (result != VK_SUCCESS) {
@@ -729,103 +1047,73 @@ bool Graph::render() {
     }
   };
 
-  // command buffer from passes
   std::vector<CommandBuffer*> commandBufferSubmit;
   std::vector<VkSemaphore> signalSemaphores;
   std::vector<VkSemaphore> waitSemaphores;
-  // submit recorded command buffer to GPU
+  GraphPass* previousPass = nullptr;
   for (auto&& [pass, futureTask] : std::views::zip(_passesOrdered, futureTasks)) {
-    // wait execution of current render pass
-    if (futureTask.valid()) futureTask.get();
+    if (futureTask.valid()) {
+      futureTask.get();
+    }
 
-    auto [queueTypeChange, previousPass] = _cache[pass];
-
-    if (previousPass) {
-      // we put semaphore only if queue family is changed
+    if (previousPass != nullptr) {
+      const bool queueTypeChange = _usesSeparateQueue(previousPass) != _usesSeparateQueue(pass);
       if (queueTypeChange) {
         submitPassToQueue(previousPass, commandBufferSubmit, waitSemaphores, signalSemaphores);
-        //
         commandBufferSubmit.clear();
-        signalSemaphores.clear();
         waitSemaphores.clear();
-      } else {
-        // put EXECUTION AND MEMORY barriers if needed (not layout transition ones)
-        // IMPORTANT: we should add any barrier to the previous stage because potentially all command buffer are already
-        // recorded. So we need to add barrier to the end of the previous command buffer.
-
-        // Full global barrier between passes executed on the same VkQueue.
-        // TODO: think about the situation:
-        // Compute (A) -> Compute (B) -> Graphic(A, B)
-        // we have to consider every resource usage from all previous stages
-        VkPipelineStageFlags dstStageMask = 0;
-
-        switch (pass->getGraphPassType()) {
-          case GraphPassType::GRAPHIC:
-            dstStageMask = VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT;
-            break;
-          case GraphPassType::COMPUTE:
-            dstStageMask = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
-            break;
-          default:
-            dstStageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
-            break;
-        }
-        VkMemoryBarrier2 memoryBarrier{
-            .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
-            .pNext = nullptr,
-            .srcStageMask = VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-            .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT,
-            .dstStageMask = dstStageMask,
-            .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
-        };
-        VkDependencyInfo dependencyInfo{
-            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-            .pNext = nullptr,
-            .dependencyFlags = 0,
-            .memoryBarrierCount = 1,
-            .pMemoryBarriers = &memoryBarrier,
-            .bufferMemoryBarrierCount = 0,
-            .pBufferMemoryBarriers = nullptr,
-            .imageMemoryBarrierCount = 0,
-            .pImageMemoryBarriers = nullptr,
-        };
-        VkCommandBuffer barrierCommandBuffer = previousPass->getCommandBuffers()[_frameInFlight]->getCommandBuffer();
-        vkCmdPipelineBarrier2(barrierCommandBuffer, &dependencyInfo);
+        signalSemaphores.clear();
       }
     }
 
+    previousPass = pass;
     commandBufferSubmit.push_back(pass->getCommandBuffers()[_frameInFlight]);
-    for (auto&& semaphore : pass->getSignalSemaphores()) signalSemaphores.push_back(semaphore->getSemaphore());
-    for (auto&& semaphore : pass->getWaitSemaphores()) waitSemaphores.push_back(semaphore->getSemaphore());
+    if (const auto syncIt = _sync.find(pass); syncIt != _sync.end()) {
+      for (Semaphore* semaphore : syncIt->second.getWaitSemaphores()) {
+        waitSemaphores.push_back(semaphore->getSemaphore());
+      }
+      for (Semaphore* semaphore : syncIt->second.getSignalSemaphores()) {
+        signalSemaphores.push_back(semaphore->getSemaphore());
+      }
+    }
   }
 
-  // last pass changes swapchain layout if needed
+  // Change the swapchain image layout before presentation.
   if (_swapchain->getImage(swapchainIndex).getImageLayout() != VK_IMAGE_LAYOUT_PRESENT_SRC_KHR) {
     _swapchain->getImage(swapchainIndex)
         .changeLayout(_swapchain->getImage(swapchainIndex).getImageLayout(), VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
                       VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, 0, *commandBufferSubmit.back());
   }
 
-  // submit last pass
   std::vector<uint64_t> signalValues(signalSemaphores.size() + 1, 0);
   signalValues[signalSemaphores.size()] = _valueSemaphoreInFlight;
   signalSemaphores.push_back(_semaphoreInFlight->getSemaphore());
+
   submitPassToQueue(_passesOrdered.back(), commandBufferSubmit, waitSemaphores, signalSemaphores, signalValues);
+
   _timestamps->fetchTimestamps();
 
   auto semaphoreRenderFinished = _semaphoreRenderFinished[swapchainIndex]->getSemaphore();
-  VkSwapchainKHR swapChains[] = {_swapchain->getSwapchain()};
-  VkPresentInfoKHR presentInfo{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
-                               .waitSemaphoreCount = 1,
-                               .pWaitSemaphores = &semaphoreRenderFinished,
-                               .swapchainCount = 1,
-                               .pSwapchains = swapChains,
-                               .pImageIndices = &swapchainIndex};
 
-  _valueSemaphoreInFlight++;
+  VkSwapchainKHR swapChains[]{
+      _swapchain->getSwapchain(),
+  };
+
+  VkPresentInfoKHR presentInfo{
+      .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+      .waitSemaphoreCount = 1,
+      .pWaitSemaphores = &semaphoreRenderFinished,
+      .swapchainCount = 1,
+      .pSwapchains = swapChains,
+      .pImageIndices = &swapchainIndex,
+  };
+
+  ++_valueSemaphoreInFlight;
+
   _frameInFlight = (_valueSemaphoreInFlight - 1) % _maxFramesInFlight;
 
   auto result = vkQueuePresentKHR(_device->getQueue(vkb::QueueType::present), &presentInfo);
+
   if (result != VK_SUCCESS) {
     return true;
   }
@@ -847,140 +1135,6 @@ void Graph::reset() {
   }
 }
 
-void Graph::_recordAcquireOwnershipBarriers(GraphPass* pass, const CommandBuffer& commandBuffer) {
-  const bool separateCompute = pass->getGraphPassType() == GraphPassType::COMPUTE &&
-                               static_cast<GraphPassCompute*>(pass)->isSeparate();
-
-  // current pass takes ownership
-  const uint32_t srcQueueFamilyIndex = static_cast<uint32_t>(
-      _device->getQueueIndex(separateCompute ? vkb::QueueType::graphics : vkb::QueueType::compute));
-
-  const uint32_t dstQueueFamilyIndex = static_cast<uint32_t>(
-      _device->getQueueIndex(separateCompute ? vkb::QueueType::compute : vkb::QueueType::graphics));
-
-  std::vector<VkImageMemoryBarrier2> imageBarriers;
-  std::vector<VkBufferMemoryBarrier2> bufferBarriers;
-
-  const auto imagesIt = _acquireOwnershipImages.find(pass);
-  if (imagesIt != _acquireOwnershipImages.end()) {
-    imageBarriers.reserve(imagesIt->second.size());
-
-    for (const auto& name : imagesIt->second) {
-      auto& image = _graphStorage->getImageViewHolder(name).getImageView().getImage();
-
-      imageBarriers.push_back(VkImageMemoryBarrier2{
-          .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-          .pNext = nullptr,
-          .srcStageMask = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-          .srcAccessMask = 0,
-          .dstStageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-          .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
-          .oldLayout = image.getImageLayout(),
-          .newLayout = image.getImageLayout(),
-          .srcQueueFamilyIndex = srcQueueFamilyIndex,
-          .dstQueueFamilyIndex = dstQueueFamilyIndex,
-          .image = image.getImage(),
-          .subresourceRange = VkImageSubresourceRange{.aspectMask = image.getAspectMask(),
-                                                      .baseMipLevel = 0,
-                                                      .levelCount = static_cast<uint32_t>(image.getMipMapNumber()),
-                                                      .baseArrayLayer = 0,
-                                                      .layerCount = static_cast<uint32_t>(image.getLayerNumber())}});
-    }
-  }
-
-  const auto buffersIt = _acquireOwnershipBuffers.find(pass);
-  if (buffersIt != _acquireOwnershipBuffers.end()) {
-    bufferBarriers.reserve(buffersIt->second.size());
-    for (const auto& name : buffersIt->second) {
-      auto buffer = _graphStorage->getBuffer(name)[_frameInFlight];
-      bufferBarriers.push_back(
-          VkBufferMemoryBarrier2{.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-                                 .pNext = nullptr,
-                                 .srcStageMask = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                                 .srcAccessMask = 0,
-                                 .dstStageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                                 .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
-                                 .srcQueueFamilyIndex = srcQueueFamilyIndex,
-                                 .dstQueueFamilyIndex = dstQueueFamilyIndex,
-                                 .buffer = buffer->getBuffer(),
-                                 .offset = 0,
-                                 .size = buffer->getSize()});
-    }
-  }
-
-  VkDependencyInfo dependencyInfo{.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-                                  .bufferMemoryBarrierCount = static_cast<uint32_t>(bufferBarriers.size()),
-                                  .pBufferMemoryBarriers = bufferBarriers.data(),
-                                  .imageMemoryBarrierCount = static_cast<uint32_t>(imageBarriers.size()),
-                                  .pImageMemoryBarriers = imageBarriers.data()};
-  vkCmdPipelineBarrier2(commandBuffer.getCommandBuffer(), &dependencyInfo);
-}
-
-void Graph::_recordReleaseOwnershipBarriers(GraphPass* pass, const CommandBuffer& commandBuffer) {
-  const bool separateCompute = pass->getGraphPassType() == GraphPassType::COMPUTE &&
-                               static_cast<GraphPassCompute*>(pass)->isSeparate();
-
-  // Current pass transfer ownership
-  const uint32_t srcQueueFamilyIndex = static_cast<uint32_t>(
-      _device->getQueueIndex(separateCompute ? vkb::QueueType::compute : vkb::QueueType::graphics));
-
-  const uint32_t dstQueueFamilyIndex = static_cast<uint32_t>(
-      _device->getQueueIndex(separateCompute ? vkb::QueueType::graphics : vkb::QueueType::compute));
-
-  std::vector<VkImageMemoryBarrier2> imageBarriers;
-  std::vector<VkBufferMemoryBarrier2> bufferBarriers;
-
-  const auto imagesIt = _releaseOwnershipImages.find(pass);
-  if (imagesIt != _releaseOwnershipImages.end()) {
-    imageBarriers.reserve(imagesIt->second.size());
-
-    for (const auto& name : imagesIt->second) {
-      auto& image = _graphStorage->getImageViewHolder(name).getImageView().getImage();
-
-      imageBarriers.push_back(VkImageMemoryBarrier2{
-          .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-          .pNext = nullptr,
-          .srcStageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-          .srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
-          .dstStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-          .dstAccessMask = 0,
-          .oldLayout = image.getImageLayout(),
-          .newLayout = image.getImageLayout(),
-          .srcQueueFamilyIndex = srcQueueFamilyIndex,
-          .dstQueueFamilyIndex = dstQueueFamilyIndex,
-          .image = image.getImage(),
-          .subresourceRange = VkImageSubresourceRange{.aspectMask = image.getAspectMask(),
-                                                      .baseMipLevel = 0,
-                                                      .levelCount = static_cast<uint32_t>(image.getMipMapNumber()),
-                                                      .baseArrayLayer = 0,
-                                                      .layerCount = static_cast<uint32_t>(image.getLayerNumber())}});
-    }
-  }
-
-  const auto buffersIt = _releaseOwnershipBuffers.find(pass);
-  if (buffersIt != _releaseOwnershipBuffers.end()) {
-    bufferBarriers.reserve(buffersIt->second.size());
-    for (const auto& name : buffersIt->second) {
-      auto buffer = _graphStorage->getBuffer(name)[_frameInFlight];
-      bufferBarriers.push_back(
-          VkBufferMemoryBarrier2{.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-                                 .pNext = nullptr,
-                                 .srcStageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                                 .srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
-                                 .dstStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-                                 .dstAccessMask = 0,
-                                 .srcQueueFamilyIndex = srcQueueFamilyIndex,
-                                 .dstQueueFamilyIndex = dstQueueFamilyIndex,
-                                 .buffer = buffer->getBuffer(),
-                                 .offset = 0,
-                                 .size = buffer->getSize()});
-    }
-  }
-
-  VkDependencyInfo dependencyInfo{.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-                                  .bufferMemoryBarrierCount = static_cast<uint32_t>(bufferBarriers.size()),
-                                  .pBufferMemoryBarriers = bufferBarriers.data(),
-                                  .imageMemoryBarrierCount = static_cast<uint32_t>(imageBarriers.size()),
-                                  .pImageMemoryBarriers = imageBarriers.data()};
-  vkCmdPipelineBarrier2(commandBuffer.getCommandBuffer(), &dependencyInfo);
-}
+bool Graph::_usesSeparateQueue(GraphPass* pass) {
+  return pass->getGraphPassType() == GraphPassType::COMPUTE && static_cast<GraphPassCompute*>(pass)->isSeparate();
+};
