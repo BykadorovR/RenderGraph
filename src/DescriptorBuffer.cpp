@@ -66,8 +66,8 @@ DescriptorBuffer::DescriptorBuffer(const std::vector<DescriptorSetLayout*>& layo
     for (int i = 0; i < layout->getLayoutInfo().size(); i++) {
       for (int j = 0; j < layout->getLayoutInfo()[i].descriptorCount; j++) {
         VkDeviceSize offset;
-        vkGetDescriptorSetLayoutBindingOffsetEXT(device.getLogicalDevice(), layout->getDescriptorSetLayout(), i,
-                                                 &offset);
+        vkGetDescriptorSetLayoutBindingOffsetEXT(device.getLogicalDevice(), layout->getDescriptorSetLayout(),
+                                                 layout->getLayoutInfo()[i].binding, &offset);
         _offsets[id].push_back(offset + _getDescriptorSize(layout->getLayoutInfo()[i].descriptorType) * j);
       }
     }
@@ -173,8 +173,7 @@ void DescriptorBuffer::initialize(const CommandBuffer& commandBuffer) {
             dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
                             VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
           }
-          image.changeLayout(image.getImageLayout(), VK_IMAGE_LAYOUT_GENERAL, 0, dstAccessMask,
-                             commandBuffer);
+          image.changeLayout(image.getImageLayout(), VK_IMAGE_LAYOUT_GENERAL, 0, dstAccessMask, commandBuffer);
         }
         // generate mip maps if needed
         if (image.getMipMapGenerated() == false && image.getMipMapNumber() > 1) image.generateMipmaps(commandBuffer);
@@ -333,6 +332,10 @@ void DescriptorSet::initialize(const CommandBuffer& commandBuffer) {
       _allocateDescriptorSetsForNextFrame();
     }
     auto index = _calculateDescriptorSetIndex();
+    std::size_t bindingIndex = _number;
+    for (int i = 0; i < index; ++i) {
+      bindingIndex -= _descriptorLayouts[i]->getLayoutInfo().size();
+    }
     if (resource.type == Resource::Type::BUFFER) {
       std::vector<VkDescriptorBufferInfo> bufferInfos(resource.buffers.size());
       for (int i = 0; i < resource.buffers.size(); i++) {
@@ -344,10 +347,10 @@ void DescriptorSet::initialize(const CommandBuffer& commandBuffer) {
       VkWriteDescriptorSet descriptorSet = {
           .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
           .dstSet = _descriptorSet[_frame][index],
-          .dstBinding = _descriptorLayouts[index]->getLayoutInfo()[_number].binding,
+          .dstBinding = _descriptorLayouts[index]->getLayoutInfo()[bindingIndex].binding,
           .dstArrayElement = 0,
-          .descriptorCount = _descriptorLayouts[index]->getLayoutInfo()[_number].descriptorCount,
-          .descriptorType = _descriptorLayouts[index]->getLayoutInfo()[_number].descriptorType,
+          .descriptorCount = _descriptorLayouts[index]->getLayoutInfo()[bindingIndex].descriptorCount,
+          .descriptorType = _descriptorLayouts[index]->getLayoutInfo()[bindingIndex].descriptorType,
           .pBufferInfo = bufferInfoAcc.back().data()};
       descriptorWritesAcc.push_back(descriptorSet);
     }
@@ -363,8 +366,7 @@ void DescriptorSet::initialize(const CommandBuffer& commandBuffer) {
             dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
                             VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
           }
-          image.changeLayout(image.getImageLayout(), VK_IMAGE_LAYOUT_GENERAL, 0, dstAccessMask,
-                             commandBuffer);
+          image.changeLayout(image.getImageLayout(), VK_IMAGE_LAYOUT_GENERAL, 0, dstAccessMask, commandBuffer);
         }
         // generate mip maps if needed
         if (image.getMipMapGenerated() == false && image.getMipMapNumber() > 1) image.generateMipmaps(commandBuffer);
@@ -379,10 +381,10 @@ void DescriptorSet::initialize(const CommandBuffer& commandBuffer) {
       VkWriteDescriptorSet descriptorSet = {
           .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
           .dstSet = _descriptorSet[_frame][index],
-          .dstBinding = _descriptorLayouts[index]->getLayoutInfo()[_number].binding,
+          .dstBinding = _descriptorLayouts[index]->getLayoutInfo()[bindingIndex].binding,
           .dstArrayElement = 0,
-          .descriptorCount = _descriptorLayouts[index]->getLayoutInfo()[_number].descriptorCount,
-          .descriptorType = _descriptorLayouts[index]->getLayoutInfo()[_number].descriptorType,
+          .descriptorCount = _descriptorLayouts[index]->getLayoutInfo()[bindingIndex].descriptorCount,
+          .descriptorType = _descriptorLayouts[index]->getLayoutInfo()[bindingIndex].descriptorType,
           .pImageInfo = imageInfoAcc.back().data()};
       descriptorWritesAcc.push_back(descriptorSet);
     }
