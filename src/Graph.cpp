@@ -28,10 +28,10 @@ void GraphStorage::reset(std::vector<std::shared_ptr<ImageView>> oldSwapchain,
         auto& image = imageViews[i]->getImage();
         if (image.getResolution() != resolution) {
           // recreate image
+          imageViews[i]->destroy();
           image.destroy();
           image.createImage(image.getFormat(), resolution, image.getMipMapNumber(), image.getLayerNumber(),
                             image.getAspectMask(), image.getUsageFlags());
-          imageViews[i]->destroy();
           imageViews[i]->createImageView(imageViews[i]->getType(), imageViews[i]->getBaseMipMap(),
                                          imageViews[i]->getBaseArrayLayer());
         }
@@ -245,7 +245,7 @@ Graph::Graph(int threadsNumber,
       _window(&window),
       _device(&device) {
   _threadPool = std::make_unique<BS::thread_pool>(threadsNumber);
-  _timestamps = std::make_unique<Timestamps>(device);
+  _timestamps = std::make_unique<Timestamps>(device, static_cast<uint32_t>(maxFramesInFlight));
   _graphStorage = std::make_unique<GraphStorage>();
   _maxFramesInFlight = maxFramesInFlight;
 }
@@ -1091,7 +1091,7 @@ bool Graph::render() {
 
   submitPassToQueue(_passesOrdered.back(), commandBufferSubmit, waitSemaphores, signalSemaphores, signalValues);
 
-  _timestamps->fetchTimestamps();
+  _timestamps->finishFrame();
 
   auto semaphoreRenderFinished = _semaphoreRenderFinished[swapchainIndex]->getSemaphore();
 
@@ -1130,9 +1130,16 @@ void Graph::reset() {
 
   auto oldSwapchain = _swapchain->reset(_window->getResolution());
   _graphStorage->reset(oldSwapchain, _swapchain->getImageViews());
+
+  _semaphoreRenderFinished.clear();
+  std::ranges::generate_n(std::back_inserter(_semaphoreRenderFinished), _swapchain->getImageCount(),
+                          [&] { return std::make_shared<Semaphore>(VK_SEMAPHORE_TYPE_BINARY, *_device); });
+
   for (auto&& pass : _passesOrdered) {
     pass->reset(_swapchain->getImageViews());
   }
+
+  calculate();
 }
 
 bool Graph::_usesSeparateQueue(GraphPass* pass) {

@@ -171,6 +171,16 @@ TEST(ScenarioTest, GraphOneQueue) {
   vkWaitSemaphores(device.getLogicalDevice(), &waitInfo, UINT64_MAX);
 
   graph.render();
+  EXPECT_TRUE(graph.getTimestamps().empty());
+  EXPECT_EQ(graph.getFrameInFlight(), 1);
+  EXPECT_EQ(elementMock->getDrawCount(), 3);
+
+  graph.render();
+  EXPECT_TRUE(graph.getTimestamps().empty());
+  EXPECT_EQ(graph.getFrameInFlight(), (2 % framesInFlight));
+  EXPECT_EQ(elementMock->getDrawCount(), 6);
+
+  graph.render();
   auto timestamps1 = graph.getTimestamps();
   EXPECT_EQ(timestamps1.size(), 3);
   EXPECT_TRUE(timestamps1.find("Render") != timestamps1.end());
@@ -181,14 +191,11 @@ TEST(ScenarioTest, GraphOneQueue) {
   EXPECT_GE(timestamps1["Postprocessing"].y, timestamps1["Postprocessing"].x);
   EXPECT_GE(timestamps1["GUI"].x, timestamps1["Postprocessing"].y);
   EXPECT_GE(timestamps1["GUI"].y, timestamps1["GUI"].x);
-
   EXPECT_EQ(graph.getFrameInFlight(), 1);
-  EXPECT_EQ(elementMock->getDrawCount(), 3);
-  graph.render();
+  EXPECT_EQ(elementMock->getDrawCount(), 9);
 
+  graph.render();
   auto timestamps2 = graph.getTimestamps();
-  EXPECT_EQ(graph.getFrameInFlight(), (2 % framesInFlight));
-  EXPECT_EQ(elementMock->getDrawCount(), 6);
   EXPECT_EQ(timestamps2.size(), 3);
   EXPECT_TRUE(timestamps2.find("Render") != timestamps2.end());
   EXPECT_TRUE(timestamps2.find("Postprocessing") != timestamps2.end());
@@ -197,12 +204,14 @@ TEST(ScenarioTest, GraphOneQueue) {
   EXPECT_GE(timestamps2["Postprocessing"].x, timestamps2["Render"].y);
   EXPECT_GE(timestamps2["Postprocessing"].y, timestamps2["Postprocessing"].x);
   EXPECT_GE(timestamps2["GUI"].x, timestamps2["Postprocessing"].y);
-  EXPECT_GE(timestamps1["GUI"].y, timestamps1["GUI"].x);
+  EXPECT_GE(timestamps2["GUI"].y, timestamps2["GUI"].x);
+  EXPECT_EQ(graph.getFrameInFlight(), (4 % framesInFlight));
+  EXPECT_EQ(elementMock->getDrawCount(), 12);
 
   for (int i = 0; i < 100; i++) {
     graph.render();
-    EXPECT_EQ(graph.getFrameInFlight(), ((2 + i + 1) % framesInFlight));
-    EXPECT_EQ(elementMock->getDrawCount(), 3 * (i + 3));
+    EXPECT_EQ(graph.getFrameInFlight(), ((4 + i + 1) % framesInFlight));
+    EXPECT_EQ(elementMock->getDrawCount(), 3 * (i + 5));
   }
 
   // wait device idle before destroying resources
@@ -353,6 +362,16 @@ TEST(ScenarioTest, GraphSeparateQueues) {
   vkWaitSemaphores(device.getLogicalDevice(), &waitInfo, UINT64_MAX);
 
   graph.render();
+  EXPECT_TRUE(graph.getTimestamps().empty());
+  EXPECT_EQ(graph.getFrameInFlight(), 1);
+  EXPECT_EQ(elementMock->getDrawCount(), 3);
+
+  graph.render();
+  EXPECT_TRUE(graph.getTimestamps().empty());
+  EXPECT_EQ(graph.getFrameInFlight(), (2 % framesInFlight));
+  EXPECT_EQ(elementMock->getDrawCount(), 6);
+
+  graph.render();
   auto timestamps1 = graph.getTimestamps();
   EXPECT_EQ(timestamps1.size(), 3);
   EXPECT_TRUE(timestamps1.find("Render") != timestamps1.end());
@@ -363,14 +382,11 @@ TEST(ScenarioTest, GraphSeparateQueues) {
   EXPECT_GE(timestamps1["Postprocessing"].y, timestamps1["Postprocessing"].x);
   EXPECT_GE(timestamps1["GUI"].x, timestamps1["Postprocessing"].y);
   EXPECT_GE(timestamps1["GUI"].y, timestamps1["GUI"].x);
-
   EXPECT_EQ(graph.getFrameInFlight(), 1);
-  EXPECT_EQ(elementMock->getDrawCount(), 3);
-  graph.render();
+  EXPECT_EQ(elementMock->getDrawCount(), 9);
 
+  graph.render();
   auto timestamps2 = graph.getTimestamps();
-  EXPECT_EQ(graph.getFrameInFlight(), (2 % framesInFlight));
-  EXPECT_EQ(elementMock->getDrawCount(), 6);
   EXPECT_EQ(timestamps2.size(), 3);
   EXPECT_TRUE(timestamps2.find("Render") != timestamps2.end());
   EXPECT_TRUE(timestamps2.find("Postprocessing") != timestamps2.end());
@@ -379,12 +395,14 @@ TEST(ScenarioTest, GraphSeparateQueues) {
   EXPECT_GE(timestamps2["Postprocessing"].x, timestamps2["Render"].y);
   EXPECT_GE(timestamps2["Postprocessing"].y, timestamps2["Postprocessing"].x);
   EXPECT_GE(timestamps2["GUI"].x, timestamps2["Postprocessing"].y);
-  EXPECT_GE(timestamps1["GUI"].y, timestamps1["GUI"].x);
+  EXPECT_GE(timestamps2["GUI"].y, timestamps2["GUI"].x);
+  EXPECT_EQ(graph.getFrameInFlight(), (4 % framesInFlight));
+  EXPECT_EQ(elementMock->getDrawCount(), 12);
 
   for (int i = 0; i < 100; i++) {
     graph.render();
-    EXPECT_EQ(graph.getFrameInFlight(), ((2 + i + 1) % framesInFlight));
-    EXPECT_EQ(elementMock->getDrawCount(), 3 * (i + 3));
+    EXPECT_EQ(graph.getFrameInFlight(), ((4 + i + 1) % framesInFlight));
+    EXPECT_EQ(elementMock->getDrawCount(), 3 * (i + 5));
   }
 
   // wait device idle before destroying resources
@@ -600,6 +618,9 @@ TEST(ScenarioTest, GraphReset) {
     EXPECT_NE(graph.getGraphStorage().getImageViewHolder("Swapchain").getImageViews()[i]->getImage().getImage(),
               nullptr);
   }
+
+  // reset() must rebuild barriers and swapchain-dependent semaphores.
+  EXPECT_FALSE(graph.render());
 
   // the most important here is the resolution
   std::vector<std::shared_ptr<RenderGraph::ImageView>> swapchainNewImages;
