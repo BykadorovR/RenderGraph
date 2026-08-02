@@ -973,7 +973,12 @@ bool Graph::render() {
         }
 
         // execute and add barriers
-        auto sync = _sync.at(pass);
+        // Passes without barriers or semaphores are absent from _sync.
+        // Using _sync.at(pass) would throw, so missing entries use an empty Sync.
+        Sync sync;
+        if (const auto syncIt = _sync.find(pass); syncIt != _sync.end()) {
+          sync = syncIt->second;
+        }
         return _threadPool->submit([this, pass, commandBuffer, sync]() {
           _timestamps->pushTimestamp(pass->getName(), *commandBuffer);
           for (auto&& barrier : sync.getBarriersBefore()) {
