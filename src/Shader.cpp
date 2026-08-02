@@ -4,9 +4,11 @@ import <algorithm>;
 using namespace RenderGraph;
 
 VkShaderModule Shader::_createShaderModule(const std::vector<char>& code) {
-  VkShaderModuleCreateInfo createInfo{.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-                                      .codeSize = code.size(),
-                                      .pCode = reinterpret_cast<const uint32_t*>(code.data())};
+  VkShaderModuleCreateInfo createInfo{
+      .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+      .codeSize = code.size(),
+      .pCode = reinterpret_cast<const uint32_t*>(code.data()),
+  };
 
   VkShaderModule shaderModule;
   if (vkCreateShaderModule(_device->getLogicalDevice(), &createInfo, nullptr, &shaderModule) != VK_SUCCESS) {
@@ -18,37 +20,25 @@ VkShaderModule Shader::_createShaderModule(const std::vector<char>& code) {
 
 std::vector<VkVertexInputAttributeDescription>
 Shader::_calculateAttributeDescription(const SpvReflectInterfaceVariable* v, int binding, uint32_t& offset) {
-  uint32_t loc = v->location;
-  VkFormat fmt = static_cast<VkFormat>(v->format);
+  const uint32_t columnCount = std::max(v->numeric.matrix.column_count, 1u);
+  const uint32_t componentCount = v->numeric.matrix.column_count > 0 ? v->numeric.matrix.row_count
+                                                                     : std::max(v->numeric.vector.component_count, 1u);
 
-  auto elements = v->numeric.matrix.column_count * v->numeric.matrix.row_count;
-  elements = std::max(elements, v->numeric.vector.component_count);
-  elements = std::max(elements, 1u);
+  const uint32_t columnSize = (v->numeric.scalar.width / 8) * componentCount;
+  std::vector<VkVertexInputAttributeDescription> attributes;
+  attributes.reserve(columnCount);
+  for (uint32_t column = 0; column < columnCount; ++column) {
+    attributes.push_back({
+        .location = v->location + column,
+        .binding = static_cast<uint32_t>(binding),
+        .format = static_cast<VkFormat>(v->format),
+        .offset = offset,
+    });
 
-  // split attributes larger than vec4
-  std::vector<int> components;
-  while ((elements / 4) > 0) {
-    components.push_back(4);
-    elements -= 4;
-  }
-  if (elements) components.push_back(elements % 4);
-
-  std::vector<VkVertexInputAttributeDescription> attributeDescriptions;
-  for (auto component : components) {
-    auto size = (v->numeric.scalar.width / 8) * component;
-
-    VkVertexInputAttributeDescription attributes{};
-    attributes.location = loc;
-    attributes.format = fmt;
-    attributes.binding = binding;
-    attributes.offset = offset;
-    attributeDescriptions.push_back(attributes);
-
-    loc++;
-    offset += size;
+    offset += columnSize;
   }
 
-  return attributeDescriptions;
+  return attributes;
 }
 
 Shader::Shader(const Device& device) noexcept : _device(&device) {}
@@ -62,49 +52,81 @@ void Shader::add(const std::vector<char>& shaderCode, const VkSpecializationInfo
   }
 
   uint32_t descriptorCount = 0;
-  spvReflectEnumerateDescriptorSets(&module, &descriptorCount, nullptr);
-  std::vector<SpvReflectDescriptorSet*> sets(descriptorCount);
-  spvReflectEnumerateDescriptorSets(&module, &descriptorCount, sets.data());
-
-  if (descriptorCount > _descriptorSetLayoutBindings.size()) _descriptorSetLayoutBindings.resize(descriptorCount);
-  for (int s = 0; s < sets.size(); s++) {
-    auto count = sets[s]->binding_count;
-    auto bindings = std::vector<SpvReflectDescriptorBinding*>(sets[s]->bindings, sets[s]->bindings + count);
-    for (uint32_t i = 0; i < count; ++i) {
-      SpvReflectDescriptorBinding* b = bindings[i];
-      VkDescriptorSetLayoutBinding layoutBinding{};
-      layoutBinding.binding = b->binding;
-      layoutBinding.descriptorType = static_cast<VkDescriptorType>(b->descriptor_type);
-      layoutBinding.descriptorCount = b->count;
-      layoutBinding.stageFlags = static_cast<VkShaderStageFlagBits>(module.shader_stage);
-      layoutBinding.pImmutableSamplers = nullptr;
-
-      auto it = std::lower_bound(_descriptorSetLayoutBindings[s].begin(), _descriptorSetLayoutBindings[s].end(),
-                                 layoutBinding, [](auto const& x, auto const& v) { return x.binding < v.binding; });
-      _descriptorSetLayoutBindings[s].insert(it, layoutBinding);
-    }
+  SpvReflectResult result = spvReflectEnumerateDescriptorSets(&module, &descriptorCount, nullptr);
+  if (result != SPV_REFLECT_RESULT_SUCCESS) {
+    spvReflectDestroyShaderModule(&module);
+    throw std::runtime_error("Failed to enumerate descriptor sets");
   }
 
+  std::vector<SpvReflectDescriptorSet*> sets(descriptorCount);
+  result = spvReflectEnumerateDescriptorSets(&module, &descriptorCount, sets.data());
+  if (result != SPV_REFLECT_RESULT_SUCCESS) {
+    spvReflectDestroyShaderModule(&module);
+    throw std::runtime_error("Failed to enumerate descriptor sets");
+  }
+
+  for (const SpvReflectDescriptorSet* reflectedSet : sets) {
+    const uint32_t setIndex = reflectedSet->set;
+
+    if (_descriptorSetLayoutBindings.size() <= setIndex) {
+      _descriptorSetLayoutBindings.resize(setIndex + 1);
+    }
+
+    auto& destinationBindings = _descriptorSetLayoutBindings[setIndex];
+    for (uint32_t i = 0; i < reflectedSet->binding_count; ++i) {
+      const SpvReflectDescriptorBinding* reflectedBinding = reflectedSet->bindings[i];
+      VkDescriptorSetLayoutBinding layoutBinding{
+          .binding = reflectedBinding->binding,
+          .descriptorType = static_cast<VkDescriptorType>(reflectedBinding->descriptor_type),
+          .descriptorCount = reflectedBinding->count,
+          .stageFlags = static_cast<VkShaderStageFlags>(module.shader_stage),
+          .pImmutableSamplers = nullptr,
+      };
+
+      auto position = std::lower_bound(
+          destinationBindings.begin(), destinationBindings.end(), layoutBinding.binding,
+          [](const VkDescriptorSetLayoutBinding& existing, uint32_t binding) { return existing.binding < binding; });
+
+      if (position != destinationBindings.end() && position->binding == layoutBinding.binding) {
+        // same set/binding can be used by multiple stages, need to create one record with merged stageFlags
+        if (position->descriptorType != layoutBinding.descriptorType ||
+            position->descriptorCount != layoutBinding.descriptorCount) {
+          throw std::runtime_error("Incompatible descriptor declarations for the same set and binding");
+        }
+        position->stageFlags |= layoutBinding.stageFlags;
+      } else {
+        destinationBindings.insert(position, layoutBinding);
+      }
+    }
+  }
   VkShaderModule shaderModule = _createShaderModule(shaderCode);
   _shaders[static_cast<VkShaderStageFlagBits>(module.shader_stage)] = {
       .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
       .stage = static_cast<VkShaderStageFlagBits>(module.shader_stage),
       .module = shaderModule,
       .pName = "main",
-      .pSpecializationInfo = info};
-
+      .pSpecializationInfo = info,
+  };
   _specializationInfo[static_cast<VkShaderStageFlagBits>(module.shader_stage)] = info;
-
   if (module.shader_stage == SPV_REFLECT_SHADER_STAGE_VERTEX_BIT) {
-    uint32_t count = 0;
-    spvReflectEnumerateInputVariables(&module, &count, nullptr);
-    _variables.resize(count);
-    spvReflectEnumerateInputVariables(&module, &count, _variables.data());
-
-    std::sort(_variables.begin(), _variables.end(),
-              [&](const SpvReflectInterfaceVariable* left, const SpvReflectInterfaceVariable* right) {
-                return left->location < right->location;
-              });
+    uint32_t variableCount = 0;
+    SpvReflectResult result = spvReflectEnumerateInputVariables(&module, &variableCount, nullptr);
+    if (result != SPV_REFLECT_RESULT_SUCCESS) {
+      spvReflectDestroyShaderModule(&module);
+      throw std::runtime_error("Failed to enumerate vertex input variables");
+    }
+    std::vector<SpvReflectInterfaceVariable*> variables(variableCount);
+    result = spvReflectEnumerateInputVariables(&module, &variableCount, variables.data());
+    if (result != SPV_REFLECT_RESULT_SUCCESS) {
+      spvReflectDestroyShaderModule(&module);
+      throw std::runtime_error("Failed to enumerate vertex input variables");
+    }
+    variables.resize(variableCount);
+    std::erase_if(variables, [](const SpvReflectInterfaceVariable* variable) {
+      return variable->decoration_flags & SPV_REFLECT_DECORATION_BUILT_IN;
+    });
+    std::ranges::sort(variables, {}, &SpvReflectInterfaceVariable::location);
+    _variables = std::move(variables);
   }
 
   _modules.push_back(module);
@@ -122,23 +144,21 @@ const VkPipelineVertexInputStateCreateInfo* Shader::getVertexInputInfo() {
   if (_vertexInputInfo == nullptr) {
     uint32_t attributesSize = 0;
     for (auto v : _variables) {
-      if (v->decoration_flags & SPV_REFLECT_DECORATION_BUILT_IN) continue;  // skip builtins
       auto attributes = _calculateAttributeDescription(v, 0, attributesSize);
+
       _vertexInputAttributes.insert(_vertexInputAttributes.end(), attributes.begin(), attributes.end());
     }
-
-    if (_vertexInputAttributes.size() > 0) {
+    if (!_vertexInputAttributes.empty()) {
       _bindingDescription = {{
           .binding = 0,
-          .stride = static_cast<uint32_t>(attributesSize),
+          .stride = attributesSize,
           .inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
       }};
     }
-
     _vertexInputInfo = std::make_unique<VkPipelineVertexInputStateCreateInfo>(
-        VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO, nullptr, 0, _bindingDescription.size(),
-        _bindingDescription.data(), static_cast<uint32_t>(_vertexInputAttributes.size()),
-        _vertexInputAttributes.data());
+        VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO, nullptr, 0,
+        static_cast<uint32_t>(_bindingDescription.size()), _bindingDescription.data(),
+        static_cast<uint32_t>(_vertexInputAttributes.size()), _vertexInputAttributes.data());
   }
 
   return _vertexInputInfo.get();
@@ -149,31 +169,37 @@ const VkPipelineVertexInputStateCreateInfo* Shader::getVertexInputInfo(
   if (_vertexInputInfo == nullptr) {
     _bindingDescription.resize(typeElements.size());
     int locationOffset = 0;
-    for (int binding = 0; binding < typeElements.size(); binding++) {
+    for (int binding = 0; binding < typeElements.size(); ++binding) {
       auto [type, number] = typeElements[binding];
       uint32_t offset = 0;
-      for (int location = locationOffset; location < locationOffset + number; location++) {
+      for (int location = locationOffset; location < locationOffset + number; ++location) {
         auto v = _variables[location];
-        if (v->decoration_flags & SPV_REFLECT_DECORATION_BUILT_IN) continue;  // skip builtins
         auto attributes = _calculateAttributeDescription(v, binding, offset);
         _vertexInputAttributes.insert(_vertexInputAttributes.end(), attributes.begin(), attributes.end());
       }
-
       locationOffset += number;
-      _bindingDescription[binding] = VkVertexInputBindingDescription{.binding = static_cast<uint32_t>(binding),
-                                                                     .stride = static_cast<uint32_t>(offset),
-                                                                     .inputRate = type};
+      _bindingDescription[binding] = VkVertexInputBindingDescription{
+          .binding = static_cast<uint32_t>(binding),
+          .stride = offset,
+          .inputRate = type,
+      };
     }
 
     _vertexInputInfo = std::make_unique<VkPipelineVertexInputStateCreateInfo>(
-        VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO, nullptr, 0, _bindingDescription.size(),
-        _bindingDescription.data(), static_cast<uint32_t>(_vertexInputAttributes.size()),
-        _vertexInputAttributes.data());
+        VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO, nullptr, 0,
+        static_cast<uint32_t>(_bindingDescription.size()), _bindingDescription.data(),
+        static_cast<uint32_t>(_vertexInputAttributes.size()), _vertexInputAttributes.data());
   }
+
   return _vertexInputInfo.get();
 }
 
 Shader::~Shader() {
-  for (auto&& [type, shader] : _shaders) vkDestroyShaderModule(_device->getLogicalDevice(), shader.module, nullptr);
-  for (auto& module : _modules) spvReflectDestroyShaderModule(&module);
+  for (auto&& [type, shader] : _shaders) {
+    vkDestroyShaderModule(_device->getLogicalDevice(), shader.module, nullptr);
+  }
+
+  for (auto& module : _modules) {
+    spvReflectDestroyShaderModule(&module);
+  }
 }
