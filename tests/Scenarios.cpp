@@ -85,6 +85,9 @@ TEST(ScenarioTest, GraphOneQueue) {
   auto elementMock = std::make_shared<GraphElementMock>();
   renderPass.registerGraphElement(elementMock);
 
+  EXPECT_THROW(graph.createPassGraphic("Render"), std::logic_error);
+  EXPECT_THROW(graph.createPassCompute("Render", false), std::logic_error);
+
   EXPECT_EQ(renderPass.getCommandBuffers().size(), framesInFlight);
   for (int i = 1; i < framesInFlight; i++) {
     EXPECT_NE(renderPass.getCommandBuffers()[i], renderPass.getCommandBuffers()[i - 1]);
@@ -128,6 +131,20 @@ TEST(ScenarioTest, GraphOneQueue) {
   EXPECT_EQ(guiPass.getPipelineGraphic(graph.getGraphStorage()).getColorAttachments().size(), 1);
 
   graph.calculate();
+
+  RenderGraph::Graph offscreenGraph(1, framesInFlight, swapchain, window, device);
+  offscreenGraph.initialize();
+  offscreenGraph.getGraphStorage().add(
+      "Offscreen", std::make_unique<RenderGraph::ImageViewHolder>(positionImageViews, []() { return 0; }));
+  auto& offscreenPass = offscreenGraph.createPassGraphic("Offscreen");
+  offscreenPass.addColorTarget("Offscreen");
+  offscreenPass.clearTarget("Offscreen");
+  offscreenGraph.calculate();
+
+  ASSERT_TRUE(offscreenGraph._sync.contains(&offscreenPass));
+  const auto offscreenWaitSemaphores = offscreenGraph._sync.at(&offscreenPass).getWaitSemaphores();
+  ASSERT_EQ(offscreenWaitSemaphores.size(), 1);
+  EXPECT_EQ(offscreenWaitSemaphores.front(), offscreenGraph._semaphoreImageAvailable.front().get());
 
   // Render waits for the swapchain image-available semaphore.
   ASSERT_TRUE(graph._sync.contains(&renderPass));
@@ -495,8 +512,12 @@ TEST(ScenarioTest, BufferOwnershipTransferUsesLastResourceOwner) {
     EXPECT_TRUE(graph._sync.at(&lastPass).getBarriersBefore().empty());
   }
 
-  EXPECT_EQ(graph._sync.at(&middlePass).getSignalSemaphores().size(), 1);
-  EXPECT_EQ(graph._sync.at(&lastPass).getWaitSemaphores().size(), 1);
+  const auto middleSignalSemaphores = graph._sync.at(&middlePass).getSignalSemaphores();
+  const auto lastWaitSemaphores = graph._sync.at(&lastPass).getWaitSemaphores();
+  ASSERT_EQ(middleSignalSemaphores.size(), 1);
+  ASSERT_EQ(lastWaitSemaphores.size(), 2);
+  EXPECT_TRUE(std::ranges::contains(lastWaitSemaphores, middleSignalSemaphores.front()));
+  EXPECT_TRUE(std::ranges::contains(lastWaitSemaphores, graph._semaphoreImageAvailable.front().get()));
 }
 
 TEST(ScenarioTest, GraphReset) {
