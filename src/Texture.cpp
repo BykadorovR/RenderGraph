@@ -220,6 +220,8 @@ int Image::getLayerNumber() const noexcept { return _layerNumber; }
 void Image::destroy() {
   if (_imageMemory) {
     vmaDestroyImage(_memoryAllocator->getAllocator(), _image, _imageMemory);
+    _image = {};
+    _imageMemory = nullptr;
   }
 }
 
@@ -266,7 +268,12 @@ int ImageView::getBaseMipMap() const noexcept { return _baseMipMap; }
 
 int ImageView::getBaseArrayLayer() const noexcept { return _baseArrayLayer; }
 
-void ImageView::destroy() { vkDestroyImageView(_device->getLogicalDevice(), _imageView, nullptr); }
+void ImageView::destroy() {
+  if (_imageView) {
+    vkDestroyImageView(_device->getLogicalDevice(), _imageView, nullptr);
+    _imageView = {};
+  }
+}
 
 ImageView::~ImageView() { destroy(); }
 

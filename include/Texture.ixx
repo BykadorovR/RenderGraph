@@ -43,7 +43,7 @@ class ImageCPU final {
 class Image final {
  private:
   const MemoryAllocator* _memoryAllocator;
-  VkImage _image;
+  VkImage _image{};
   VmaAllocation _imageMemory = nullptr;
   std::unique_ptr<Buffer> _stagingBuffer;
   // image mandatory options
@@ -106,7 +106,7 @@ class ImageView final {
  private:
   const Device* _device;
   std::unique_ptr<Image> _image;
-  VkImageView _imageView;
+  VkImageView _imageView{};
   VkImageViewType _type;
   int _baseMipMap, _baseArrayLayer;
 
