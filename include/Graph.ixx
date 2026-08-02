@@ -19,6 +19,9 @@ import <unordered_set>;
 // Forward declarations for test classes, not visible outside this module
 class ScenarioTest_GraphSeparateQueues_Test;
 class ScenarioTest_BufferOwnershipTransferUsesLastResourceOwner_Test;
+class ScenarioTest_GraphOneQueue_Test;
+class ScenarioTest_TraversalKeepsTransitiveProducerBeforeConsumer_Test;
+class ScenarioTest_TraversalDiamondGraph_Test;
 
 export namespace RenderGraph {
 class GraphStorage final {
@@ -63,8 +66,6 @@ class GraphPass {
   const GraphStorage* _graphStorage;
   std::unique_ptr<CommandPool> _commandPool;
   std::vector<std::unique_ptr<CommandBuffer>> _commandBuffers;
-  std::vector<std::pair<std::vector<std::shared_ptr<Semaphore>>, std::function<int()>>> _signalSemaphores,
-      _waitSemaphores;
   std::vector<std::shared_ptr<GraphElement>> _graphElements;
 
  public:
@@ -75,14 +76,8 @@ class GraphPass {
   GraphPass& operator=(GraphPass&&) = delete;
 
   void registerGraphElement(std::shared_ptr<GraphElement> graphElement) noexcept;
-  // not const because will do std::move
-  void addSignalSemaphore(std::vector<std::shared_ptr<Semaphore>>& signalSemaphore,
-                          std::function<int()> index) noexcept;
-  void addWaitSemaphore(std::vector<std::shared_ptr<Semaphore>>& waitSemaphore, std::function<int()> index) noexcept;
   // NVRO
   GraphPassType getGraphPassType() const noexcept;
-  std::vector<Semaphore*> getSignalSemaphores() const noexcept;
-  std::vector<Semaphore*> getWaitSemaphores() const noexcept;
   std::vector<CommandBuffer*> getCommandBuffers() const noexcept;
   std::string getName() const noexcept;
   virtual void execute(int currentFrame, const CommandBuffer& commandBuffer) = 0;
@@ -162,6 +157,9 @@ class Graph final {
  private:
   friend class ::ScenarioTest_GraphSeparateQueues_Test;
   friend class ::ScenarioTest_BufferOwnershipTransferUsesLastResourceOwner_Test;
+  friend class ::ScenarioTest_GraphOneQueue_Test;
+  friend class ::ScenarioTest_TraversalKeepsTransitiveProducerBeforeConsumer_Test;
+  friend class ::ScenarioTest_TraversalDiamondGraph_Test;
 
   Swapchain* _swapchain;
   const Device* _device;
@@ -178,18 +176,55 @@ class Graph final {
   int _maxFramesInFlight;
   int _frameInFlight = 0;
 
-  struct Cache {
-    bool queueTypeChange = false;
-    GraphPass* previousPass = nullptr;
+  // resources per pass
+  struct Resource {
+    std::string name;
+    enum class Type { IMAGE, BUFFER } type;
+    enum class Operation : uint8_t {
+      READ = 1 << 0,
+      WRITE = 1 << 1,
+    };
+    uint8_t operation = 0;
   };
 
-  std::unordered_map<GraphPass*, Cache> _cache;
+  class Resources {
+   private:
+    std::vector<Resource> _resources;
 
-  // needed for ownership transfer (between different queues) barriers
-  std::unordered_map<GraphPass*, std::unordered_set<std::string>> _acquireOwnershipImages, _releaseOwnershipImages,
-      _acquireOwnershipBuffers, _releaseOwnershipBuffers;
-  void _recordAcquireOwnershipBarriers(GraphPass* pass, const CommandBuffer& commandBuffer);
-  void _recordReleaseOwnershipBarriers(GraphPass* pass, const CommandBuffer& commandBuffer);
+   public:
+    void add(Resource resource);
+    bool contains(std::string_view name, Resource::Type type, Resource::Operation operation) const;
+    const std::vector<Resource>& getResources() const noexcept;
+    std::vector<Resource> getResources(Resource::Operation operation) const;
+    std::vector<std::string> getNames(Resource::Type type) const;
+  };
+
+  std::unordered_map<GraphPass*, Resources> _resources;
+
+  // syncrhonization per pass
+  class Sync {
+   private:
+    // same semaphore is wait and signal, so can't be unique
+    std::vector<std::pair<std::vector<std::shared_ptr<Semaphore>>, std::function<int()>>> _waitSemaphores,
+        _signalSemaphores;
+    std::vector<std::pair<std::vector<Barrier>, std::function<int()>>> _barriersBefore, _barriersAfter;
+
+   public:
+    Sync() = default;
+    void addSignalSemaphore(std::vector<std::shared_ptr<Semaphore>>& signalSemaphore,
+                            std::function<int()> index) noexcept;
+    void addWaitSemaphore(std::vector<std::shared_ptr<Semaphore>>& waitSemaphore, std::function<int()> index) noexcept;
+    void addBarrierBefore(std::vector<Barrier>& barriers, std::function<int()> index) noexcept;
+    void addBarrierAfter(std::vector<Barrier>& barriers, std::function<int()> index) noexcept;
+
+    std::vector<Semaphore*> getWaitSemaphores() const noexcept;
+    std::vector<Semaphore*> getSignalSemaphores() const noexcept;
+    std::vector<const Barrier*> getBarriersBefore() const noexcept;
+    std::vector<const Barrier*> getBarriersAfter() const noexcept;
+  };
+  std::unordered_map<GraphPass*, Sync> _sync;
+
+  bool _usesSeparateQueue(GraphPass* pass);
 
  public:
   Graph(int threadsNumber,

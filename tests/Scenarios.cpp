@@ -3,6 +3,7 @@ import Instance;
 import Window;
 import Surface;
 import Allocator;
+import Buffer;
 import Swapchain;
 import Device;
 import Graph;
@@ -128,13 +129,18 @@ TEST(ScenarioTest, GraphOneQueue) {
 
   graph.calculate();
 
-  // wait swapchain semaphore
-  EXPECT_EQ(renderPass.getWaitSemaphores().size(), 1);
-  EXPECT_EQ(renderPass.getSignalSemaphores().size(), 0);
-  EXPECT_EQ(postprocessingPass.getWaitSemaphores().size(), 0);
-  EXPECT_EQ(postprocessingPass.getSignalSemaphores().size(), 0);
-  EXPECT_EQ(guiPass.getWaitSemaphores().size(), 0);
-  EXPECT_EQ(guiPass.getSignalSemaphores().size(), 1);
+  // Render waits for the swapchain image-available semaphore.
+  ASSERT_TRUE(graph._sync.contains(&renderPass));
+  EXPECT_EQ(graph._sync.at(&renderPass).getWaitSemaphores().size(), 1);
+  EXPECT_EQ(graph._sync.at(&renderPass).getSignalSemaphores().size(), 0);
+  // Postprocessing does not use any semaphores.
+  ASSERT_TRUE(graph._sync.contains(&postprocessingPass));
+  EXPECT_EQ(graph._sync.at(&postprocessingPass).getWaitSemaphores().size(), 0);
+  EXPECT_EQ(graph._sync.at(&postprocessingPass).getSignalSemaphores().size(), 0);
+  // GUI signals the render-finished semaphore.
+  ASSERT_TRUE(graph._sync.contains(&guiPass));
+  EXPECT_EQ(graph._sync.at(&guiPass).getWaitSemaphores().size(), 0);
+  EXPECT_EQ(graph._sync.at(&guiPass).getSignalSemaphores().size(), 1);
   commandBuffer[graph.getFrameInFlight()].endCommands();
 
   auto loadSemaphore = RenderGraph::Semaphore(VK_SEMAPHORE_TYPE_TIMELINE, device);
@@ -144,9 +150,9 @@ TEST(ScenarioTest, GraphOneQueue) {
       .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
       .commandBuffer = commandBuffer[graph.getFrameInFlight()].getCommandBuffer()};
   VkSemaphoreSubmitInfo signalSemaphoreInfo{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
-                                             .semaphore = semaphore,
-                                             .value = loadCounter,
-                                             .stageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT};
+                                            .semaphore = semaphore,
+                                            .value = loadCounter,
+                                            .stageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT};
   VkSubmitInfo2 submitInfo{.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
                            .commandBufferInfoCount = 1,
                            .pCommandBufferInfos = &commandBufferInfo,
@@ -296,18 +302,27 @@ TEST(ScenarioTest, GraphSeparateQueues) {
   EXPECT_EQ(guiPass.getPipelineGraphic(graph.getGraphStorage()).getColorAttachments().size(), 1);
 
   graph.calculate();
-  // check ownership transfer
-  EXPECT_TRUE(graph._releaseOwnershipImages.at(&renderPass).contains("Swapchain"));
-  EXPECT_TRUE(graph._acquireOwnershipImages.at(&postprocessingPass).contains("Swapchain"));
-  EXPECT_TRUE(graph._releaseOwnershipImages.at(&postprocessingPass).contains("Swapchain"));
-  EXPECT_TRUE(graph._acquireOwnershipImages.at(&guiPass).contains("Swapchain"));
-  // wait swapchain semaphore
-  EXPECT_EQ(renderPass.getWaitSemaphores().size(), 1);
-  EXPECT_EQ(renderPass.getSignalSemaphores().size(), 1);
-  EXPECT_EQ(postprocessingPass.getWaitSemaphores().size(), 1);
-  EXPECT_EQ(postprocessingPass.getSignalSemaphores().size(), 1);
-  EXPECT_EQ(guiPass.getWaitSemaphores().size(), 1);
-  EXPECT_EQ(guiPass.getSignalSemaphores().size(), 1);
+  const bool separateQueueFamilies = device.getQueueIndex(vkb::QueueType::graphics) !=
+                                     device.getQueueIndex(vkb::QueueType::compute);
+
+  // Ownership transfer: Render -> Postprocessing.
+  EXPECT_EQ(graph._sync.at(&renderPass).getBarriersAfter().size(), separateQueueFamilies ? 1 : 0);
+  EXPECT_EQ(graph._sync.at(&postprocessingPass).getBarriersBefore().size(), separateQueueFamilies ? 1 : 0);
+  // Ownership transfer: Postprocessing -> GUI.
+  EXPECT_EQ(graph._sync.at(&postprocessingPass).getBarriersAfter().size(), separateQueueFamilies ? 1 : 0);
+  EXPECT_EQ(graph._sync.at(&guiPass).getBarriersBefore().size(), separateQueueFamilies ? 1 : 0);
+  // Render waits for imageAvailable and signals the queue-transfer semaphore.
+  ASSERT_TRUE(graph._sync.contains(&renderPass));
+  EXPECT_EQ(graph._sync.at(&renderPass).getWaitSemaphores().size(), 1);
+  EXPECT_EQ(graph._sync.at(&renderPass).getSignalSemaphores().size(), 1);
+  // Postprocessing waits for Render and signals GUI.
+  ASSERT_TRUE(graph._sync.contains(&postprocessingPass));
+  EXPECT_EQ(graph._sync.at(&postprocessingPass).getWaitSemaphores().size(), 1);
+  EXPECT_EQ(graph._sync.at(&postprocessingPass).getSignalSemaphores().size(), 1);
+  // GUI waits for Postprocessing and signals renderFinished.
+  ASSERT_TRUE(graph._sync.contains(&guiPass));
+  EXPECT_EQ(graph._sync.at(&guiPass).getWaitSemaphores().size(), 1);
+  EXPECT_EQ(graph._sync.at(&guiPass).getSignalSemaphores().size(), 1);
   commandBuffer[graph.getFrameInFlight()].endCommands();
 
   auto loadSemaphore = RenderGraph::Semaphore(VK_SEMAPHORE_TYPE_TIMELINE, device);
@@ -317,9 +332,9 @@ TEST(ScenarioTest, GraphSeparateQueues) {
       .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
       .commandBuffer = commandBuffer[graph.getFrameInFlight()].getCommandBuffer()};
   VkSemaphoreSubmitInfo signalSemaphoreInfo{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
-                                             .semaphore = semaphore,
-                                             .value = loadCounter,
-                                             .stageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT};
+                                            .semaphore = semaphore,
+                                            .value = loadCounter,
+                                            .stageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT};
   VkSubmitInfo2 submitInfo{.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
                            .commandBufferInfoCount = 1,
                            .pCommandBufferInfos = &commandBufferInfo,
@@ -398,6 +413,22 @@ TEST(ScenarioTest, BufferOwnershipTransferUsesLastResourceOwner) {
   RenderGraph::Graph graph(4, framesInFlight, swapchain, window, device);
   graph.initialize();
 
+  auto addStorageBuffers = [&](std::string_view name) {
+    std::vector<std::unique_ptr<RenderGraph::Buffer>> buffers;
+    buffers.reserve(framesInFlight);
+
+    for (int frameIndex = 0; frameIndex < framesInFlight; ++frameIndex) {
+      buffers.push_back(std::make_unique<RenderGraph::Buffer>(
+          1024, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT, allocator));
+    }
+
+    graph.getGraphStorage().add(name, buffers);
+  };
+
+  addStorageBuffers("X");
+  addStorageBuffers("Y");
+  addStorageBuffers("Link");
+
   /*
    * X, Y, Link are resources we want to pass between First, Middle, Last passes.
    * Passes flow is: First -> Middle -> Last
@@ -425,28 +456,29 @@ TEST(ScenarioTest, BufferOwnershipTransferUsesLastResourceOwner) {
 
   graph.calculate();
 
-  ASSERT_EQ(graph._releaseOwnershipBuffers.size(), 2);
-  ASSERT_EQ(graph._acquireOwnershipBuffers.size(), 1);
+  const bool separateQueueFamilies = device.getQueueIndex(vkb::QueueType::graphics) !=
+                                     device.getQueueIndex(vkb::QueueType::compute);
 
-  // X must be released by its actual last owner, not by the adjacent pass.
-  ASSERT_TRUE(graph._releaseOwnershipBuffers.contains(&firstPass));
-  EXPECT_EQ(graph._releaseOwnershipBuffers.at(&firstPass).size(), 1);
-  EXPECT_TRUE(graph._releaseOwnershipBuffers.at(&firstPass).contains("X"));
+  ASSERT_TRUE(graph._sync.contains(&middlePass));
+  ASSERT_TRUE(graph._sync.contains(&lastPass));
 
-  ASSERT_TRUE(graph._releaseOwnershipBuffers.contains(&middlePass));
-  EXPECT_EQ(graph._releaseOwnershipBuffers.at(&middlePass).size(), 1);
-  EXPECT_TRUE(graph._releaseOwnershipBuffers.at(&middlePass).contains("Y"));
+  // Link stays on the graphics queue and requires one ordinary barrier before Middle.
+  EXPECT_EQ(graph._sync.at(&middlePass).getBarriersBefore().size(), 1);
 
-  ASSERT_TRUE(graph._acquireOwnershipBuffers.contains(&lastPass));
-  EXPECT_EQ(graph._acquireOwnershipBuffers.at(&lastPass).size(), 2);
-  EXPECT_TRUE(graph._acquireOwnershipBuffers.at(&lastPass).contains("X"));
-  EXPECT_TRUE(graph._acquireOwnershipBuffers.at(&lastPass).contains("Y"));
+  if (separateQueueFamilies) {
+    ASSERT_TRUE(graph._sync.contains(&firstPass));
+    // X is released by First, Y is released by Middle, and Last acquires both.
+    EXPECT_EQ(graph._sync.at(&firstPass).getBarriersAfter().size(), 1);
+    EXPECT_EQ(graph._sync.at(&middlePass).getBarriersAfter().size(), 1);
+    EXPECT_EQ(graph._sync.at(&lastPass).getBarriersBefore().size(), 2);
+  } else {
+    EXPECT_FALSE(graph._sync.contains(&firstPass));
+    EXPECT_TRUE(graph._sync.at(&middlePass).getBarriersAfter().empty());
+    EXPECT_TRUE(graph._sync.at(&lastPass).getBarriersBefore().empty());
+  }
 
-  // Link is used only on the graphics queue family.
-  EXPECT_FALSE(graph._releaseOwnershipBuffers.at(&firstPass).contains("Link"));
-
-  EXPECT_TRUE(graph._releaseOwnershipImages.empty());
-  EXPECT_TRUE(graph._acquireOwnershipImages.empty());
+  EXPECT_EQ(graph._sync.at(&middlePass).getSignalSemaphores().size(), 1);
+  EXPECT_EQ(graph._sync.at(&lastPass).getWaitSemaphores().size(), 1);
 }
 
 TEST(ScenarioTest, GraphReset) {
@@ -524,9 +556,9 @@ TEST(ScenarioTest, GraphReset) {
       .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
       .commandBuffer = commandBuffer[graph.getFrameInFlight()].getCommandBuffer()};
   VkSemaphoreSubmitInfo signalSemaphoreInfo{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
-                                             .semaphore = semaphore,
-                                             .value = loadCounter,
-                                             .stageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT};
+                                            .semaphore = semaphore,
+                                            .value = loadCounter,
+                                            .stageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT};
   VkSubmitInfo2 submitInfo{.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
                            .commandBufferInfoCount = 1,
                            .pCommandBufferInfos = &commandBufferInfo,
@@ -633,9 +665,8 @@ TEST(ScenarioTest, DepthExistance) {
   depthAttachment->createImage(VK_FORMAT_D32_SFLOAT, resolution, 1, 1, VK_IMAGE_ASPECT_DEPTH_BIT,
                                VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT);
   // set layout to depth image
-  depthAttachment->changeLayout(depthAttachment->getImageLayout(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-                                0, VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-                                commandBuffer[graph.getFrameInFlight()]);
+  depthAttachment->changeLayout(depthAttachment->getImageLayout(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 0,
+                                VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, commandBuffer[graph.getFrameInFlight()]);
 
   auto depthAttachmentImageView = std::make_shared<RenderGraph::ImageView>(std::move(depthAttachment), device);
   depthAttachmentImageView->createImageView(VK_IMAGE_VIEW_TYPE_2D, 0, 0);
@@ -661,9 +692,9 @@ TEST(ScenarioTest, DepthExistance) {
       .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
       .commandBuffer = commandBuffer[graph.getFrameInFlight()].getCommandBuffer()};
   VkSemaphoreSubmitInfo signalSemaphoreInfo{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
-                                             .semaphore = semaphore,
-                                             .value = loadCounter,
-                                             .stageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT};
+                                            .semaphore = semaphore,
+                                            .value = loadCounter,
+                                            .stageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT};
   VkSubmitInfo2 submitInfo{.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
                            .commandBufferInfoCount = 1,
                            .pCommandBufferInfos = &commandBufferInfo,
@@ -685,4 +716,199 @@ TEST(ScenarioTest, DepthExistance) {
 
   // wait device idle before destroying resources
   vkDeviceWaitIdle(device.getLogicalDevice());
+}
+
+TEST(ScenarioTest, TraversalKeepsTransitiveProducerBeforeConsumer) {
+  glm::ivec2 resolution(1920, 1080);
+
+  RenderGraph::Instance instance("TestApp", false);
+
+  RenderGraph::Window window(resolution);
+  window.initialize();
+
+  RenderGraph::Surface surface(window, instance);
+
+  RenderGraph::Device device(surface, instance);
+  device.initialize();
+
+  RenderGraph::MemoryAllocator allocator(device, instance);
+
+  RenderGraph::Swapchain swapchain(resolution, allocator, device);
+  swapchain.initialize();
+
+  constexpr int framesInFlight = 2;
+
+  RenderGraph::Graph graph(4, framesInFlight, swapchain, window, device);
+
+  graph.initialize();
+
+  auto addStorageBuffers = [&](std::string_view name) {
+    std::vector<std::unique_ptr<RenderGraph::Buffer>> buffers;
+    buffers.reserve(framesInFlight);
+
+    for (int frameIndex = 0; frameIndex < framesInFlight; ++frameIndex) {
+      buffers.push_back(std::make_unique<RenderGraph::Buffer>(
+          1024, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT, allocator));
+    }
+
+    graph.getGraphStorage().add(name, buffers);
+  };
+
+  addStorageBuffers("X");
+  addStorageBuffers("Y");
+
+  // First produces X.
+  auto& firstPass = graph.createPassCompute("First", false);
+
+  firstPass.addStorageBufferOutput("X");
+
+  // Middle depends on First through X and produces Y.
+  auto& middlePass = graph.createPassCompute("Middle", false);
+
+  middlePass.addStorageBufferInput("X");
+  middlePass.addStorageBufferOutput("Y");
+
+  // Last depends directly on First through X
+  // and transitively on First through Middle -> Y.
+  auto& lastPass = graph.createPassCompute("Last", false);
+
+  /*
+   * This input order exposes the current traversal bug:
+   *
+   * passNext becomes [First, Middle].
+   * First is traversed and removed from passesBackup.
+   * Middle is then unable to find First as its producer.
+   * push_front() produces Middle, First, Last.
+   */
+  lastPass.addStorageBufferInput("X");
+  lastPass.addStorageBufferInput("Y");
+
+  graph.calculate();
+
+  ASSERT_EQ(graph._passesOrdered.size(), 3);
+
+  auto orderedPass = graph._passesOrdered.begin();
+
+  EXPECT_EQ(*orderedPass, &firstPass);
+  ++orderedPass;
+
+  EXPECT_EQ(*orderedPass, &middlePass);
+  ++orderedPass;
+
+  EXPECT_EQ(*orderedPass, &lastPass);
+}
+
+TEST(ScenarioTest, TraversalDiamondGraph) {
+  /*
+   *                         Source
+   *                         writes X
+   *                         /      \
+   *                       X          X
+   *                      /            \
+   *                     v              v
+   *                   Left           Right
+   *                reads X         reads X
+   *                writes Y        writes Z
+   *                     \              /
+   *                      Y            Z
+   *                       \          /
+   *                        v        v
+   *                          Join
+   *                      reads Y and Z
+   *
+   * Required ordering:
+   *
+   *   Source < Left  < Join
+   *   Source < Right < Join
+   *
+   * The relative order of Left and Right does not matter.
+   */
+
+  glm::ivec2 resolution(1920, 1080);
+
+  RenderGraph::Instance instance("TestApp", false);
+
+  RenderGraph::Window window(resolution);
+  window.initialize();
+
+  RenderGraph::Surface surface(window, instance);
+
+  RenderGraph::Device device(surface, instance);
+  device.initialize();
+
+  RenderGraph::MemoryAllocator allocator(device, instance);
+
+  RenderGraph::Swapchain swapchain(resolution, allocator, device);
+  swapchain.initialize();
+
+  constexpr int framesInFlight = 2;
+
+  RenderGraph::Graph graph(4, framesInFlight, swapchain, window, device);
+
+  graph.initialize();
+
+  auto addStorageBuffers = [&](std::string_view name) {
+    std::vector<std::unique_ptr<RenderGraph::Buffer>> buffers;
+    buffers.reserve(framesInFlight);
+
+    for (int frameIndex = 0; frameIndex < framesInFlight; ++frameIndex) {
+      buffers.push_back(std::make_unique<RenderGraph::Buffer>(
+          1024, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT, allocator));
+    }
+
+    graph.getGraphStorage().add(name, buffers);
+  };
+
+  addStorageBuffers("X");
+  addStorageBuffers("Y");
+  addStorageBuffers("Z");
+
+  auto& sourcePass = graph.createPassCompute("Source", false);
+
+  sourcePass.addStorageBufferOutput("X");
+
+  auto& leftPass = graph.createPassCompute("Left", false);
+
+  leftPass.addStorageBufferInput("X");
+  leftPass.addStorageBufferOutput("Y");
+
+  auto& rightPass = graph.createPassCompute("Right", false);
+
+  rightPass.addStorageBufferInput("X");
+  rightPass.addStorageBufferOutput("Z");
+
+  auto& joinPass = graph.createPassCompute("Join", false);
+
+  joinPass.addStorageBufferInput("Y");
+  joinPass.addStorageBufferInput("Z");
+
+  graph.calculate();
+
+  ASSERT_EQ(graph._passesOrdered.size(), 4);
+
+  const auto sourceIt = std::ranges::find(graph._passesOrdered, &sourcePass);
+
+  const auto leftIt = std::ranges::find(graph._passesOrdered, &leftPass);
+
+  const auto rightIt = std::ranges::find(graph._passesOrdered, &rightPass);
+
+  const auto joinIt = std::ranges::find(graph._passesOrdered, &joinPass);
+
+  ASSERT_NE(sourceIt, graph._passesOrdered.end());
+  ASSERT_NE(leftIt, graph._passesOrdered.end());
+  ASSERT_NE(rightIt, graph._passesOrdered.end());
+  ASSERT_NE(joinIt, graph._passesOrdered.end());
+
+  const auto sourceIndex = std::distance(graph._passesOrdered.begin(), sourceIt);
+
+  const auto leftIndex = std::distance(graph._passesOrdered.begin(), leftIt);
+
+  const auto rightIndex = std::distance(graph._passesOrdered.begin(), rightIt);
+
+  const auto joinIndex = std::distance(graph._passesOrdered.begin(), joinIt);
+
+  EXPECT_LT(sourceIndex, leftIndex);
+  EXPECT_LT(sourceIndex, rightIndex);
+  EXPECT_LT(leftIndex, joinIndex);
+  EXPECT_LT(rightIndex, joinIndex);
 }
