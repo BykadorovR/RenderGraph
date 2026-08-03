@@ -1010,7 +1010,8 @@ bool Graph::render() {
             auto& image = imageView.getImage();
             if (image.getImageLayout() != VK_IMAGE_LAYOUT_GENERAL) {
               const auto dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT;
-              image.changeLayout(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, 0, dstAccessMask, *commandBuffer);
+              image.changeLayout(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, 0, 0,
+                                 VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, dstAccessMask, *commandBuffer);
             }
           }
           if (const auto& depthTarget = passGraphic->getDepthTarget()) {
@@ -1019,7 +1020,10 @@ bool Graph::render() {
             if (image.getImageLayout() != VK_IMAGE_LAYOUT_GENERAL) {
               const auto dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
                                          VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
-              image.changeLayout(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, 0, dstAccessMask, *commandBuffer);
+              image.changeLayout(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, 0, 0,
+                                 VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+                                     VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                                 dstAccessMask, *commandBuffer);
             }
           }
         }
@@ -1139,7 +1143,8 @@ bool Graph::render() {
   if (_swapchain->getImage(swapchainIndex).getImageLayout() != VK_IMAGE_LAYOUT_PRESENT_SRC_KHR) {
     _swapchain->getImage(swapchainIndex)
         .changeLayout(_swapchain->getImage(swapchainIndex).getImageLayout(), VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-                      VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, 0, *commandBufferSubmit.back());
+                      VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, 0, 0,
+                      *commandBufferSubmit.back());
   }
 
   std::vector<uint64_t> signalValues(signalSemaphores.size() + 1, 0);

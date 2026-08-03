@@ -65,6 +65,7 @@ TEST(ScenarioTest, GraphOneQueue) {
     positionImage->createImage(VK_FORMAT_R16G16B16A16_SFLOAT, resolution, 1, 1, VK_IMAGE_ASPECT_COLOR_BIT,
                                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
     positionImage->changeLayout(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, 0, 0,
+                                VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
                                 commandBuffer[graph.getFrameInFlight()]);
     auto positionImageView = std::make_shared<RenderGraph::ImageView>(std::move(positionImage), device);
     positionImageView->createImageView(VK_IMAGE_VIEW_TYPE_2D, 0, 0);
@@ -272,6 +273,7 @@ TEST(ScenarioTest, GraphSeparateQueues) {
     positionImage->createImage(VK_FORMAT_R16G16B16A16_SFLOAT, resolution, 1, 1, VK_IMAGE_ASPECT_COLOR_BIT,
                                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
     positionImage->changeLayout(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, 0, 0,
+                                VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
                                 commandBuffer[graph.getFrameInFlight()]);
     auto positionImageView = std::make_shared<RenderGraph::ImageView>(std::move(positionImage), device);
     positionImageView->createImageView(VK_IMAGE_VIEW_TYPE_2D, 0, 0);
@@ -557,6 +559,7 @@ TEST(ScenarioTest, GraphReset) {
     positionImage->createImage(VK_FORMAT_R16G16B16A16_SFLOAT, resolution, 1, 1, VK_IMAGE_ASPECT_COLOR_BIT,
                                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
     positionImage->changeLayout(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, 0, 0,
+                                VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
                                 commandBuffer[graph.getFrameInFlight()]);
     auto positionImageView = std::make_shared<RenderGraph::ImageView>(std::move(positionImage), device);
     positionImageView->createImageView(VK_IMAGE_VIEW_TYPE_2D, 0, 0);
@@ -707,8 +710,10 @@ TEST(ScenarioTest, DepthExistance) {
   depthAttachment->createImage(VK_FORMAT_D32_SFLOAT, resolution, 1, 1, VK_IMAGE_ASPECT_DEPTH_BIT,
                                VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT);
   // set layout to depth image
-  depthAttachment->changeLayout(depthAttachment->getImageLayout(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 0,
-                                VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, commandBuffer[graph.getFrameInFlight()]);
+  depthAttachment->changeLayout(
+      depthAttachment->getImageLayout(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 0, 0,
+      VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+      VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, commandBuffer[graph.getFrameInFlight()]);
 
   auto depthAttachmentImageView = std::make_shared<RenderGraph::ImageView>(std::move(depthAttachment), device);
   depthAttachmentImageView->createImageView(VK_IMAGE_VIEW_TYPE_2D, 0, 0);

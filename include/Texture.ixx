@@ -83,7 +83,9 @@ class Image final {
                 const CommandBuffer& commandBuffer);
   void changeLayout(VkImageLayout oldLayout,
                     VkImageLayout newLayout,
+                    VkPipelineStageFlags2 srcStageMask,
                     VkAccessFlags2 srcAccessMask,
+                    VkPipelineStageFlags2 dstStageMask,
                     VkAccessFlags2 dstAccessMask,
                     const CommandBuffer& commandBuffer);
   void generateMipmaps(const CommandBuffer& commandBuffer);
