@@ -88,14 +88,25 @@ void Image::copyFrom(std::unique_ptr<Buffer> buffer,
   vkCmdCopyBufferToImage(commandBuffer.getCommandBuffer(), _stagingBuffer->getBuffer(), _image, VK_IMAGE_LAYOUT_GENERAL,
                          bufferCopyRegions.size(), bufferCopyRegions.data());
   // need to insert memory barrier so read in fragment shader waits for copy
-  VkMemoryBarrier2 memoryBarrier = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
-                                    .srcStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT,
-                                    .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-                                    .dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                                    .dstAccessMask = VK_ACCESS_SHADER_READ_BIT};
+  VkImageMemoryBarrier2 imageBarrier = {
+      .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+      .srcStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT,
+      .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+      .dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+      .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+      .oldLayout = VK_IMAGE_LAYOUT_GENERAL,
+      .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+      .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .image = _image,
+      .subresourceRange = {.aspectMask = _aspectMask,
+                           .baseMipLevel = 0,
+                           .levelCount = 1,
+                           .baseArrayLayer = 0,
+                           .layerCount = static_cast<uint32_t>(_layerNumber)}};
   VkDependencyInfo dependencyInfo{.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-                                  .memoryBarrierCount = 1,
-                                  .pMemoryBarriers = &memoryBarrier};
+                                  .imageMemoryBarrierCount = 1,
+                                  .pImageMemoryBarriers = &imageBarrier};
   vkCmdPipelineBarrier2(commandBuffer.getCommandBuffer(), &dependencyInfo);
 }
 
