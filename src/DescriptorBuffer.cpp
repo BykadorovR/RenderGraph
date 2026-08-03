@@ -182,7 +182,8 @@ void DescriptorBuffer::initialize(const CommandBuffer& commandBuffer) {
             dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
                             VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
           }
-          image.changeLayout(image.getImageLayout(), VK_IMAGE_LAYOUT_GENERAL, 0, dstAccessMask, commandBuffer);
+          image.changeLayout(image.getImageLayout(), VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0,
+                             VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, dstAccessMask, commandBuffer);
         }
         // generate mip maps if needed
         if (image.getMipMapGenerated() == false && image.getMipMapNumber() > 1) image.generateMipmaps(commandBuffer);
@@ -375,7 +376,8 @@ void DescriptorSet::initialize(const CommandBuffer& commandBuffer) {
             dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
                             VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
           }
-          image.changeLayout(image.getImageLayout(), VK_IMAGE_LAYOUT_GENERAL, 0, dstAccessMask, commandBuffer);
+          image.changeLayout(image.getImageLayout(), VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0,
+                             VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, dstAccessMask, commandBuffer);
         }
         // generate mip maps if needed
         if (image.getMipMapGenerated() == false && image.getMipMapNumber() > 1) image.generateMipmaps(commandBuffer);

@@ -83,7 +83,8 @@ void Image::copyFrom(std::unique_ptr<Buffer> buffer,
     bufferCopyRegions.push_back(region);
   }
 
-  changeLayout(_imageLayout, VK_IMAGE_LAYOUT_GENERAL, 0, VK_ACCESS_TRANSFER_WRITE_BIT, commandBuffer);
+  changeLayout(_imageLayout, VK_IMAGE_LAYOUT_GENERAL, 0, 0, VK_PIPELINE_STAGE_TRANSFER_BIT,
+               VK_ACCESS_TRANSFER_WRITE_BIT, commandBuffer);
   vkCmdCopyBufferToImage(commandBuffer.getCommandBuffer(), _stagingBuffer->getBuffer(), _image, VK_IMAGE_LAYOUT_GENERAL,
                          bufferCopyRegions.size(), bufferCopyRegions.data());
   // need to insert memory barrier so read in fragment shader waits for copy
@@ -104,14 +105,16 @@ VkImageUsageFlags Image::getUsageFlags() const noexcept { return _usageFlags; }
 
 void Image::changeLayout(VkImageLayout oldLayout,
                          VkImageLayout newLayout,
+                         VkPipelineStageFlags2 srcStageMask,
                          VkAccessFlags2 srcAccessMask,
+                         VkPipelineStageFlags2 dstStageMask,
                          VkAccessFlags2 dstAccessMask,
                          const CommandBuffer& commandBuffer) {
   _imageLayout = newLayout;
   VkImageMemoryBarrier2 barrier{.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-                                .srcStageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                                .srcStageMask = srcStageMask,
                                 .srcAccessMask = srcAccessMask,
-                                .dstStageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                                .dstStageMask = dstStageMask,
                                 .dstAccessMask = dstAccessMask,
                                 .oldLayout = oldLayout,
                                 .newLayout = newLayout,
