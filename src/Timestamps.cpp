@@ -29,7 +29,7 @@ Timestamps::Timestamps(const Device& device, uint32_t maxFramesInFlight)
 
 void Timestamps::resetQueryPool() {
   // Reusing this frame slot already requires its previous GPU work to be complete.
-  // WAIT_BIT also covers timestamp availability, which can lag behind timeline semaphore completion.
+  // Timestamp results are optional diagnostics, so an unavailable sample must not block or abort rendering.
   std::scoped_lock lock(_mutexPush, _mutexRequest);
 
   FrameData& frame = _frames[_currentFrame];
@@ -38,17 +38,19 @@ void Timestamps::resetQueryPool() {
     const VkResult status = vkGetQueryPoolResults(
         _device->getLogicalDevice(), frame.queryPool, 0, static_cast<uint32_t>(frame.timestampIndex),
         buffer.size() * sizeof(uint64_t), buffer.data(), sizeof(uint64_t),
-        VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
-    if (status != VK_SUCCESS) {
+        VK_QUERY_RESULT_64_BIT);
+    if (status != VK_SUCCESS && status != VK_NOT_READY) {
       throw std::runtime_error("vkGetQueryPoolResults failed: " + std::to_string(status));
     }
 
-    _timestampResults.clear();
-    for (const auto& [name, range] : frame.timestampRanges) {
-      _timestampResults[name] = {
-          static_cast<double>(buffer[static_cast<std::size_t>(range.x)]) * _timestampPeriod,
-          static_cast<double>(buffer[static_cast<std::size_t>(range.y)]) * _timestampPeriod,
-      };
+    if (status == VK_SUCCESS) {
+      _timestampResults.clear();
+      for (const auto& [name, range] : frame.timestampRanges) {
+        _timestampResults[name] = {
+            static_cast<double>(buffer[static_cast<std::size_t>(range.x)]) * _timestampPeriod,
+            static_cast<double>(buffer[static_cast<std::size_t>(range.y)]) * _timestampPeriod,
+        };
+      }
     }
   }
 
