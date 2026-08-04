@@ -22,7 +22,7 @@ export namespace RenderGraph {
 class DescriptorSetLayout final {
  private:
   const Device* _device;
-  VkDescriptorSetLayout _descriptorSetLayout;
+  VkDescriptorSetLayout _descriptorSetLayout{};
   std::vector<VkDescriptorSetLayoutBinding> _info;
 
  public:

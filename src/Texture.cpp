@@ -5,6 +5,7 @@ module Texture;
 import <volk.h>;
 import <algorithm>;
 import <ranges>;
+import <string>;
 using namespace RenderGraph;
 
 Image::Image(const MemoryAllocator& memoryAllocator) : _memoryAllocator(&memoryAllocator) {}
@@ -42,7 +43,7 @@ void Image::createImage(VkFormat format,
 
   auto sts = vmaCreateImage(_memoryAllocator->getAllocator(), &imageInfo, &allocCreateInfo, &_image, &_imageMemory,
                             nullptr);
-  if (sts != VK_SUCCESS) throw std::invalid_argument("Can't create an image " + sts);
+  if (sts != VK_SUCCESS) throw std::invalid_argument("Can't create an image " + std::to_string(sts));
 }
 
 void Image::wrapImage(const VkImage& existingImage,

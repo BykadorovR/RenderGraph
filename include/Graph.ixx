@@ -19,6 +19,7 @@ import <unordered_set>;
 // Forward declarations for test classes, not visible outside this module
 class ScenarioTest_GraphSeparateQueues_Test;
 class ScenarioTest_BufferOwnershipTransferUsesLastResourceOwner_Test;
+class ScenarioTest_ComputePassIndirectBufferInput_Test;
 class ScenarioTest_GraphicsPassBufferInputs_Test;
 class ScenarioTest_GraphOneQueue_Test;
 class ScenarioTest_TraversalKeepsTransitiveProducerBeforeConsumer_Test;
@@ -133,7 +134,7 @@ class GraphPassGraphic final : public GraphPass {
 
 class GraphPassCompute final : public GraphPass {
  private:
-  std::vector<std::string> _storageBufferInputs, _storageBufferOutputs;
+  std::vector<std::string> _storageBufferInputs, _storageBufferOutputs, _indirectBufferInputs;
   std::vector<std::string> _storageTextureInputs, _storageTextureOutputs;
   bool _separate = false;
   const Device* _device;
@@ -152,6 +153,8 @@ class GraphPassCompute final : public GraphPass {
   // handle input to shaders
   void addStorageBufferInput(std::string_view name) noexcept;
   void addStorageTextureInput(std::string_view name) noexcept;
+  // handle input to indirect dispatch commands
+  void addIndirectBufferInput(std::string_view name) noexcept;
   // handle output from shaders
   void addStorageBufferOutput(std::string_view name) noexcept;
   void addStorageTextureOutput(std::string_view name) noexcept;
@@ -160,6 +163,7 @@ class GraphPassCompute final : public GraphPass {
   const std::vector<std::string>& getStorageBufferOutputs() const noexcept;
   const std::vector<std::string>& getStorageTextureInputs() const noexcept;
   const std::vector<std::string>& getStorageTextureOutputs() const noexcept;
+  const std::vector<std::string>& getIndirectBufferInputs() const noexcept;
   bool isSeparate() const noexcept;
   void execute(int currentFrame, const CommandBuffer& commandBuffer) override;
 };
@@ -168,6 +172,7 @@ class Graph final {
  private:
   friend class ::ScenarioTest_GraphSeparateQueues_Test;
   friend class ::ScenarioTest_BufferOwnershipTransferUsesLastResourceOwner_Test;
+  friend class ::ScenarioTest_ComputePassIndirectBufferInput_Test;
   friend class ::ScenarioTest_GraphicsPassBufferInputs_Test;
   friend class ::ScenarioTest_GraphOneQueue_Test;
   friend class ::ScenarioTest_TraversalKeepsTransitiveProducerBeforeConsumer_Test;

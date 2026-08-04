@@ -15,6 +15,7 @@ import Sync;
 import Texture;
 import <algorithm>;
 import <fstream>;
+import <type_traits>;
 
 TEST(InstanceTest, CreateWithoutValidation) {
   RenderGraph::Instance instance("TestApp", false);
@@ -251,6 +252,7 @@ TEST(DescriptorSetTest, Create) {
   RenderGraph::DescriptorPoolSize poolSize;
   RenderGraph::DescriptorPool descriptorPool(poolSize, device);
   RenderGraph::DescriptorSetLayout layout(device);
+  EXPECT_EQ(layout.getDescriptorSetLayout(), nullptr);
   std::vector<VkDescriptorSetLayoutBinding> layoutColor{{.binding = 0,
                                                          .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
                                                          .descriptorCount = 1,
@@ -646,6 +648,7 @@ TEST(SamplerTest, Create) {
   RenderGraph::Device device(surface, instance);
   device.initialize();
   RenderGraph::Sampler sampler(device);
+  EXPECT_EQ(sampler.getSampler(), nullptr);
   sampler.createSampler(VK_SAMPLER_ADDRESS_MODE_REPEAT, 1, 4, VK_FILTER_LINEAR);
   EXPECT_NE(sampler.getSampler(), nullptr);
 }
@@ -677,6 +680,8 @@ constexpr bool IsValidImageCPU = requires { typename RenderGraph::ImageCPU<T>; }
 TEST(ImageCPUTest, AcceptsArithmeticTypes) {
   EXPECT_TRUE(IsValidImageCPU<int>);
   EXPECT_TRUE(IsValidImageCPU<float>);
+  EXPECT_FALSE(std::is_copy_constructible_v<RenderGraph::ImageCPU<float>>);
+  EXPECT_FALSE(std::is_copy_assignable_v<RenderGraph::ImageCPU<float>>);
 }
 
 TEST(ImageCPUTest, RejectsNonArithmeticTypes) {
@@ -688,7 +693,10 @@ TEST(ImageCPUTest, WithoutDeleter) {
   std::vector<float> pixels(256 * 256, 0.5f);
   {
     RenderGraph::ImageCPU<float> imageCPU;
-    imageCPU.setData(pixels.data(), [](float* data) {});
+    EXPECT_EQ(imageCPU.getData(), nullptr);
+    EXPECT_EQ(imageCPU.getResolution(), glm::ivec2(0));
+    EXPECT_EQ(imageCPU.getChannels(), 0);
+    imageCPU.setData(pixels.data(), {});
     auto data = imageCPU.getData();
     for (int i = 0; i < 256 * 256; i++) {
       EXPECT_EQ(data[i], 0.5f);
@@ -701,16 +709,19 @@ TEST(ImageCPUTest, WithoutDeleter) {
 
 TEST(ImageCPUTest, WithDeleter) {
   std::vector<float> pixels(256 * 256, 0.5f);
-  bool deleterCalled = false;
+  std::vector<float> replacementPixels(256 * 256, 0.25f);
+  int deleterCallCount = 0;
   {
     RenderGraph::ImageCPU<float> imageCPU;
-    imageCPU.setData(pixels.data(), [&deleterCalled](float* data) { deleterCalled = true; });
+    imageCPU.setData(pixels.data(), [&deleterCallCount](float* data) { ++deleterCallCount; });
+    imageCPU.setData(replacementPixels.data(), [&deleterCallCount](float* data) { ++deleterCallCount; });
+    EXPECT_EQ(deleterCallCount, 1);
     auto data = imageCPU.getData();
     for (int i = 0; i < 256 * 256; i++) {
-      EXPECT_EQ(data[i], 0.5f);
+      EXPECT_EQ(data[i], 0.25f);
     }
   }
-  EXPECT_TRUE(deleterCalled);
+  EXPECT_EQ(deleterCallCount, 2);
 }
 
 TEST(ShaderTest, Reflection) {

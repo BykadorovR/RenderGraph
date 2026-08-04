@@ -636,6 +636,58 @@ TEST(ScenarioTest, GraphicsPassBufferInputs) {
   EXPECT_TRUE(foundIndexBarrier);
 }
 
+TEST(ScenarioTest, ComputePassIndirectBufferInput) {
+  const glm::ivec2 resolution(1920, 1080);
+  RenderGraph::Instance instance("TestApp", false);
+  RenderGraph::Window window(resolution);
+  window.initialize();
+  RenderGraph::Surface surface(window, instance);
+  RenderGraph::Device device(surface, instance);
+  device.initialize();
+  RenderGraph::MemoryAllocator allocator(device, instance);
+  RenderGraph::Swapchain swapchain(resolution, allocator, device);
+  swapchain.initialize();
+
+  constexpr int framesInFlight = 2;
+  RenderGraph::Graph graph(2, framesInFlight, swapchain, window, device);
+  graph.initialize();
+
+  std::vector<std::unique_ptr<RenderGraph::Buffer>> indirectBuffers;
+  indirectBuffers.reserve(framesInFlight);
+  for (int frameIndex = 0; frameIndex < framesInFlight; ++frameIndex) {
+    indirectBuffers.push_back(std::make_unique<RenderGraph::Buffer>(
+        sizeof(VkDispatchIndirectCommand), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+        VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT, allocator));
+  }
+  graph.getGraphStorage().add("DispatchCommands", indirectBuffers);
+
+  auto& generatePass = graph.createPassCompute("GenerateDispatch", false);
+  generatePass.addStorageBufferOutput("DispatchCommands");
+
+  auto& dispatchPass = graph.createPassCompute("DispatchIndirect", false);
+  dispatchPass.addIndirectBufferInput("DispatchCommands");
+
+  graph.calculate();
+
+  ASSERT_EQ(dispatchPass.getIndirectBufferInputs().size(), 1);
+  EXPECT_EQ(dispatchPass.getIndirectBufferInputs().front(), "DispatchCommands");
+
+  ASSERT_EQ(graph._passesOrdered.size(), 2);
+  EXPECT_EQ(graph._passesOrdered.front(), &generatePass);
+  EXPECT_EQ(graph._passesOrdered.back(), &dispatchPass);
+
+  ASSERT_TRUE(graph._sync.contains(&dispatchPass));
+  const auto barriers = graph._sync.at(&dispatchPass).getBarriersBefore();
+  ASSERT_EQ(barriers.size(), 1);
+  ASSERT_EQ(barriers.front()->getBufferBarriers().size(), 1);
+
+  const auto& bufferBarrier = barriers.front()->getBufferBarriers().front();
+  EXPECT_EQ(bufferBarrier.srcStageMask, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+  EXPECT_EQ(bufferBarrier.srcAccessMask, VK_ACCESS_SHADER_WRITE_BIT);
+  EXPECT_EQ(bufferBarrier.dstStageMask, VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT);
+  EXPECT_EQ(bufferBarrier.dstAccessMask, VK_ACCESS_INDIRECT_COMMAND_READ_BIT);
+}
+
 TEST(ScenarioTest, GraphReset) {
   glm::ivec2 resolution(1920, 1080);
   RenderGraph::Instance instance("TestApp", false);
