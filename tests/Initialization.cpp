@@ -13,6 +13,7 @@ import Pipeline;
 import Swapchain;
 import Sync;
 import Texture;
+import Timestamps;
 import <algorithm>;
 import <fstream>;
 import <type_traits>;
@@ -153,6 +154,28 @@ TEST(CommandTest, BeginEnd) {
   EXPECT_TRUE(commandBuffer.getActive());
   commandBuffer.endCommands();
   EXPECT_FALSE(commandBuffer.getActive());
+}
+
+TEST(TimestampsTest, NotReadyIsNonFatal) {
+  RenderGraph::Instance instance("TestApp", false);
+  RenderGraph::Window window({1920, 1080});
+  window.initialize();
+  RenderGraph::Surface surface(window, instance);
+  RenderGraph::Device device(surface, instance);
+  device.initialize();
+  RenderGraph::CommandPool commandPool(vkb::QueueType::graphics, device);
+  RenderGraph::CommandBuffer commandBuffer(commandPool, device);
+  RenderGraph::Timestamps timestamps(device, 1);
+
+  commandBuffer.beginCommands();
+  timestamps.pushTimestamp("Pending", commandBuffer);
+  timestamps.popTimestamp("Pending", commandBuffer);
+  commandBuffer.endCommands();
+
+  // The commands were deliberately not submitted, so the query remains unavailable.
+  timestamps.finishFrame();
+  EXPECT_NO_THROW(timestamps.resetQueryPool());
+  EXPECT_TRUE(timestamps.getTimestamps().empty());
 }
 
 TEST(BufferTest, SetDataCPU) {
