@@ -134,10 +134,42 @@ set_target_properties(${PROJECT_NAME} PROPERTIES CXX_SCAN_FOR_MODULES ON)
 
 if (RENDER_GRAPH_BUILD_TESTS)
   enable_testing()
+
+  find_program(glslangValidator
+    NAMES glslangValidator
+    HINTS "$ENV{VULKAN_SDK}/Bin" "$ENV{VULKAN_SDK}/bin"
+    REQUIRED
+  )
+
+  set(testShaderSourceDir "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders")
+  set(testShaderBinaryDir "${CMAKE_CURRENT_BINARY_DIR}/test_shaders")
+  set(testShaderSources
+    gpuDriven.comp
+    gpuDriven.vert
+    gpuDriven.frag
+  )
+  set(testShaderBinaries)
+  foreach(testShader IN LISTS testShaderSources)
+    set(testShaderSource "${testShaderSourceDir}/${testShader}")
+    set(testShaderBinary "${testShaderBinaryDir}/${testShader}.spv")
+    add_custom_command(
+      OUTPUT "${testShaderBinary}"
+      COMMAND ${CMAKE_COMMAND} -E make_directory "${testShaderBinaryDir}"
+      COMMAND "${glslangValidator}" -V --target-env vulkan1.3 "${testShaderSource}" -o "${testShaderBinary}"
+      DEPENDS "${testShaderSource}"
+      VERBATIM
+    )
+    list(APPEND testShaderBinaries "${testShaderBinary}")
+  endforeach()
+  add_custom_target(RenderGraphTestShaders DEPENDS ${testShaderBinaries})
   
   file(GLOB_RECURSE tests_source "tests/*.c*")
   add_executable(${PROJECT_NAME}Tests ${tests_source})
+  add_dependencies(${PROJECT_NAME}Tests RenderGraphTestShaders)
   target_link_libraries(${PROJECT_NAME}Tests PRIVATE gtest_main ${PROJECT_NAME})
+  target_compile_definitions(${PROJECT_NAME}Tests PRIVATE
+    renderGraphTestShaderDir="${testShaderBinaryDir}"
+  )
   target_compile_features(${PROJECT_NAME}Tests PRIVATE cxx_std_23)
   set_target_properties(${PROJECT_NAME}Tests PROPERTIES CXX_SCAN_FOR_MODULES ON)
   if (MSVC)

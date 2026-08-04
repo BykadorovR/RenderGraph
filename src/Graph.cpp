@@ -104,6 +104,22 @@ void GraphPassGraphic::setDepthTarget(std::string_view name) noexcept { _depthTa
 
 void GraphPassGraphic::addTextureInput(std::string_view name) noexcept { _textureInputs.emplace_back(name); }
 
+void GraphPassGraphic::addVertexBufferInput(std::string_view name) noexcept {
+  _vertexBufferInputs.emplace_back(name);
+}
+
+void GraphPassGraphic::addIndexBufferInput(std::string_view name) noexcept {
+  _indexBufferInputs.emplace_back(name);
+}
+
+void GraphPassGraphic::addStorageBufferInput(std::string_view name) noexcept {
+  _storageBufferInputs.emplace_back(name);
+}
+
+void GraphPassGraphic::addIndirectBufferInput(std::string_view name) noexcept {
+  _indirectBufferInputs.emplace_back(name);
+}
+
 void GraphPassGraphic::clearTarget(std::string_view name) noexcept { _clearTarget[std::string(name)] = true; }
 
 const std::vector<std::string>& GraphPassGraphic::getColorTargets() const noexcept { return _colorTargets; }
@@ -111,6 +127,22 @@ const std::vector<std::string>& GraphPassGraphic::getColorTargets() const noexce
 std::optional<std::string> GraphPassGraphic::getDepthTarget() const noexcept { return _depthTarget; }
 
 const std::vector<std::string>& GraphPassGraphic::getTextureInputs() const noexcept { return _textureInputs; }
+
+const std::vector<std::string>& GraphPassGraphic::getVertexBufferInputs() const noexcept {
+  return _vertexBufferInputs;
+}
+
+const std::vector<std::string>& GraphPassGraphic::getIndexBufferInputs() const noexcept {
+  return _indexBufferInputs;
+}
+
+const std::vector<std::string>& GraphPassGraphic::getStorageBufferInputs() const noexcept {
+  return _storageBufferInputs;
+}
+
+const std::vector<std::string>& GraphPassGraphic::getIndirectBufferInputs() const noexcept {
+  return _indirectBufferInputs;
+}
 
 PipelineGraphic& GraphPassGraphic::getPipelineGraphic(const GraphStorage& graphStorage) const noexcept {
   auto colorFormats = _colorTargets | std::views::transform([&](auto& colorTarget) {
@@ -631,6 +663,10 @@ void Graph::print() const noexcept {
         std::cout << std::endl;
       }
       printImages(passGraphic->getTextureInputs(), " texture input: ");
+      printBuffers(passGraphic->getVertexBufferInputs(), " vertex buffer input: ");
+      printBuffers(passGraphic->getIndexBufferInputs(), " index buffer input: ");
+      printBuffers(passGraphic->getStorageBufferInputs(), " storage buffer input: ");
+      printBuffers(passGraphic->getIndirectBufferInputs(), " indirect buffer input: ");
     }
 
     if (value->getGraphPassType() == GraphPassType::COMPUTE) {
@@ -674,6 +710,14 @@ void Graph::calculate() {
       addResources(pass.get(), compute->getStorageTextureOutputs(), Resource::Type::IMAGE, Resource::Operation::WRITE);
     } else if (pass->getGraphPassType() == GraphPassType::GRAPHIC) {
       auto* graphic = static_cast<GraphPassGraphic*>(pass.get());
+      addResources(pass.get(), graphic->getVertexBufferInputs(), Resource::Type::BUFFER,
+                   Resource::Operation::READ);
+      addResources(pass.get(), graphic->getIndexBufferInputs(), Resource::Type::BUFFER,
+                   Resource::Operation::READ);
+      addResources(pass.get(), graphic->getStorageBufferInputs(), Resource::Type::BUFFER,
+                   Resource::Operation::READ);
+      addResources(pass.get(), graphic->getIndirectBufferInputs(), Resource::Type::BUFFER,
+                   Resource::Operation::READ);
       addResources(pass.get(), graphic->getTextureInputs(), Resource::Type::IMAGE, Resource::Operation::READ);
       addResources(pass.get(), graphic->getColorTargets(), Resource::Type::IMAGE, Resource::Operation::WRITE);
       if (const auto& depth = graphic->getDepthTarget()) {
@@ -777,11 +821,26 @@ void Graph::calculate() {
     } else if (pass->getGraphPassType() == GraphPassType::GRAPHIC) {
       auto* graphic = static_cast<GraphPassGraphic*>(pass);
 
-      if (resource.type != Resource::Type::IMAGE) {
-        throw std::runtime_error("Graphic pass uses unsupported buffer resource: " + resource.name);
-      }
-
-      if (std::ranges::contains(graphic->getTextureInputs(), resource.name)) {
+      if (resource.type == Resource::Type::BUFFER) {
+        if (std::ranges::contains(graphic->getVertexBufferInputs(), resource.name)) {
+          usage.stageMask |= VK_PIPELINE_STAGE_VERTEX_INPUT_BIT;
+          usage.accessMask |= VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
+        }
+        if (std::ranges::contains(graphic->getIndexBufferInputs(), resource.name)) {
+          usage.stageMask |= VK_PIPELINE_STAGE_VERTEX_INPUT_BIT;
+          usage.accessMask |= VK_ACCESS_INDEX_READ_BIT;
+        }
+        if (std::ranges::contains(graphic->getStorageBufferInputs(), resource.name)) {
+          usage.stageMask |= VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_TESSELLATION_CONTROL_SHADER_BIT |
+                             VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT |
+                             VK_PIPELINE_STAGE_GEOMETRY_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+          usage.accessMask |= VK_ACCESS_SHADER_READ_BIT;
+        }
+        if (std::ranges::contains(graphic->getIndirectBufferInputs(), resource.name)) {
+          usage.stageMask |= VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT;
+          usage.accessMask |= VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+        }
+      } else if (std::ranges::contains(graphic->getTextureInputs(), resource.name)) {
         // The exact shader stage is currently unknown, so include both
         // shader stages that may consume a graphics texture input.
         usage.stageMask |= VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
