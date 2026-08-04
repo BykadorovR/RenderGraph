@@ -4,16 +4,16 @@ import <ranges>;
 import <limits>;
 using namespace RenderGraph;
 
-void GraphStorage::add(std::string_view name, std::unique_ptr<ImageViewHolder> imageHolder) noexcept {
+void GraphStorage::add(std::string_view name, std::unique_ptr<ImageViewHolder> imageHolder) {
   _imageViewHolders[std::string(name)] = std::move(imageHolder);
 }
 
-void GraphStorage::add(std::string_view name, std::vector<std::unique_ptr<Buffer>>& buffers) noexcept {
+void GraphStorage::add(std::string_view name, std::vector<std::unique_ptr<Buffer>>& buffers) {
   _buffers[std::string(name)] = std::move(buffers);
 }
 
 void GraphStorage::reset(std::vector<std::shared_ptr<ImageView>> oldSwapchain,
-                         std::vector<std::shared_ptr<ImageView>> newSwapchain) noexcept {
+                         std::vector<std::shared_ptr<ImageView>> newSwapchain) {
   glm::ivec2 resolution = newSwapchain.front()->getImage().getResolution();
   auto nameSwapchain = find(oldSwapchain);
   if (nameSwapchain.empty() == false) {
@@ -40,14 +40,14 @@ void GraphStorage::reset(std::vector<std::shared_ptr<ImageView>> oldSwapchain,
   }
 }
 
-std::string GraphStorage::find(const std::vector<std::shared_ptr<ImageView>>& imageViews) noexcept {
+std::string GraphStorage::find(const std::vector<std::shared_ptr<ImageView>>& imageViews) {
   for (auto&& [name, imageViewHolder] : _imageViewHolders) {
     if (imageViewHolder->contains(imageViews)) return name;
   }
   return std::string{};
 }
 
-bool GraphStorage::containsImageViewHolder(std::string_view name) const noexcept {
+bool GraphStorage::containsImageViewHolder(std::string_view name) const {
   return _imageViewHolders.contains(std::string(name));
 }
 
@@ -55,7 +55,7 @@ const ImageViewHolder& GraphStorage::getImageViewHolder(std::string_view name) c
   return *_imageViewHolders.at(std::string(name));
 }
 
-bool GraphStorage::containsBuffer(std::string_view name) const noexcept { return _buffers.contains(std::string(name)); }
+bool GraphStorage::containsBuffer(std::string_view name) const { return _buffers.contains(std::string(name)); }
 
 std::vector<Buffer*> GraphStorage::getBuffer(std::string_view name) const {
   // std::ranges::to makes vector by itself
@@ -63,16 +63,16 @@ std::vector<Buffer*> GraphStorage::getBuffer(std::string_view name) const {
          std::ranges::to<std::vector>();
 }
 
-GraphPass::GraphPass(std::string_view name, GraphPassType graphPassType, const GraphStorage& graphStorage) noexcept
+GraphPass::GraphPass(std::string_view name, GraphPassType graphPassType, const GraphStorage& graphStorage)
     : _name(name),
       _graphPassType(graphPassType),
       _graphStorage(&graphStorage) {}
 
-void GraphPass::registerGraphElement(std::shared_ptr<GraphElement> graphElement) noexcept {
+void GraphPass::registerGraphElement(std::shared_ptr<GraphElement> graphElement) {
   _graphElements.push_back(graphElement);
 }
 
-std::string GraphPass::getName() const noexcept { return _name; }
+std::string GraphPass::getName() const { return _name; }
 
 void GraphPass::reset(const std::vector<std::shared_ptr<RenderGraph::ImageView>>& swapchain) {
   for (auto&& graphElement : _graphElements) {
@@ -82,14 +82,14 @@ void GraphPass::reset(const std::vector<std::shared_ptr<RenderGraph::ImageView>>
 
 GraphPassType GraphPass::getGraphPassType() const noexcept { return _graphPassType; }
 
-std::vector<CommandBuffer*> GraphPass::getCommandBuffers() const noexcept {
+std::vector<CommandBuffer*> GraphPass::getCommandBuffers() const {
   return _commandBuffers | std::views::transform([](auto& p) { return p.get(); }) | std::ranges::to<std::vector>();
 }
 
 GraphPassGraphic::GraphPassGraphic(std::string_view name,
                                    int maxFramesInFlight,
                                    const GraphStorage& graphStorage,
-                                   const Device& device) noexcept
+                                   const Device& device)
     : GraphPass(name, GraphPassType::GRAPHIC, graphStorage) {
   _device = &device;
   _commandPool = std::make_unique<CommandPool>(vkb::QueueType::graphics, device);
@@ -98,33 +98,33 @@ GraphPassGraphic::GraphPassGraphic(std::string_view name,
   _pipelineGraphic = std::make_unique<PipelineGraphic>();
 }
 
-void GraphPassGraphic::addColorTarget(std::string_view name) noexcept { _colorTargets.emplace_back(name); }
+void GraphPassGraphic::addColorTarget(std::string_view name) { _colorTargets.emplace_back(name); }
 
-void GraphPassGraphic::setDepthTarget(std::string_view name) noexcept { _depthTarget = name; }
+void GraphPassGraphic::setDepthTarget(std::string_view name) { _depthTarget = name; }
 
-void GraphPassGraphic::addTextureInput(std::string_view name) noexcept { _textureInputs.emplace_back(name); }
+void GraphPassGraphic::addTextureInput(std::string_view name) { _textureInputs.emplace_back(name); }
 
-void GraphPassGraphic::addVertexBufferInput(std::string_view name) noexcept {
+void GraphPassGraphic::addVertexBufferInput(std::string_view name) {
   _vertexBufferInputs.emplace_back(name);
 }
 
-void GraphPassGraphic::addIndexBufferInput(std::string_view name) noexcept {
+void GraphPassGraphic::addIndexBufferInput(std::string_view name) {
   _indexBufferInputs.emplace_back(name);
 }
 
-void GraphPassGraphic::addStorageBufferInput(std::string_view name) noexcept {
+void GraphPassGraphic::addStorageBufferInput(std::string_view name) {
   _storageBufferInputs.emplace_back(name);
 }
 
-void GraphPassGraphic::addIndirectBufferInput(std::string_view name) noexcept {
+void GraphPassGraphic::addIndirectBufferInput(std::string_view name) {
   _indirectBufferInputs.emplace_back(name);
 }
 
-void GraphPassGraphic::clearTarget(std::string_view name) noexcept { _clearTarget[std::string(name)] = true; }
+void GraphPassGraphic::clearTarget(std::string_view name) { _clearTarget[std::string(name)] = true; }
 
 const std::vector<std::string>& GraphPassGraphic::getColorTargets() const noexcept { return _colorTargets; }
 
-std::optional<std::string> GraphPassGraphic::getDepthTarget() const noexcept { return _depthTarget; }
+std::optional<std::string> GraphPassGraphic::getDepthTarget() const { return _depthTarget; }
 
 const std::vector<std::string>& GraphPassGraphic::getTextureInputs() const noexcept { return _textureInputs; }
 
@@ -144,7 +144,7 @@ const std::vector<std::string>& GraphPassGraphic::getIndirectBufferInputs() cons
   return _indirectBufferInputs;
 }
 
-PipelineGraphic& GraphPassGraphic::getPipelineGraphic(const GraphStorage& graphStorage) const noexcept {
+PipelineGraphic& GraphPassGraphic::getPipelineGraphic(const GraphStorage& graphStorage) const {
   auto colorFormats = _colorTargets | std::views::transform([&](auto& colorTarget) {
                         return graphStorage.getImageViewHolder(colorTarget).getImageView().getImage().getFormat();
                       }) |
@@ -222,7 +222,7 @@ GraphPassCompute::GraphPassCompute(std::string_view name,
                                    int maxFramesInFlight,
                                    bool separate,
                                    const GraphStorage& graphStorage,
-                                   const Device& device) noexcept
+                                   const Device& device)
     : GraphPass(name, GraphPassType::COMPUTE, graphStorage) {
   _device = &device;
   _separate = separate;
@@ -234,23 +234,23 @@ GraphPassCompute::GraphPassCompute(std::string_view name,
   std::ranges::generate(_commandBuffers, [&] { return std::make_unique<CommandBuffer>(*_commandPool, device); });
 }
 
-void GraphPassCompute::addStorageBufferInput(std::string_view name) noexcept {
+void GraphPassCompute::addStorageBufferInput(std::string_view name) {
   _storageBufferInputs.emplace_back(name);
 }
 
-void GraphPassCompute::addStorageTextureInput(std::string_view name) noexcept {
+void GraphPassCompute::addStorageTextureInput(std::string_view name) {
   _storageTextureInputs.emplace_back(name);
 }
 
-void GraphPassCompute::addIndirectBufferInput(std::string_view name) noexcept {
+void GraphPassCompute::addIndirectBufferInput(std::string_view name) {
   _indirectBufferInputs.emplace_back(name);
 }
 
-void GraphPassCompute::addStorageBufferOutput(std::string_view name) noexcept {
+void GraphPassCompute::addStorageBufferOutput(std::string_view name) {
   _storageBufferOutputs.emplace_back(name);
 }
 
-void GraphPassCompute::addStorageTextureOutput(std::string_view name) noexcept {
+void GraphPassCompute::addStorageTextureOutput(std::string_view name) {
   _storageTextureOutputs.emplace_back(name);
 }
 
@@ -286,7 +286,7 @@ Graph::Graph(int threadsNumber,
              int maxFramesInFlight,
              Swapchain& swapchain,
              const Window& window,
-             const Device& device) noexcept
+             const Device& device)
     : _swapchain(&swapchain),
       _window(&window),
       _device(&device) {
@@ -296,7 +296,7 @@ Graph::Graph(int threadsNumber,
   _maxFramesInFlight = maxFramesInFlight;
 }
 
-void Graph::initialize() noexcept {
+void Graph::initialize() {
   // create 3 special semaphores
   // Image-available semaphores are indexed by frame-in-flight slot,
   // because they are not tied to a specific swapchain image.
@@ -309,7 +309,7 @@ void Graph::initialize() noexcept {
 
 GraphStorage& Graph::getGraphStorage() const noexcept { return *_graphStorage; }
 
-std::unordered_map<std::string, glm::dvec2> Graph::getTimestamps() const noexcept {
+std::unordered_map<std::string, glm::dvec2> Graph::getTimestamps() const {
   return _timestamps->getTimestamps();
 }
 
@@ -337,7 +337,7 @@ GraphPassCompute& Graph::createPassCompute(std::string_view name, bool separate)
   return static_cast<GraphPassCompute&>(*_passes.back());
 }
 
-GraphPassGraphic* Graph::getPassGraphic(std::string_view name) const noexcept {
+GraphPassGraphic* Graph::getPassGraphic(std::string_view name) const {
   auto it = std::find_if(_passes.begin(), _passes.end(),
                          [name](const std::unique_ptr<GraphPass>& graphPass) { return graphPass->getName() == name; });
   if (it != _passes.end()) {
@@ -347,7 +347,7 @@ GraphPassGraphic* Graph::getPassGraphic(std::string_view name) const noexcept {
   return nullptr;
 }
 
-GraphPassCompute* Graph::getPassCompute(std::string_view name) const noexcept {
+GraphPassCompute* Graph::getPassCompute(std::string_view name) const {
   auto it = std::find_if(_passes.begin(), _passes.end(),
                          [name](const std::unique_ptr<GraphPass>& graphPass) { return graphPass->getName() == name; });
   if (it != _passes.end()) {
@@ -408,24 +408,24 @@ std::vector<std::string> Graph::Resources::getNames(Graph::Resource::Type type) 
 }
 
 void Graph::Sync::addSignalSemaphore(std::vector<std::shared_ptr<Semaphore>>& signalSemaphore,
-                                     std::function<int()> index) noexcept {
+                                     std::function<int()> index) {
   _signalSemaphores.emplace_back(signalSemaphore, index);
 }
 
 void Graph::Sync::addWaitSemaphore(std::vector<std::shared_ptr<Semaphore>>& waitSemaphore,
-                                   std::function<int()> index) noexcept {
+                                   std::function<int()> index) {
   _waitSemaphores.emplace_back(waitSemaphore, index);
 }
 
-void Graph::Sync::addBarrierBefore(std::vector<Barrier>& barriers, std::function<int()> index) noexcept {
+void Graph::Sync::addBarrierBefore(std::vector<Barrier>& barriers, std::function<int()> index) {
   _barriersBefore.emplace_back(barriers, index);
 }
 
-void Graph::Sync::addBarrierAfter(std::vector<Barrier>& barriers, std::function<int()> index) noexcept {
+void Graph::Sync::addBarrierAfter(std::vector<Barrier>& barriers, std::function<int()> index) {
   _barriersAfter.emplace_back(barriers, index);
 }
 
-std::vector<Semaphore*> Graph::Sync::getSignalSemaphores() const noexcept {
+std::vector<Semaphore*> Graph::Sync::getSignalSemaphores() const {
   return _signalSemaphores | std::views::transform([](auto& pair) {
            auto& [semaphores, index] = pair;
            return semaphores[index()].get();
@@ -433,7 +433,7 @@ std::vector<Semaphore*> Graph::Sync::getSignalSemaphores() const noexcept {
          std::ranges::to<std::vector>();
 }
 
-std::vector<Semaphore*> Graph::Sync::getWaitSemaphores() const noexcept {
+std::vector<Semaphore*> Graph::Sync::getWaitSemaphores() const {
   return _waitSemaphores | std::views::transform([](auto& pair) {
            auto& [semaphores, index] = pair;
            return semaphores[index()].get();
@@ -441,7 +441,7 @@ std::vector<Semaphore*> Graph::Sync::getWaitSemaphores() const noexcept {
          std::ranges::to<std::vector>();
 }
 
-std::vector<const Barrier*> Graph::Sync::getBarriersBefore() const noexcept {
+std::vector<const Barrier*> Graph::Sync::getBarriersBefore() const {
   return _barriersBefore | std::views::transform([](const auto& pair) {
            const auto& [barriers, index] = pair;
            return &barriers[index()];
@@ -449,7 +449,7 @@ std::vector<const Barrier*> Graph::Sync::getBarriersBefore() const noexcept {
          std::ranges::to<std::vector>();
 }
 
-std::vector<const Barrier*> Graph::Sync::getBarriersAfter() const noexcept {
+std::vector<const Barrier*> Graph::Sync::getBarriersAfter() const {
   return _barriersAfter | std::views::transform([](const auto& pair) {
            const auto& [barriers, index] = pair;
            return &barriers[index()];
@@ -457,7 +457,7 @@ std::vector<const Barrier*> Graph::Sync::getBarriersAfter() const noexcept {
          std::ranges::to<std::vector>();
 }
 
-void Graph::print() const noexcept {
+void Graph::print() const {
   if (_passesOrdered.empty()) return;
 
   auto findBufferName = [this](VkBuffer targetBuffer) -> std::string {

@@ -154,10 +154,10 @@ class ImageViewHolder final {
   ImageViewHolder& operator=(ImageViewHolder&&) = delete;
 
   void setImageViews(std::vector<std::shared_ptr<ImageView>> imageViews);
-  const ImageView& getImageView() const noexcept;
-  std::function<int()> getIndexFunction() const noexcept;
-  int getIndex() const noexcept;
-  std::vector<ImageView*> getImageViews() const noexcept;
+  const ImageView& getImageView() const;
+  std::function<int()> getIndexFunction() const;
+  int getIndex() const;
+  std::vector<ImageView*> getImageViews() const;
   bool contains(const std::vector<std::shared_ptr<ImageView>>& imageViews) const noexcept;
 };
 

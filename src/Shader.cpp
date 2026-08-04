@@ -132,7 +132,7 @@ void Shader::add(const std::vector<char>& shaderCode, const VkSpecializationInfo
   _modules.push_back(module);
 }
 
-std::vector<VkPipelineShaderStageCreateInfo> Shader::getShaderStageInfo() const noexcept {
+std::vector<VkPipelineShaderStageCreateInfo> Shader::getShaderStageInfo() const {
   return _shaders | std::views::values | std::ranges::to<std::vector>();
 }
 

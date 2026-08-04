@@ -33,7 +33,7 @@ class Shader final {
 
   void add(const std::vector<char>& shaderCode, const VkSpecializationInfo* info = nullptr);
   // returns info about shader stages (vertex, tesselation, fragments), used during pipeline creation
-  std::vector<VkPipelineShaderStageCreateInfo> getShaderStageInfo() const noexcept;
+  std::vector<VkPipelineShaderStageCreateInfo> getShaderStageInfo() const;
   // used to create descriptor set layout (provides all neccessary info about bindings and types)
   const std::vector<std::vector<VkDescriptorSetLayoutBinding>>& getDescriptorSetLayoutBindings() const;
   // for instancing

@@ -76,11 +76,11 @@ void Device::initialize() {
   vkGetPhysicalDeviceQueueFamilyProperties(getPhysicalDevice(), &queueFamilyCount, _queueFamilyProperties.data());
 }
 
-void Device::setOptionalExtensions(const std::vector<std::string>& extensions) noexcept {
+void Device::setOptionalExtensions(const std::vector<std::string>& extensions) {
   _optionalExtensions = extensions;
 }
 
-const VkQueueFamilyProperties& Device::getQueueFamilyProperties(vkb::QueueType type) const noexcept {
+const VkQueueFamilyProperties& Device::getQueueFamilyProperties(vkb::QueueType type) const {
   return _queueFamilyProperties[getQueueIndex(type)];
 }
 
@@ -88,7 +88,7 @@ bool Device::isExtensionSupported(std::string name) const {
   return _device.physical_device.is_extension_present(name.c_str());
 }
 
-std::vector<std::string> Device::getOptionalExtensions() const noexcept { return _optionalExtensions; }
+std::vector<std::string> Device::getOptionalExtensions() const { return _optionalExtensions; }
 
 bool Device::isFormatFeatureSupported(VkFormat format,
                                       VkImageTiling tiling,
