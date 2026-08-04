@@ -125,7 +125,7 @@ class DescriptorPool final {
   DescriptorPool(DescriptorPool&&) = delete;
   DescriptorPool& operator=(DescriptorPool&&) = delete;
 
-  void notify(const std::vector<VkDescriptorSetLayoutBinding>& layoutInfo, int number) noexcept;
+  void notify(const std::vector<VkDescriptorSetLayoutBinding>& layoutInfo, int number);
   // needed to calculate real number of descriptor sets and descriptors
   const std::map<VkDescriptorType, int>& getDescriptorsNumber() const noexcept;
   int getDescriptorSetsNumber() const noexcept;

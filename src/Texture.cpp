@@ -300,13 +300,13 @@ ImageViewHolder::ImageViewHolder(std::vector<std::shared_ptr<ImageView>> imageVi
 
 void ImageViewHolder::setImageViews(std::vector<std::shared_ptr<ImageView>> imageViews) { _imageViews = imageViews; }
 
-const ImageView& ImageViewHolder::getImageView() const noexcept { return *_imageViews[_index()]; }
+const ImageView& ImageViewHolder::getImageView() const { return *_imageViews[_index()]; }
 
-std::function<int()> ImageViewHolder::getIndexFunction() const noexcept { return _index; }
+std::function<int()> ImageViewHolder::getIndexFunction() const { return _index; }
 
-int ImageViewHolder::getIndex() const noexcept { return _index(); }
+int ImageViewHolder::getIndex() const { return _index(); }
 
-std::vector<ImageView*> ImageViewHolder::getImageViews() const noexcept {
+std::vector<ImageView*> ImageViewHolder::getImageViews() const {
   return _imageViews | std::views::transform([](auto const& iv) { return iv.get(); }) |
          std::ranges::to<std::vector<ImageView*>>();
 }

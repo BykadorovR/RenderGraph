@@ -1,7 +1,7 @@
 module Pipeline;
 using namespace RenderGraph;
 
-PipelineGraphic::PipelineGraphic() noexcept {
+PipelineGraphic::PipelineGraphic() {
   _inputAssembly = VkPipelineInputAssemblyStateCreateInfo{
       .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
       .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
@@ -95,7 +95,7 @@ void PipelineGraphic::setTesselation(int patchControlPoints) noexcept {
         .patchControlPoints = static_cast<uint32_t>(patchControlPoints)};
 }
 
-void PipelineGraphic::setColorAttachments(const std::vector<VkFormat>& colorAttachments) noexcept {
+void PipelineGraphic::setColorAttachments(const std::vector<VkFormat>& colorAttachments) {
   _colorAttachments = colorAttachments;
 }
 

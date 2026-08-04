@@ -269,7 +269,7 @@ DescriptorPool::DescriptorPool(DescriptorPoolSize poolSize, const Device& device
   }
 }
 
-void DescriptorPool::notify(const std::vector<VkDescriptorSetLayoutBinding>& layoutInfo, int number) noexcept {
+void DescriptorPool::notify(const std::vector<VkDescriptorSetLayoutBinding>& layoutInfo, int number) {
   for (auto&& info : layoutInfo) {
     _descriptorTypes[info.descriptorType] += number;
   }

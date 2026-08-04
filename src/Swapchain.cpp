@@ -59,7 +59,7 @@ void Swapchain::_destroy() {
 
 Image& Swapchain::getImage(int index) const noexcept { return _imageViews[index]->getImage(); }
 
-std::vector<std::shared_ptr<ImageView>> Swapchain::getImageViews() const noexcept { return _imageViews; };
+std::vector<std::shared_ptr<ImageView>> Swapchain::getImageViews() const { return _imageViews; };
 
 int Swapchain::getImageCount() const noexcept { return _imageViews.size(); }
 

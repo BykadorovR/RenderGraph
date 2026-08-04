@@ -21,7 +21,7 @@ class Device final {
   Device& operator=(Device&&) = delete;
   void initialize();
 
-  void setOptionalExtensions(const std::vector<std::string>& extensions) noexcept;
+  void setOptionalExtensions(const std::vector<std::string>& extensions);
   bool isFormatFeatureSupported(VkFormat format, VkImageTiling tiling, VkFormatFeatureFlagBits featureFlagBit) const;
   const VkDevice getLogicalDevice() const noexcept;
   const VkPhysicalDevice getPhysicalDevice() const noexcept;
@@ -30,13 +30,13 @@ class Device final {
 
   const vkb::Device& getDevice() const noexcept;
   bool isExtensionSupported(std::string name) const;
-  std::vector<std::string> getOptionalExtensions() const noexcept;
+  std::vector<std::string> getOptionalExtensions() const;
   void getFeatureProperties(auto& property) const noexcept {
     VkPhysicalDeviceProperties2 properties2{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
                                             .pNext = &property};
     vkGetPhysicalDeviceProperties2(getPhysicalDevice(), &properties2);
   }
-  const VkQueueFamilyProperties& getQueueFamilyProperties(vkb::QueueType type) const noexcept;
+  const VkQueueFamilyProperties& getQueueFamilyProperties(vkb::QueueType type) const;
 
   ~Device();
 };

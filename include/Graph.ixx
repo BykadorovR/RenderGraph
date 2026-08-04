@@ -38,15 +38,15 @@ class GraphStorage final {
   GraphStorage(GraphStorage&&) = delete;
   GraphStorage& operator=(GraphStorage&&) = delete;
 
-  void add(std::string_view name, std::unique_ptr<ImageViewHolder> imageViewHolder) noexcept;
+  void add(std::string_view name, std::unique_ptr<ImageViewHolder> imageViewHolder);
   // not const because will do std::move
-  void add(std::string_view name, std::vector<std::unique_ptr<Buffer>>& buffers) noexcept;
+  void add(std::string_view name, std::vector<std::unique_ptr<Buffer>>& buffers);
   void reset(std::vector<std::shared_ptr<ImageView>> oldSwapchain,
-             std::vector<std::shared_ptr<ImageView>> newSwapchain) noexcept;
-  std::string find(const std::vector<std::shared_ptr<ImageView>>& imageViews) noexcept;
-  bool containsImageViewHolder(std::string_view name) const noexcept;
+             std::vector<std::shared_ptr<ImageView>> newSwapchain);
+  std::string find(const std::vector<std::shared_ptr<ImageView>>& imageViews);
+  bool containsImageViewHolder(std::string_view name) const;
   const ImageViewHolder& getImageViewHolder(std::string_view name) const;
-  bool containsBuffer(std::string_view name) const noexcept;
+  bool containsBuffer(std::string_view name) const;
   // NVRO
   std::vector<Buffer*> getBuffer(std::string_view name) const;
 };
@@ -71,17 +71,17 @@ class GraphPass {
   std::vector<std::shared_ptr<GraphElement>> _graphElements;
 
  public:
-  GraphPass(std::string_view name, GraphPassType graphPassType, const GraphStorage& graphStorage) noexcept;
+  GraphPass(std::string_view name, GraphPassType graphPassType, const GraphStorage& graphStorage);
   GraphPass(const GraphPass&) = delete;
   GraphPass& operator=(const GraphPass&) = delete;
   GraphPass(GraphPass&&) = delete;
   GraphPass& operator=(GraphPass&&) = delete;
 
-  void registerGraphElement(std::shared_ptr<GraphElement> graphElement) noexcept;
+  void registerGraphElement(std::shared_ptr<GraphElement> graphElement);
   // NVRO
   GraphPassType getGraphPassType() const noexcept;
-  std::vector<CommandBuffer*> getCommandBuffers() const noexcept;
-  std::string getName() const noexcept;
+  std::vector<CommandBuffer*> getCommandBuffers() const;
+  std::string getName() const;
   virtual void execute(int currentFrame, const CommandBuffer& commandBuffer) = 0;
   void reset(const std::vector<std::shared_ptr<RenderGraph::ImageView>>& swapchain);
   virtual ~GraphPass() = default;
@@ -101,34 +101,34 @@ class GraphPassGraphic final : public GraphPass {
   GraphPassGraphic(std::string_view name,
                    int maxFramesInFlight,
                    const GraphStorage& graphStorage,
-                   const Device& device) noexcept;
+                   const Device& device);
   GraphPassGraphic(const GraphPassGraphic&) = delete;
   GraphPassGraphic& operator=(const GraphPassGraphic&) = delete;
   GraphPassGraphic(GraphPassGraphic&&) = delete;
   GraphPassGraphic& operator=(GraphPassGraphic&&) = delete;
 
   // handle attachments
-  void addColorTarget(std::string_view name) noexcept;
-  void setDepthTarget(std::string_view name) noexcept;
+  void addColorTarget(std::string_view name);
+  void setDepthTarget(std::string_view name);
   // handle input to shaders
-  void addTextureInput(std::string_view name) noexcept;
-  void addVertexBufferInput(std::string_view name) noexcept;
-  void addIndexBufferInput(std::string_view name) noexcept;
-  void addStorageBufferInput(std::string_view name) noexcept;
+  void addTextureInput(std::string_view name);
+  void addVertexBufferInput(std::string_view name);
+  void addIndexBufferInput(std::string_view name);
+  void addStorageBufferInput(std::string_view name);
   // handle input to indirect draw commands
-  void addIndirectBufferInput(std::string_view name) noexcept;
+  void addIndirectBufferInput(std::string_view name);
 
   // clear color target before use or load
-  void clearTarget(std::string_view name) noexcept;
+  void clearTarget(std::string_view name);
 
   const std::vector<std::string>& getColorTargets() const noexcept;
-  std::optional<std::string> getDepthTarget() const noexcept;
+  std::optional<std::string> getDepthTarget() const;
   const std::vector<std::string>& getTextureInputs() const noexcept;
   const std::vector<std::string>& getVertexBufferInputs() const noexcept;
   const std::vector<std::string>& getIndexBufferInputs() const noexcept;
   const std::vector<std::string>& getStorageBufferInputs() const noexcept;
   const std::vector<std::string>& getIndirectBufferInputs() const noexcept;
-  PipelineGraphic& getPipelineGraphic(const GraphStorage& graphStorage) const noexcept;
+  PipelineGraphic& getPipelineGraphic(const GraphStorage& graphStorage) const;
   void execute(int currentFrame, const CommandBuffer& commandBuffer) override;
 };
 
@@ -144,20 +144,20 @@ class GraphPassCompute final : public GraphPass {
                    int maxFramesInFlight,
                    bool separate,
                    const GraphStorage& graphStorage,
-                   const Device& device) noexcept;
+                   const Device& device);
   GraphPassCompute(const GraphPassCompute&) = delete;
   GraphPassCompute& operator=(const GraphPassCompute&) = delete;
   GraphPassCompute(GraphPassCompute&&) = delete;
   GraphPassCompute& operator=(GraphPassCompute&&) = delete;
 
   // handle input to shaders
-  void addStorageBufferInput(std::string_view name) noexcept;
-  void addStorageTextureInput(std::string_view name) noexcept;
+  void addStorageBufferInput(std::string_view name);
+  void addStorageTextureInput(std::string_view name);
   // handle input to indirect dispatch commands
-  void addIndirectBufferInput(std::string_view name) noexcept;
+  void addIndirectBufferInput(std::string_view name);
   // handle output from shaders
-  void addStorageBufferOutput(std::string_view name) noexcept;
-  void addStorageTextureOutput(std::string_view name) noexcept;
+  void addStorageBufferOutput(std::string_view name);
+  void addStorageTextureOutput(std::string_view name);
 
   const std::vector<std::string>& getStorageBufferInputs() const noexcept;
   const std::vector<std::string>& getStorageBufferOutputs() const noexcept;
@@ -229,15 +229,15 @@ class Graph final {
    public:
     Sync() = default;
     void addSignalSemaphore(std::vector<std::shared_ptr<Semaphore>>& signalSemaphore,
-                            std::function<int()> index) noexcept;
-    void addWaitSemaphore(std::vector<std::shared_ptr<Semaphore>>& waitSemaphore, std::function<int()> index) noexcept;
-    void addBarrierBefore(std::vector<Barrier>& barriers, std::function<int()> index) noexcept;
-    void addBarrierAfter(std::vector<Barrier>& barriers, std::function<int()> index) noexcept;
+                            std::function<int()> index);
+    void addWaitSemaphore(std::vector<std::shared_ptr<Semaphore>>& waitSemaphore, std::function<int()> index);
+    void addBarrierBefore(std::vector<Barrier>& barriers, std::function<int()> index);
+    void addBarrierAfter(std::vector<Barrier>& barriers, std::function<int()> index);
 
-    std::vector<Semaphore*> getWaitSemaphores() const noexcept;
-    std::vector<Semaphore*> getSignalSemaphores() const noexcept;
-    std::vector<const Barrier*> getBarriersBefore() const noexcept;
-    std::vector<const Barrier*> getBarriersAfter() const noexcept;
+    std::vector<Semaphore*> getWaitSemaphores() const;
+    std::vector<Semaphore*> getSignalSemaphores() const;
+    std::vector<const Barrier*> getBarriersBefore() const;
+    std::vector<const Barrier*> getBarriersAfter() const;
   };
   std::unordered_map<GraphPass*, Sync> _sync;
 
@@ -248,19 +248,19 @@ class Graph final {
         int maxFramesInFlight,
         Swapchain& swapchain,
         const Window& window,
-        const Device& device) noexcept;
+        const Device& device);
   Graph(const Graph&) = delete;
   Graph& operator=(const Graph&) = delete;
   Graph(Graph&&) = delete;
   Graph& operator=(Graph&&) = delete;
 
-  void initialize() noexcept;
+  void initialize();
   GraphPassGraphic& createPassGraphic(std::string_view name);
   GraphPassCompute& createPassCompute(std::string_view name, bool separate);
-  GraphPassGraphic* getPassGraphic(std::string_view name) const noexcept;
-  GraphPassCompute* getPassCompute(std::string_view name) const noexcept;
+  GraphPassGraphic* getPassGraphic(std::string_view name) const;
+  GraphPassCompute* getPassCompute(std::string_view name) const;
   GraphStorage& getGraphStorage() const noexcept;
-  std::unordered_map<std::string, glm::dvec2> getTimestamps() const noexcept;
+  std::unordered_map<std::string, glm::dvec2> getTimestamps() const;
   int getFrameInFlight() const noexcept;
 
   void calculate();
@@ -268,6 +268,6 @@ class Graph final {
   bool render();
   void reset();
 
-  void print() const noexcept;
+  void print() const;
 };
 }  // namespace RenderGraph

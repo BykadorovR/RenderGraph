@@ -34,7 +34,7 @@ class Swapchain {
 
   // to be able change layout
   Image& getImage(int index) const noexcept;
-  std::vector<std::shared_ptr<ImageView>> getImageViews() const noexcept;
+  std::vector<std::shared_ptr<ImageView>> getImageViews() const;
   int getImageCount() const noexcept;
   const vkb::Swapchain& getSwapchain() const noexcept;
   uint32_t getSwapchainIndex() const noexcept;

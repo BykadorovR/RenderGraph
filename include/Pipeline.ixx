@@ -26,7 +26,7 @@ class PipelineGraphic final {
   std::optional<VkFormat> _depthAttachment;
 
  public:
-  PipelineGraphic() noexcept;
+  PipelineGraphic();
   PipelineGraphic(const PipelineGraphic&) = delete;
   PipelineGraphic& operator=(const PipelineGraphic&) = delete;
   PipelineGraphic(PipelineGraphic&&) = delete;
@@ -42,7 +42,7 @@ class PipelineGraphic final {
   void setDepthCompareOp(VkCompareOp depthCompareOp) noexcept;
   void setColorBlendOp(VkBlendOp colorBlendOp) noexcept;
   void setTesselation(int patchControlPoints) noexcept;
-  void setColorAttachments(const std::vector<VkFormat>& colorAttachments) noexcept;
+  void setColorAttachments(const std::vector<VkFormat>& colorAttachments);
   void setDepthAttachment(std::optional<VkFormat> depthAttachment) noexcept;
 
   const VkPipelineDynamicStateCreateInfo& getDynamicState() const noexcept;

@@ -28,8 +28,8 @@ Timestamps::Timestamps(const Device& device, uint32_t maxFramesInFlight)
 }
 
 void Timestamps::resetQueryPool() {
-  // timestamps are requested for previous frame in flight once it's available and fully completed by GPU
-  // but there is no WAIT anymore, we know we're ready
+  // Reusing this frame slot already requires its previous GPU work to be complete.
+  // WAIT_BIT also covers timestamp availability, which can lag behind timeline semaphore completion.
   std::scoped_lock lock(_mutexPush, _mutexRequest);
 
   FrameData& frame = _frames[_currentFrame];
@@ -37,11 +37,8 @@ void Timestamps::resetQueryPool() {
     std::vector<uint64_t> buffer(static_cast<std::size_t>(frame.timestampIndex));
     const VkResult status = vkGetQueryPoolResults(
         _device->getLogicalDevice(), frame.queryPool, 0, static_cast<uint32_t>(frame.timestampIndex),
-        buffer.size() * sizeof(uint64_t), buffer.data(), sizeof(uint64_t), VK_QUERY_RESULT_64_BIT);
-
-    if (status == VK_NOT_READY) {
-      throw std::runtime_error("Timestamp query pool is still in use by GPU");
-    }
+        buffer.size() * sizeof(uint64_t), buffer.data(), sizeof(uint64_t),
+        VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
     if (status != VK_SUCCESS) {
       throw std::runtime_error("vkGetQueryPoolResults failed: " + std::to_string(status));
     }
