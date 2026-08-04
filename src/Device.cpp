@@ -21,6 +21,7 @@ void Device::initialize() {
   // Vulkan 1.2 features
   VkPhysicalDeviceVulkan12Features features12{};
   features12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+  features12.drawIndirectCount = true;
   features12.hostQueryReset = true;
   features12.timelineSemaphore = true;
   features12.bufferDeviceAddress = true;

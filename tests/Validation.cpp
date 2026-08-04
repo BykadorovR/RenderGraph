@@ -4,6 +4,9 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -12,9 +15,12 @@
 
 import Allocator;
 import Buffer;
+import DescriptorBuffer;
 import Device;
 import Graph;
 import Instance;
+import Pipeline;
+import Shader;
 import Surface;
 import Swapchain;
 import Texture;
@@ -110,6 +116,199 @@ class ValidationGraphElement final : public RenderGraph::GraphElement {
   int getResetCount() const noexcept { return _resetCount; }
 };
 
+std::vector<char> readTestShader(std::string_view filename) {
+  const std::filesystem::path path = std::filesystem::path(renderGraphTestShaderDir) / filename;
+  std::ifstream file(path, std::ios::ate | std::ios::binary);
+  if (!file.is_open()) {
+    throw std::runtime_error("Failed to open test shader " + path.string());
+  }
+
+  const auto fileSize = static_cast<std::size_t>(file.tellg());
+  std::vector<char> code(fileSize);
+  file.seekg(0);
+  file.read(code.data(), static_cast<std::streamsize>(fileSize));
+  return code;
+}
+
+class GpuDrivenComputeElement final : public RenderGraph::GraphElement {
+ private:
+  RenderGraph::Shader _shader;
+  RenderGraph::DescriptorSetLayout _descriptorSetLayout;
+  RenderGraph::DescriptorPool _descriptorPool;
+  RenderGraph::Pipeline _pipeline;
+  std::unique_ptr<RenderGraph::DescriptorSet> _descriptorSet;
+
+ public:
+  GpuDrivenComputeElement(const RenderGraph::Device& device,
+                          const RenderGraph::CommandBuffer& initializationCommandBuffer,
+                          const std::vector<RenderGraph::Buffer*>& positions,
+                          const std::vector<RenderGraph::Buffer*>& indices,
+                          const std::vector<RenderGraph::Buffer*>& drawCommands,
+                          const std::vector<RenderGraph::Buffer*>& drawCounts)
+      : _shader(device),
+        _descriptorSetLayout(device),
+        _descriptorPool(RenderGraph::DescriptorPoolSize{}, device),
+        _pipeline(device) {
+    if (positions.size() != indices.size() || positions.size() != drawCommands.size() ||
+        positions.size() != drawCounts.size()) {
+      throw std::logic_error("GPU-driven buffers must have the same frame count");
+    }
+
+    _shader.add(readTestShader("gpuDriven.comp.spv"));
+    const auto& reflectedLayouts = _shader.getDescriptorSetLayoutBindings();
+    if (reflectedLayouts.size() != 1) {
+      throw std::logic_error("GPU-driven compute shader must have exactly one descriptor set");
+    }
+    _descriptorSetLayout.createCustom(reflectedLayouts.front());
+
+    std::vector<RenderGraph::DescriptorSetLayout*> descriptorSetLayouts{&_descriptorSetLayout};
+    const auto shaderStages = _shader.getShaderStageInfo();
+    if (shaderStages.size() != 1 || shaderStages.front().stage != VK_SHADER_STAGE_COMPUTE_BIT) {
+      throw std::logic_error("GPU-driven compute shader has an unexpected stage");
+    }
+    _pipeline.createCompute(shaderStages.front(), descriptorSetLayouts, {});
+
+    _descriptorSet =
+        std::make_unique<RenderGraph::DescriptorSet>(descriptorSetLayouts, _descriptorPool, device);
+    for (std::size_t frameIndex = 0; frameIndex < positions.size(); ++frameIndex) {
+      _descriptorSet->add({positions[frameIndex]});
+      _descriptorSet->add({indices[frameIndex]});
+      _descriptorSet->add({drawCommands[frameIndex]});
+      _descriptorSet->add({drawCounts[frameIndex]});
+    }
+    _descriptorSet->initialize(initializationCommandBuffer);
+  }
+
+  void draw(int currentFrame, const RenderGraph::CommandBuffer& commandBuffer) override {
+    vkCmdBindPipeline(commandBuffer.getCommandBuffer(), VK_PIPELINE_BIND_POINT_COMPUTE, _pipeline.getPipeline());
+    _descriptorSet->bind(VK_PIPELINE_BIND_POINT_COMPUTE, _pipeline.getPipelineLayout(), commandBuffer);
+    vkCmdDispatch(commandBuffer.getCommandBuffer(), 1, 1, 1);
+  }
+
+  void update(int currentFrame, const RenderGraph::CommandBuffer& commandBuffer) override {}
+
+  void reset(const std::vector<std::shared_ptr<RenderGraph::ImageView>>& swapchain) override {}
+};
+
+class GpuDrivenGraphicElement final : public RenderGraph::GraphElement {
+ private:
+  const RenderGraph::Device* _device;
+  RenderGraph::Shader _shader;
+  RenderGraph::DescriptorSetLayout _descriptorSetLayout;
+  RenderGraph::DescriptorPool _descriptorPool;
+  RenderGraph::Pipeline _pipeline;
+  std::unique_ptr<RenderGraph::DescriptorSet> _descriptorSet;
+  std::vector<RenderGraph::Buffer*> _indices;
+  std::vector<RenderGraph::Buffer*> _drawCommands;
+  std::vector<RenderGraph::Buffer*> _drawCounts;
+  VkExtent2D _resolution;
+  VkQueryPool _queryPool = nullptr;
+
+ public:
+  GpuDrivenGraphicElement(const RenderGraph::Device& device,
+                          const RenderGraph::CommandBuffer& initializationCommandBuffer,
+                          RenderGraph::PipelineGraphic& pipelineGraphic,
+                          VkExtent2D resolution,
+                          const std::vector<RenderGraph::Buffer*>& positions,
+                          std::vector<RenderGraph::Buffer*> indices,
+                          std::vector<RenderGraph::Buffer*> drawCommands,
+                          std::vector<RenderGraph::Buffer*> drawCounts)
+      : _device(&device),
+        _shader(device),
+        _descriptorSetLayout(device),
+        _descriptorPool(RenderGraph::DescriptorPoolSize{}, device),
+        _pipeline(device),
+        _indices(std::move(indices)),
+        _drawCommands(std::move(drawCommands)),
+        _drawCounts(std::move(drawCounts)),
+        _resolution(resolution) {
+    if (positions.size() != _indices.size() || positions.size() != _drawCommands.size() ||
+        positions.size() != _drawCounts.size()) {
+      throw std::logic_error("GPU-driven buffers must have the same frame count");
+    }
+
+    _shader.add(readTestShader("gpuDriven.vert.spv"));
+    _shader.add(readTestShader("gpuDriven.frag.spv"));
+    const auto& reflectedLayouts = _shader.getDescriptorSetLayoutBindings();
+    if (reflectedLayouts.size() != 1) {
+      throw std::logic_error("GPU-driven graphic shader must have exactly one descriptor set");
+    }
+    _descriptorSetLayout.createCustom(reflectedLayouts.front());
+
+    std::vector<RenderGraph::DescriptorSetLayout*> descriptorSetLayouts{&_descriptorSetLayout};
+    pipelineGraphic.setDepthTest(false);
+    pipelineGraphic.setDepthWrite(false);
+    pipelineGraphic.setAlphaBlending(false);
+    _pipeline.createGraphic(pipelineGraphic, _shader.getShaderStageInfo(), descriptorSetLayouts, {},
+                            *_shader.getVertexInputInfo());
+
+    _descriptorSet =
+        std::make_unique<RenderGraph::DescriptorSet>(descriptorSetLayouts, _descriptorPool, device);
+    for (auto* positionBuffer : positions) {
+      _descriptorSet->add({positionBuffer});
+    }
+    _descriptorSet->initialize(initializationCommandBuffer);
+
+    const VkQueryPoolCreateInfo queryPoolInfo{
+        .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
+        .queryType = VK_QUERY_TYPE_OCCLUSION,
+        .queryCount = static_cast<uint32_t>(positions.size()),
+    };
+    if (vkCreateQueryPool(device.getLogicalDevice(), &queryPoolInfo, nullptr, &_queryPool) != VK_SUCCESS) {
+      throw std::runtime_error("Failed to create GPU-driven occlusion query pool");
+    }
+  }
+
+  void draw(int currentFrame, const RenderGraph::CommandBuffer& commandBuffer) override {
+    const VkCommandBuffer vkCommandBuffer = commandBuffer.getCommandBuffer();
+    vkCmdBindPipeline(vkCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, _pipeline.getPipeline());
+    _descriptorSet->bind(VK_PIPELINE_BIND_POINT_GRAPHICS, _pipeline.getPipelineLayout(), commandBuffer);
+
+    const VkViewport viewport{
+        .x = 0.0f,
+        .y = 0.0f,
+        .width = static_cast<float>(_resolution.width),
+        .height = static_cast<float>(_resolution.height),
+        .minDepth = 0.0f,
+        .maxDepth = 1.0f,
+    };
+    const VkRect2D scissor{.offset = {0, 0}, .extent = _resolution};
+    vkCmdSetViewport(vkCommandBuffer, 0, 1, &viewport);
+    vkCmdSetScissor(vkCommandBuffer, 0, 1, &scissor);
+    vkCmdSetDepthBias(vkCommandBuffer, 0.0f, 0.0f, 0.0f);
+    vkCmdBindIndexBuffer(vkCommandBuffer, _indices.at(currentFrame)->getBuffer(), 0, VK_INDEX_TYPE_UINT32);
+
+    vkCmdBeginQuery(vkCommandBuffer, _queryPool, static_cast<uint32_t>(currentFrame), 0);
+    vkCmdDrawIndexedIndirectCount(vkCommandBuffer, _drawCommands.at(currentFrame)->getBuffer(), 0,
+                                  _drawCounts.at(currentFrame)->getBuffer(), 0, 1,
+                                  sizeof(VkDrawIndexedIndirectCommand));
+    vkCmdEndQuery(vkCommandBuffer, _queryPool, static_cast<uint32_t>(currentFrame));
+  }
+
+  void update(int currentFrame, const RenderGraph::CommandBuffer& commandBuffer) override {
+    vkCmdResetQueryPool(commandBuffer.getCommandBuffer(), _queryPool, static_cast<uint32_t>(currentFrame), 1);
+  }
+
+  void reset(const std::vector<std::shared_ptr<RenderGraph::ImageView>>& swapchain) override {}
+
+  std::uint64_t getPassedSamples(int frameIndex) const {
+    std::uint64_t passedSamples = 0;
+    const VkResult result = vkGetQueryPoolResults(
+        _device->getLogicalDevice(), _queryPool, static_cast<uint32_t>(frameIndex), 1, sizeof(passedSamples),
+        &passedSamples, sizeof(passedSamples), VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
+    if (result != VK_SUCCESS) {
+      throw std::runtime_error("Failed to read GPU-driven occlusion query: " + std::to_string(result));
+    }
+    return passedSamples;
+  }
+
+  ~GpuDrivenGraphicElement() override {
+    if (_queryPool != nullptr) {
+      vkDestroyQueryPool(_device->getLogicalDevice(), _queryPool, nullptr);
+    }
+  }
+};
+
 std::string joinErrors(const std::vector<std::string>& errors) {
   std::string result;
   for (const std::string& error : errors) {
@@ -198,6 +397,15 @@ TEST_P(ValidationScenarioTest, FullGraphPipelineHasNoValidationErrorsAcrossReset
     }
     graph.getGraphStorage().add("Data", storageBuffers);
 
+    std::vector<std::unique_ptr<RenderGraph::Buffer>> indirectBuffers;
+    indirectBuffers.reserve(framesInFlight);
+    for (int frameIndex = 0; frameIndex < framesInFlight; ++frameIndex) {
+      indirectBuffers.push_back(std::make_unique<RenderGraph::Buffer>(
+          4096, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+          VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT, allocator));
+    }
+    graph.getGraphStorage().add("IndirectCommands", indirectBuffers);
+
     auto graphElement = std::make_shared<ValidationGraphElement>();
 
     auto& unsynchronizedPass = graph.createPassCompute("Unsynchronized", false);
@@ -227,12 +435,15 @@ TEST_P(ValidationScenarioTest, FullGraphPipelineHasNoValidationErrorsAcrossReset
     auto& asyncPass = graph.createPassCompute("Async", separateComputeQueue);
     asyncPass.addStorageBufferInput("Data");
     asyncPass.addStorageBufferOutput("Data");
+    asyncPass.addStorageBufferOutput("IndirectCommands");
     asyncPass.addStorageTextureInput("Color");
     asyncPass.addStorageTextureOutput("Color");
     asyncPass.registerGraphElement(graphElement);
 
     auto& compositePass = graph.createPassGraphic("Composite");
     compositePass.addTextureInput("Color");
+    compositePass.addStorageBufferInput("Data");
+    compositePass.addIndirectBufferInput("IndirectCommands");
     compositePass.addColorTarget("Swapchain");
     compositePass.clearTarget("Swapchain");
     compositePass.registerGraphElement(graphElement);
@@ -270,6 +481,102 @@ TEST_P(ValidationScenarioTest, FullGraphPipelineHasNoValidationErrorsAcrossReset
     EXPECT_EQ(graphElement->getResetCount(), passCount * totalResetCount);
     EXPECT_EQ(graph.getTimestamps().size(), passCount);
     ASSERT_EQ(vkDeviceWaitIdle(device.getLogicalDevice()), VK_SUCCESS);
+  }
+
+  const std::vector<std::string> errors = validationErrors.getErrors();
+  EXPECT_TRUE(errors.empty()) << joinErrors(errors);
+}
+
+TEST_P(ValidationScenarioTest, GpuDrivenIndexedIndirectCountDrawsTriangle) {
+  const bool separateComputeQueue = GetParam();
+  ValidationErrorCollector validationErrors;
+  RenderGraph::Instance instance("GpuDrivenValidationTest", true);
+  if (!instance.isDebug()) {
+    GTEST_SKIP() << "Vulkan validation layers or VK_EXT_debug_utils are unavailable";
+  }
+
+  ValidationMessenger validationMessenger(instance.getInstance().instance, validationErrors);
+
+  {
+    constexpr int framesInFlight = 2;
+    const glm::ivec2 resolution(256, 256);
+
+    RenderGraph::Window window(resolution);
+    window.initialize();
+    RenderGraph::Surface surface(window, instance);
+    RenderGraph::Device device(surface, instance);
+    // The test intentionally exercises ordinary descriptor sets. Descriptor-buffer
+    // behavior is covered independently by DescriptorBufferTest.
+    device.setOptionalExtensions({});
+    device.initialize();
+    RenderGraph::MemoryAllocator allocator(device, instance);
+    RenderGraph::Swapchain swapchain(resolution, allocator, device);
+    swapchain.initialize();
+    RenderGraph::Graph graph(2, framesInFlight, swapchain, window, device);
+    graph.initialize();
+
+    graph.getGraphStorage().add(
+        "Swapchain", std::make_unique<RenderGraph::ImageViewHolder>(
+                         swapchain.getImageViews(), [&swapchain]() { return swapchain.getSwapchainIndex(); }));
+
+    auto addBuffers = [&](std::string_view name, VkDeviceSize size, VkBufferUsageFlags usage) {
+      std::vector<std::unique_ptr<RenderGraph::Buffer>> buffers;
+      buffers.reserve(framesInFlight);
+      for (int frameIndex = 0; frameIndex < framesInFlight; ++frameIndex) {
+        buffers.push_back(std::make_unique<RenderGraph::Buffer>(
+            size, usage, VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT, allocator));
+      }
+      graph.getGraphStorage().add(name, buffers);
+    };
+
+    addBuffers("Positions", sizeof(float) * 4 * 3, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    addBuffers("Indices", sizeof(uint32_t) * 3,
+               VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+    addBuffers("DrawCommands", sizeof(VkDrawIndexedIndirectCommand),
+               VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT);
+    addBuffers("DrawCounts", sizeof(uint32_t),
+               VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT);
+
+    const auto positions = graph.getGraphStorage().getBuffer("Positions");
+    const auto indices = graph.getGraphStorage().getBuffer("Indices");
+    const auto drawCommands = graph.getGraphStorage().getBuffer("DrawCommands");
+    const auto drawCounts = graph.getGraphStorage().getBuffer("DrawCounts");
+
+    auto& generatePass = graph.createPassCompute("GenerateDraw", separateComputeQueue);
+    generatePass.addStorageBufferOutput("Positions");
+    generatePass.addStorageBufferOutput("Indices");
+    generatePass.addStorageBufferOutput("DrawCommands");
+    generatePass.addStorageBufferOutput("DrawCounts");
+
+    auto& drawPass = graph.createPassGraphic("IndirectDraw");
+    drawPass.addStorageBufferInput("Positions");
+    drawPass.addIndexBufferInput("Indices");
+    drawPass.addIndirectBufferInput("DrawCommands");
+    drawPass.addIndirectBufferInput("DrawCounts");
+    drawPass.addColorTarget("Swapchain");
+    drawPass.clearTarget("Swapchain");
+
+    auto computeElement = std::make_shared<GpuDrivenComputeElement>(
+        device, *generatePass.getCommandBuffers().front(), positions, indices, drawCommands, drawCounts);
+    auto graphicElement = std::make_shared<GpuDrivenGraphicElement>(
+        device, *drawPass.getCommandBuffers().front(), drawPass.getPipelineGraphic(graph.getGraphStorage()),
+        VkExtent2D{static_cast<uint32_t>(resolution.x), static_cast<uint32_t>(resolution.y)}, positions, indices,
+        drawCommands, drawCounts);
+    generatePass.registerGraphElement(computeElement);
+    drawPass.registerGraphElement(graphicElement);
+
+    graph.calculate();
+    std::vector<int> renderedFrames;
+    renderedFrames.reserve(framesInFlight);
+    for (int frameIndex = 0; frameIndex < framesInFlight; ++frameIndex) {
+      renderedFrames.push_back(graph.getFrameInFlight());
+      ASSERT_FALSE(graph.render());
+    }
+    ASSERT_EQ(vkDeviceWaitIdle(device.getLogicalDevice()), VK_SUCCESS);
+
+    for (const int renderedFrame : renderedFrames) {
+      EXPECT_GT(graphicElement->getPassedSamples(renderedFrame), 0u);
+    }
   }
 
   const std::vector<std::string> errors = validationErrors.getErrors();

@@ -104,6 +104,8 @@ TEST(ScenarioTest, GraphOneQueue) {
 
   EXPECT_EQ(renderPass.getPipelineGraphic(graph.getGraphStorage()).getColorAttachments().size(), 2);
   EXPECT_EQ(renderPass.getDepthTarget(), std::nullopt);
+  EXPECT_TRUE(renderPass.getStorageBufferInputs().empty());
+  EXPECT_TRUE(renderPass.getIndirectBufferInputs().empty());
 
   auto& postprocessingPass = graph.createPassCompute("Postprocessing", false);
   postprocessingPass.registerGraphElement(elementMock);
@@ -520,6 +522,118 @@ TEST(ScenarioTest, BufferOwnershipTransferUsesLastResourceOwner) {
   ASSERT_EQ(lastWaitSemaphores.size(), 2);
   EXPECT_TRUE(std::ranges::contains(lastWaitSemaphores, middleSignalSemaphores.front()));
   EXPECT_TRUE(std::ranges::contains(lastWaitSemaphores, graph._semaphoreImageAvailable.front().get()));
+}
+
+TEST(ScenarioTest, GraphicsPassBufferInputs) {
+  const glm::ivec2 resolution(1920, 1080);
+  RenderGraph::Instance instance("TestApp", false);
+  RenderGraph::Window window(resolution);
+  window.initialize();
+  RenderGraph::Surface surface(window, instance);
+  RenderGraph::Device device(surface, instance);
+  device.initialize();
+  RenderGraph::MemoryAllocator allocator(device, instance);
+  RenderGraph::Swapchain swapchain(resolution, allocator, device);
+  swapchain.initialize();
+
+  constexpr int framesInFlight = 2;
+  RenderGraph::Graph graph(2, framesInFlight, swapchain, window, device);
+  graph.initialize();
+  graph.getGraphStorage().add(
+      "Swapchain", std::make_unique<RenderGraph::ImageViewHolder>(
+                       swapchain.getImageViews(), [&swapchain]() { return swapchain.getSwapchainIndex(); }));
+
+  auto addBuffers = [&](std::string_view name, VkBufferUsageFlags usage) {
+    std::vector<std::unique_ptr<RenderGraph::Buffer>> buffers;
+    buffers.reserve(framesInFlight);
+    for (int frameIndex = 0; frameIndex < framesInFlight; ++frameIndex) {
+      buffers.push_back(std::make_unique<RenderGraph::Buffer>(
+          1024, usage, VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT, allocator));
+    }
+    graph.getGraphStorage().add(name, buffers);
+  };
+
+  addBuffers("VisibleObjects", VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+  addBuffers("IndirectCommands", VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT);
+  addBuffers("Vertices", VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+  addBuffers("Indices", VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+
+  auto& cullPass = graph.createPassCompute("Cull", false);
+  cullPass.addStorageBufferOutput("VisibleObjects");
+  cullPass.addStorageBufferOutput("IndirectCommands");
+  cullPass.addStorageBufferOutput("Vertices");
+  cullPass.addStorageBufferOutput("Indices");
+
+  auto& drawPass = graph.createPassGraphic("Draw");
+  drawPass.addStorageBufferInput("VisibleObjects");
+  drawPass.addIndirectBufferInput("IndirectCommands");
+  drawPass.addVertexBufferInput("Vertices");
+  drawPass.addIndexBufferInput("Indices");
+  drawPass.addColorTarget("Swapchain");
+
+  graph.calculate();
+
+  ASSERT_EQ(drawPass.getStorageBufferInputs().size(), 1);
+  EXPECT_EQ(drawPass.getStorageBufferInputs().front(), "VisibleObjects");
+  ASSERT_EQ(drawPass.getIndirectBufferInputs().size(), 1);
+  EXPECT_EQ(drawPass.getIndirectBufferInputs().front(), "IndirectCommands");
+  ASSERT_EQ(drawPass.getVertexBufferInputs().size(), 1);
+  EXPECT_EQ(drawPass.getVertexBufferInputs().front(), "Vertices");
+  ASSERT_EQ(drawPass.getIndexBufferInputs().size(), 1);
+  EXPECT_EQ(drawPass.getIndexBufferInputs().front(), "Indices");
+
+  ASSERT_EQ(graph._passesOrdered.size(), 2);
+  EXPECT_EQ(graph._passesOrdered.front(), &cullPass);
+  EXPECT_EQ(graph._passesOrdered.back(), &drawPass);
+
+  ASSERT_TRUE(graph._sync.contains(&drawPass));
+  const auto barriers = graph._sync.at(&drawPass).getBarriersBefore();
+  ASSERT_EQ(barriers.size(), 4);
+
+  const VkBuffer visibleObjectsBuffer = graph.getGraphStorage().getBuffer("VisibleObjects")[0]->getBuffer();
+  const VkBuffer indirectCommandsBuffer = graph.getGraphStorage().getBuffer("IndirectCommands")[0]->getBuffer();
+  const VkBuffer vertexBuffer = graph.getGraphStorage().getBuffer("Vertices")[0]->getBuffer();
+  const VkBuffer indexBuffer = graph.getGraphStorage().getBuffer("Indices")[0]->getBuffer();
+  const VkPipelineStageFlags2 graphicsShaderStages =
+      VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_TESSELLATION_CONTROL_SHADER_BIT |
+      VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_GEOMETRY_SHADER_BIT |
+      VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+
+  bool foundStorageBarrier = false;
+  bool foundIndirectBarrier = false;
+  bool foundVertexBarrier = false;
+  bool foundIndexBarrier = false;
+  for (const auto* barrier : barriers) {
+    ASSERT_EQ(barrier->getBufferBarriers().size(), 1);
+    const auto& bufferBarrier = barrier->getBufferBarriers().front();
+    EXPECT_EQ(bufferBarrier.srcStageMask, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+    EXPECT_EQ(bufferBarrier.srcAccessMask, VK_ACCESS_SHADER_WRITE_BIT);
+
+    if (bufferBarrier.buffer == visibleObjectsBuffer) {
+      foundStorageBarrier = true;
+      EXPECT_EQ(bufferBarrier.dstStageMask, graphicsShaderStages);
+      EXPECT_EQ(bufferBarrier.dstAccessMask, VK_ACCESS_SHADER_READ_BIT);
+    } else if (bufferBarrier.buffer == indirectCommandsBuffer) {
+      foundIndirectBarrier = true;
+      EXPECT_EQ(bufferBarrier.dstStageMask, VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT);
+      EXPECT_EQ(bufferBarrier.dstAccessMask, VK_ACCESS_INDIRECT_COMMAND_READ_BIT);
+    } else if (bufferBarrier.buffer == vertexBuffer) {
+      foundVertexBarrier = true;
+      EXPECT_EQ(bufferBarrier.dstStageMask, VK_PIPELINE_STAGE_VERTEX_INPUT_BIT);
+      EXPECT_EQ(bufferBarrier.dstAccessMask, VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT);
+    } else if (bufferBarrier.buffer == indexBuffer) {
+      foundIndexBarrier = true;
+      EXPECT_EQ(bufferBarrier.dstStageMask, VK_PIPELINE_STAGE_VERTEX_INPUT_BIT);
+      EXPECT_EQ(bufferBarrier.dstAccessMask, VK_ACCESS_INDEX_READ_BIT);
+    } else {
+      FAIL() << "Barrier references an unexpected buffer";
+    }
+  }
+
+  EXPECT_TRUE(foundStorageBarrier);
+  EXPECT_TRUE(foundIndirectBarrier);
+  EXPECT_TRUE(foundVertexBarrier);
+  EXPECT_TRUE(foundIndexBarrier);
 }
 
 TEST(ScenarioTest, GraphReset) {

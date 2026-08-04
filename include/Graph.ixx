@@ -19,6 +19,7 @@ import <unordered_set>;
 // Forward declarations for test classes, not visible outside this module
 class ScenarioTest_GraphSeparateQueues_Test;
 class ScenarioTest_BufferOwnershipTransferUsesLastResourceOwner_Test;
+class ScenarioTest_GraphicsPassBufferInputs_Test;
 class ScenarioTest_GraphOneQueue_Test;
 class ScenarioTest_TraversalKeepsTransitiveProducerBeforeConsumer_Test;
 class ScenarioTest_TraversalDiamondGraph_Test;
@@ -87,7 +88,8 @@ class GraphPass {
 
 class GraphPassGraphic final : public GraphPass {
  private:
-  std::vector<std::string> _colorTargets, _textureInputs;
+  std::vector<std::string> _colorTargets, _textureInputs, _vertexBufferInputs, _indexBufferInputs;
+  std::vector<std::string> _storageBufferInputs, _indirectBufferInputs;
   std::optional<std::string> _depthTarget;
 
   std::unordered_map<std::string, bool> _clearTarget;
@@ -109,6 +111,11 @@ class GraphPassGraphic final : public GraphPass {
   void setDepthTarget(std::string_view name) noexcept;
   // handle input to shaders
   void addTextureInput(std::string_view name) noexcept;
+  void addVertexBufferInput(std::string_view name) noexcept;
+  void addIndexBufferInput(std::string_view name) noexcept;
+  void addStorageBufferInput(std::string_view name) noexcept;
+  // handle input to indirect draw commands
+  void addIndirectBufferInput(std::string_view name) noexcept;
 
   // clear color target before use or load
   void clearTarget(std::string_view name) noexcept;
@@ -116,6 +123,10 @@ class GraphPassGraphic final : public GraphPass {
   const std::vector<std::string>& getColorTargets() const noexcept;
   std::optional<std::string> getDepthTarget() const noexcept;
   const std::vector<std::string>& getTextureInputs() const noexcept;
+  const std::vector<std::string>& getVertexBufferInputs() const noexcept;
+  const std::vector<std::string>& getIndexBufferInputs() const noexcept;
+  const std::vector<std::string>& getStorageBufferInputs() const noexcept;
+  const std::vector<std::string>& getIndirectBufferInputs() const noexcept;
   PipelineGraphic& getPipelineGraphic(const GraphStorage& graphStorage) const noexcept;
   void execute(int currentFrame, const CommandBuffer& commandBuffer) override;
 };
@@ -157,6 +168,7 @@ class Graph final {
  private:
   friend class ::ScenarioTest_GraphSeparateQueues_Test;
   friend class ::ScenarioTest_BufferOwnershipTransferUsesLastResourceOwner_Test;
+  friend class ::ScenarioTest_GraphicsPassBufferInputs_Test;
   friend class ::ScenarioTest_GraphOneQueue_Test;
   friend class ::ScenarioTest_TraversalKeepsTransitiveProducerBeforeConsumer_Test;
   friend class ::ScenarioTest_TraversalDiamondGraph_Test;

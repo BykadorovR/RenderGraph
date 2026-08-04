@@ -1,0 +1,40 @@
+#version 460
+
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) buffer Positions {
+  vec4 values[];
+} positions;
+
+layout(set = 0, binding = 1, std430) buffer Indices {
+  uint values[];
+} indices;
+
+layout(set = 0, binding = 2, std430) buffer DrawCommands {
+  uint indexCount;
+  uint instanceCount;
+  uint firstIndex;
+  int vertexOffset;
+  uint firstInstance;
+} drawCommand;
+
+layout(set = 0, binding = 3, std430) buffer DrawCount {
+  uint value;
+} drawCount;
+
+void main() {
+  positions.values[0] = vec4(-0.5, -0.5, 0.0, 1.0);
+  positions.values[1] = vec4(0.5, -0.5, 0.0, 1.0);
+  positions.values[2] = vec4(0.0, 0.5, 0.0, 1.0);
+
+  indices.values[0] = 0;
+  indices.values[1] = 1;
+  indices.values[2] = 2;
+
+  drawCommand.indexCount = 3;
+  drawCommand.instanceCount = 1;
+  drawCommand.firstIndex = 0;
+  drawCommand.vertexOffset = 0;
+  drawCommand.firstInstance = 0;
+  drawCount.value = 1;
+}
