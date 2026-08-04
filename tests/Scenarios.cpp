@@ -194,11 +194,13 @@ TEST(ScenarioTest, GraphOneQueue) {
   EXPECT_TRUE(graph.getTimestamps().empty());
   EXPECT_EQ(graph.getFrameInFlight(), 1);
   EXPECT_EQ(elementMock->getDrawCount(), 3);
+  EXPECT_EQ(elementMock->getUpdateCount(), elementMock->getDrawCount());
 
   graph.render();
   EXPECT_TRUE(graph.getTimestamps().empty());
   EXPECT_EQ(graph.getFrameInFlight(), (2 % framesInFlight));
   EXPECT_EQ(elementMock->getDrawCount(), 6);
+  EXPECT_EQ(elementMock->getUpdateCount(), elementMock->getDrawCount());
 
   graph.render();
   auto timestamps1 = graph.getTimestamps();
@@ -213,6 +215,7 @@ TEST(ScenarioTest, GraphOneQueue) {
   EXPECT_GE(timestamps1["GUI"].y, timestamps1["GUI"].x);
   EXPECT_EQ(graph.getFrameInFlight(), 1);
   EXPECT_EQ(elementMock->getDrawCount(), 9);
+  EXPECT_EQ(elementMock->getUpdateCount(), elementMock->getDrawCount());
 
   graph.render();
   auto timestamps2 = graph.getTimestamps();
@@ -227,11 +230,13 @@ TEST(ScenarioTest, GraphOneQueue) {
   EXPECT_GE(timestamps2["GUI"].y, timestamps2["GUI"].x);
   EXPECT_EQ(graph.getFrameInFlight(), (4 % framesInFlight));
   EXPECT_EQ(elementMock->getDrawCount(), 12);
+  EXPECT_EQ(elementMock->getUpdateCount(), elementMock->getDrawCount());
 
   for (int i = 0; i < 100; i++) {
     graph.render();
     EXPECT_EQ(graph.getFrameInFlight(), ((4 + i + 1) % framesInFlight));
     EXPECT_EQ(elementMock->getDrawCount(), 3 * (i + 5));
+    EXPECT_EQ(elementMock->getUpdateCount(), elementMock->getDrawCount());
   }
 
   // wait device idle before destroying resources

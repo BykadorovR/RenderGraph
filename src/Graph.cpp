@@ -278,6 +278,7 @@ bool GraphPassCompute::isSeparate() const noexcept { return _separate; }
 
 void GraphPassCompute::execute(int currentFrame, const CommandBuffer& commandBuffer) {
   for (auto&& graphElement : _graphElements) {
+    graphElement->update(currentFrame, commandBuffer);
     graphElement->draw(currentFrame, commandBuffer);
   }
 }
