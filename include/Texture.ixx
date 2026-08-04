@@ -13,6 +13,7 @@ import <memory>;
 import <vector>;
 import <functional>;
 import <stdexcept>;
+import <utility>;
 
 export namespace RenderGraph {
 template <class T>
@@ -21,15 +22,20 @@ concept Arithmetic = std::integral<T> || std::floating_point<T>;
 template <Arithmetic T>
 class ImageCPU final {
  private:
-  T* _data;
+  T* _data = nullptr;
   std::function<void(T*)> _deleter;
-  glm::ivec2 _resolution;
-  int _channels;
+  glm::ivec2 _resolution{};
+ int _channels = 0;
 
  public:
+  ImageCPU() = default;
+  ImageCPU(const ImageCPU&) = delete;
+  ImageCPU& operator=(const ImageCPU&) = delete;
+
   void setData(T* data, std::function<void(T*)> deleter) {
+    if (_data != data && _deleter) _deleter(_data);
     _data = data;
-    _deleter = deleter;
+    _deleter = std::move(deleter);
   }
   void setResolution(glm::ivec2 resolution) { _resolution = resolution; }
   void setChannels(int channels) { _channels = channels; }
@@ -37,7 +43,9 @@ class ImageCPU final {
   const T* getData() const noexcept { return _data; }
   glm::ivec2 getResolution() const noexcept { return _resolution; }
   int getChannels() const noexcept { return _channels; }
-  ~ImageCPU() { _deleter(_data); }
+  ~ImageCPU() {
+    if (_deleter) _deleter(_data);
+  }
 };
 
 class Image final {
@@ -156,7 +164,7 @@ class ImageViewHolder final {
 class Sampler final {
  private:
   const Device* _device;
-  VkSampler _sampler;
+  VkSampler _sampler{};
 
  public:
   Sampler(const Device& device) noexcept;

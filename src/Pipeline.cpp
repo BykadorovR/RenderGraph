@@ -73,7 +73,7 @@ void PipelineGraphic::setDepthTest(bool depthTest) noexcept { _depthStencil.dept
 
 void PipelineGraphic::setDepthWrite(bool depthWrite) noexcept { _depthStencil.depthWriteEnable = depthWrite; }
 
-void PipelineGraphic::setDepthCompateOp(VkCompareOp depthCompareOp) noexcept {
+void PipelineGraphic::setDepthCompareOp(VkCompareOp depthCompareOp) noexcept {
   // we force skybox to have the biggest possible depth = 1 so we need to draw skybox if it's depth <= 1
   _depthStencil.depthCompareOp = depthCompareOp;
 }

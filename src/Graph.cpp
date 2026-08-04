@@ -242,6 +242,10 @@ void GraphPassCompute::addStorageTextureInput(std::string_view name) noexcept {
   _storageTextureInputs.emplace_back(name);
 }
 
+void GraphPassCompute::addIndirectBufferInput(std::string_view name) noexcept {
+  _indirectBufferInputs.emplace_back(name);
+}
+
 void GraphPassCompute::addStorageBufferOutput(std::string_view name) noexcept {
   _storageBufferOutputs.emplace_back(name);
 }
@@ -264,6 +268,10 @@ const std::vector<std::string>& GraphPassCompute::getStorageTextureInputs() cons
 
 const std::vector<std::string>& GraphPassCompute::getStorageTextureOutputs() const noexcept {
   return _storageTextureOutputs;
+}
+
+const std::vector<std::string>& GraphPassCompute::getIndirectBufferInputs() const noexcept {
+  return _indirectBufferInputs;
 }
 
 bool GraphPassCompute::isSeparate() const noexcept { return _separate; }
@@ -673,6 +681,7 @@ void Graph::print() const noexcept {
       auto* passCompute = static_cast<GraphPassCompute*>(value);
       printBuffers(passCompute->getStorageBufferInputs(), " storage buffer input: ");
       printBuffers(passCompute->getStorageBufferOutputs(), " storage buffer output: ");
+      printBuffers(passCompute->getIndirectBufferInputs(), " indirect buffer input: ");
       printImages(passCompute->getStorageTextureInputs(), " storage texture input: ");
       printImages(passCompute->getStorageTextureOutputs(), " storage texture output: ");
     }
@@ -705,6 +714,8 @@ void Graph::calculate() {
     if (pass->getGraphPassType() == GraphPassType::COMPUTE) {
       auto* compute = static_cast<GraphPassCompute*>(pass.get());
       addResources(pass.get(), compute->getStorageBufferInputs(), Resource::Type::BUFFER, Resource::Operation::READ);
+      addResources(pass.get(), compute->getIndirectBufferInputs(), Resource::Type::BUFFER,
+                   Resource::Operation::READ);
       addResources(pass.get(), compute->getStorageTextureInputs(), Resource::Type::IMAGE, Resource::Operation::READ);
       addResources(pass.get(), compute->getStorageBufferOutputs(), Resource::Type::BUFFER, Resource::Operation::WRITE);
       addResources(pass.get(), compute->getStorageTextureOutputs(), Resource::Type::IMAGE, Resource::Operation::WRITE);
@@ -801,20 +812,27 @@ void Graph::calculate() {
 
     if (pass->getGraphPassType() == GraphPassType::COMPUTE) {
       auto* compute = static_cast<GraphPassCompute*>(pass);
-      usage.stageMask = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
 
       if (resource.type == Resource::Type::BUFFER) {
         if (std::ranges::contains(compute->getStorageBufferInputs(), resource.name)) {
+          usage.stageMask |= VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
           usage.accessMask |= VK_ACCESS_SHADER_READ_BIT;
         }
         if (std::ranges::contains(compute->getStorageBufferOutputs(), resource.name)) {
+          usage.stageMask |= VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
           usage.accessMask |= VK_ACCESS_SHADER_WRITE_BIT;
+        }
+        if (std::ranges::contains(compute->getIndirectBufferInputs(), resource.name)) {
+          usage.stageMask |= VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT;
+          usage.accessMask |= VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
         }
       } else {
         if (std::ranges::contains(compute->getStorageTextureInputs(), resource.name)) {
+          usage.stageMask |= VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
           usage.accessMask |= VK_ACCESS_SHADER_READ_BIT;
         }
         if (std::ranges::contains(compute->getStorageTextureOutputs(), resource.name)) {
+          usage.stageMask |= VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
           usage.accessMask |= VK_ACCESS_SHADER_WRITE_BIT;
         }
       }

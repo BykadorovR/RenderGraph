@@ -39,7 +39,7 @@ class PipelineGraphic final {
   void setDepthBias(bool depthBias) noexcept;
   void setDepthTest(bool depthTest) noexcept;
   void setDepthWrite(bool depthWrite) noexcept;
-  void setDepthCompateOp(VkCompareOp depthCompareOp) noexcept;
+  void setDepthCompareOp(VkCompareOp depthCompareOp) noexcept;
   void setColorBlendOp(VkBlendOp colorBlendOp) noexcept;
   void setTesselation(int patchControlPoints) noexcept;
   void setColorAttachments(const std::vector<VkFormat>& colorAttachments) noexcept;
@@ -63,8 +63,8 @@ class Pipeline final {
   const Device* _device;
   std::vector<DescriptorSetLayout*> _descriptorSetLayout;
   std::unordered_map<std::string, VkPushConstantRange> _pushConstants;
-  VkPipeline _pipeline;
-  VkPipelineLayout _pipelineLayout;
+  VkPipeline _pipeline{};
+  VkPipelineLayout _pipelineLayout{};
 
  public:
   Pipeline(const Device& device) noexcept;
