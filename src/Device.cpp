@@ -21,7 +21,6 @@ void Device::initialize() {
   VkPhysicalDeviceFeatures deviceFeatures{
       .geometryShader = true,
       .tessellationShader = true,
-      .fillModeNonSolid = true,
       .samplerAnisotropy = true,
   };
 
