@@ -15,8 +15,6 @@ import Command;
 import Device;
 
 export namespace RenderGraph {
-export VmaAllocationCreateFlagBits;
-
 class Buffer final {
  private:
   const MemoryAllocator* _memoryAllocator;

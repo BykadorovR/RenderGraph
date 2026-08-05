@@ -11,14 +11,16 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_RELEASE ${CMAKE_BINARY_DIR})
 set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT ${PROJECT_NAME})
 include(FetchContent)
 
-set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "Disable GLFW examples")
-set(GLFW_BUILD_TESTS OFF CACHE BOOL "Disable GLFW tests")
-set(GLFW_BUILD_DOCS OFF CACHE BOOL "Disable GLFW docs")
-FetchContent_Declare(
-  glfw
-  GIT_REPOSITORY https://github.com/glfw/glfw.git
-  GIT_TAG 4afa227a056681d2628894b0893527bf69496a41
-)
+if (NOT ANDROID)
+  set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "Disable GLFW examples")
+  set(GLFW_BUILD_TESTS OFF CACHE BOOL "Disable GLFW tests")
+  set(GLFW_BUILD_DOCS OFF CACHE BOOL "Disable GLFW docs")
+  FetchContent_Declare(
+    glfw
+    GIT_REPOSITORY https://github.com/glfw/glfw.git
+    GIT_TAG 4afa227a056681d2628894b0893527bf69496a41
+  )
+endif()
 
 FetchContent_Declare(
   thread-pool
@@ -38,7 +40,11 @@ FetchContent_Declare(
   GIT_TAG        v1.3.302
 )
 
-set(VOLK_STATIC_DEFINES VK_USE_PLATFORM_WIN32_KHR)
+if (WIN32)
+  set(VOLK_STATIC_DEFINES VK_USE_PLATFORM_WIN32_KHR)
+elseif (ANDROID)
+  set(VOLK_STATIC_DEFINES VK_USE_PLATFORM_ANDROID_KHR)
+endif()
 FetchContent_Declare(
   volk
   GIT_REPOSITORY https://github.com/zeux/volk
@@ -51,11 +57,13 @@ FetchContent_Declare(
   GIT_TAG v3.2.1
 )
 
-FetchContent_Declare(
-  googletest
-  GIT_REPOSITORY https://github.com/google/googletest.git
-  GIT_TAG v1.17.0
-)
+if (RENDER_GRAPH_BUILD_TESTS)
+  FetchContent_Declare(
+    googletest
+    GIT_REPOSITORY https://github.com/google/googletest.git
+    GIT_TAG v1.17.0
+  )
+endif()
 
 set(SPIRV_REFLECT_EXECUTABLE OFF CACHE BOOL "Build spirv-reflect executable")
 set(SPIRV_REFLECT_STATIC_LIB "Build a SPIRV-Reflect static library" ON)
@@ -65,7 +73,21 @@ FetchContent_Declare(
   GIT_TAG ef913b3ab3da1becca3cf46b15a10667c67bebe5
 )
 
-FetchContent_MakeAvailable(glfw glm thread-pool vk-bootstrap volk vulkan-memory-allocator googletest spirv-reflect)
+set(renderGraphDependencies
+  glm
+  thread-pool
+  vk-bootstrap
+  volk
+  vulkan-memory-allocator
+  spirv-reflect
+)
+if (NOT ANDROID)
+  list(APPEND renderGraphDependencies glfw)
+endif()
+if (RENDER_GRAPH_BUILD_TESTS)
+  list(APPEND renderGraphDependencies googletest)
+endif()
+FetchContent_MakeAvailable(${renderGraphDependencies})
 
 # need to build as module
 add_library(glm-module)
@@ -79,12 +101,12 @@ target_compile_features(glm-module PRIVATE cxx_std_23)
 if (MSVC)
   #enable multiple cores compilation for VS
   target_compile_options(glm-module PRIVATE "/MP")
+  # MSVC recognizes only .ixx, so need to specify this for .cppm
+  set_source_files_properties(${glm_SOURCE_DIR}/glm/glm.cppm PROPERTIES
+      COMPILE_OPTIONS "/interface"
+  )
 endif()
 set_target_properties(glm-module PROPERTIES CXX_SCAN_FOR_MODULES ON)
-# MSVC recognizes only .ixx, so need to specify this for .cppm
-set_source_files_properties(${glm_SOURCE_DIR}/glm/glm.cppm PROPERTIES
-    COMPILE_OPTIONS "/interface"
-)
 
 ##############################
 
@@ -119,7 +141,6 @@ target_include_directories(${PROJECT_NAME} PRIVATE ${Vulkan_INCLUDE_DIRS})
 target_include_directories(RenderGraph
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-        ${glfw_SOURCE_DIR}/include
         ${vk-bootstrap_SOURCE_DIR}/src
         ${volk_SOURCE_DIR}
         ${vulkan-memory-allocator_SOURCE_DIR}/include
@@ -127,13 +148,22 @@ target_include_directories(RenderGraph
         ${thread-pool_SOURCE_DIR}/include
 )
 
-target_link_libraries(${PROJECT_NAME} PUBLIC glfw vk-bootstrap::vk-bootstrap volk::volk GPUOpen::VulkanMemoryAllocator glm-module spirv-reflect-static)
+target_link_libraries(${PROJECT_NAME} PUBLIC vk-bootstrap::vk-bootstrap volk::volk GPUOpen::VulkanMemoryAllocator glm-module spirv-reflect-static)
+if (ANDROID)
+  find_library(androidLibrary android REQUIRED)
+  target_link_libraries(${PROJECT_NAME} PUBLIC ${androidLibrary})
+else()
+  target_include_directories(${PROJECT_NAME} PUBLIC ${glfw_SOURCE_DIR}/include)
+  target_link_libraries(${PROJECT_NAME} PUBLIC glfw)
+endif()
 # should be defined on this level so preprocessor code is handled correctly
 target_compile_definitions(${PROJECT_NAME} PRIVATE
   VK_NO_PROTOTYPES
-  GLFW_INCLUDE_VULKAN
   $<$<PLATFORM_ID:Windows>:NOMINMAX>
 )
+if (NOT ANDROID)
+  target_compile_definitions(${PROJECT_NAME} PRIVATE GLFW_INCLUDE_NONE GLFW_INCLUDE_VULKAN)
+endif()
 set_target_properties(${PROJECT_NAME} PROPERTIES CXX_SCAN_FOR_MODULES ON)
 
 if (RENDER_GRAPH_BUILD_TESTS)
