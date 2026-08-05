@@ -1,6 +1,13 @@
+module;
+
+#include <VkBootstrap.h>
+#include <algorithm>
+#include <stdexcept>
+#include <string>
+#include <vector>
+#include <volk.h>
+
 module Device;
-import <ranges>;
-import <algorithm>;
 
 using namespace RenderGraph;
 

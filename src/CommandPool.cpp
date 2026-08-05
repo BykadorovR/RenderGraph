@@ -1,4 +1,11 @@
+module;
+
+#include <VkBootstrap.h>
+#include <stdexcept>
+#include <volk.h>
+
 module CommandPool;
+
 using namespace RenderGraph;
 
 CommandPool::CommandPool(vkb::QueueType type, const Device& device) : _device(&device) {

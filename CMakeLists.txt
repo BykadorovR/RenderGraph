@@ -129,7 +129,11 @@ target_include_directories(RenderGraph
 
 target_link_libraries(${PROJECT_NAME} PUBLIC glfw vk-bootstrap::vk-bootstrap volk::volk GPUOpen::VulkanMemoryAllocator glm-module spirv-reflect-static)
 # should be defined on this level so preprocessor code is handled correctly
-target_compile_definitions(${PROJECT_NAME} PRIVATE VK_NO_PROTOTYPES GLFW_INCLUDE_VULKAN)
+target_compile_definitions(${PROJECT_NAME} PRIVATE
+  VK_NO_PROTOTYPES
+  GLFW_INCLUDE_VULKAN
+  $<$<PLATFORM_ID:Windows>:NOMINMAX>
+)
 set_target_properties(${PROJECT_NAME} PROPERTIES CXX_SCAN_FOR_MODULES ON)
 
 if (RENDER_GRAPH_BUILD_TESTS)
@@ -169,6 +173,7 @@ if (RENDER_GRAPH_BUILD_TESTS)
   target_link_libraries(${PROJECT_NAME}Tests PRIVATE gtest_main ${PROJECT_NAME})
   target_compile_definitions(${PROJECT_NAME}Tests PRIVATE
     renderGraphTestShaderDir="${testShaderBinaryDir}"
+    $<$<PLATFORM_ID:Windows>:NOMINMAX>
   )
   target_compile_features(${PROJECT_NAME}Tests PRIVATE cxx_std_23)
   set_target_properties(${PROJECT_NAME}Tests PROPERTIES CXX_SCAN_FOR_MODULES ON)

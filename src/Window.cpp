@@ -1,6 +1,10 @@
+module;
+
+#include "GLFW/glfw3.h"
+
 module Window;
+
 using namespace RenderGraph;
-import "GLFW/glfw3.h";
 
 GLFWwindow* Window::getWindow() const noexcept { return _window; }
 

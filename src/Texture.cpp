@@ -1,11 +1,21 @@
 module;
+
 #define VMA_STATIC_VULKAN_FUNCTIONS 0
 #define VMA_DYNAMIC_VULKAN_FUNCTIONS 0
+
+#include <algorithm>
+#include <functional>
+#include <memory>
+#include <ranges>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+#include <vk_mem_alloc.h>
+#include <volk.h>
+
 module Texture;
-import <volk.h>;
-import <algorithm>;
-import <ranges>;
-import <string>;
+
 using namespace RenderGraph;
 
 Image::Image(const MemoryAllocator& memoryAllocator) : _memoryAllocator(&memoryAllocator) {}
@@ -84,17 +94,17 @@ void Image::copyFrom(std::unique_ptr<Buffer> buffer,
     bufferCopyRegions.push_back(region);
   }
 
-  changeLayout(_imageLayout, VK_IMAGE_LAYOUT_GENERAL, 0, 0, VK_PIPELINE_STAGE_TRANSFER_BIT,
-               VK_ACCESS_TRANSFER_WRITE_BIT, commandBuffer);
+  changeLayout(_imageLayout, VK_IMAGE_LAYOUT_GENERAL, 0, 0, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+               VK_ACCESS_2_TRANSFER_WRITE_BIT, commandBuffer);
   vkCmdCopyBufferToImage(commandBuffer.getCommandBuffer(), _stagingBuffer->getBuffer(), _image, VK_IMAGE_LAYOUT_GENERAL,
                          bufferCopyRegions.size(), bufferCopyRegions.data());
   // need to insert memory barrier so read in fragment shader waits for copy
   VkImageMemoryBarrier2 imageBarrier = {
       .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-      .srcStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT,
-      .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-      .dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-      .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+      .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+      .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+      .dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+      .dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT,
       .oldLayout = VK_IMAGE_LAYOUT_GENERAL,
       .newLayout = VK_IMAGE_LAYOUT_GENERAL,
       .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -161,10 +171,10 @@ void Image::generateMipmaps(const CommandBuffer& commandBuffer) {
   int mipWidth = mipResolution.x, mipHeight = mipResolution.y;
   for (uint32_t i = 1; i < _mipMapNumber; i++) {
     // change layout of source image to SRC so we can resize it and generate i-th mip map level
-    barrier.srcStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT;
-    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    barrier.dstStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT;
-    barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    barrier.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+    barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    barrier.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+    barrier.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
     barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
     barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
     barrier.subresourceRange.baseMipLevel = i - 1;
@@ -191,10 +201,10 @@ void Image::generateMipmaps(const CommandBuffer& commandBuffer) {
                    VK_IMAGE_LAYOUT_GENERAL, 1, &blit, VK_FILTER_LINEAR);
 
     // change i = 0 to READ OPTIMAL, we won't use this level anymore, next resizes will use next i
-    barrier.srcStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT;
-    barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-    barrier.dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    barrier.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+    barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+    barrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    barrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
     barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
     barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
 
@@ -205,10 +215,10 @@ void Image::generateMipmaps(const CommandBuffer& commandBuffer) {
   }
 
   // we don't generate mip map from last level so we need explicitly change dst to read only
-  barrier.srcStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT;
-  barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-  barrier.dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-  barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+  barrier.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+  barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+  barrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+  barrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
   barrier.subresourceRange.baseMipLevel = _mipMapNumber - 1;
   barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
   barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;

@@ -1,4 +1,14 @@
+module;
+
+#include <VkBootstrap.h>
+#include <cstdio>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <volk.h>
+
 module Instance;
+
 using namespace RenderGraph;
 
 VkBool32 debugCallbackUtils(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,

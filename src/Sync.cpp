@@ -1,4 +1,11 @@
+module;
+
+#include <stdexcept>
+#include <vector>
+#include <volk.h>
+
 module Sync;
+
 using namespace RenderGraph;
 
 Semaphore::Semaphore(VkSemaphoreType type, const Device& device) : _device(&device) {

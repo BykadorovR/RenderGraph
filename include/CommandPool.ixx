@@ -1,8 +1,10 @@
+module;
+
+#include <VkBootstrap.h>
+
 export module CommandPool;
+
 import Device;
-import <volk.h>;
-import <VkBootstrap.h>;
-import <map>;
 
 export namespace RenderGraph {
 class CommandPool final {

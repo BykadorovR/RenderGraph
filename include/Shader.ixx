@@ -1,10 +1,15 @@
+module;
+
+#include <memory>
+#include <spirv_reflect.h>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+#include <volk.h>
+
 export module Shader;
+
 import Device;
-import <volk.h>;
-import <unordered_map>;
-import <vector>;
-import <memory>;
-import <spirv_reflect.h>;
 
 export namespace RenderGraph {
 class Shader final {

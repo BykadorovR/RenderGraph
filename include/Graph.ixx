@@ -1,5 +1,20 @@
 module;
+
+#include "BS_thread_pool.hpp"
+
+#include <deque>
+#include <functional>
+#include <memory>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
+#include <vector>
+
 export module Graph;
+
 import Pipeline;
 import Texture;
 import Swapchain;
@@ -11,10 +26,6 @@ import Buffer;
 import Device;
 import Window;
 import glm;
-import <volk.h>;
-import "BS_thread_pool.hpp";
-import <map>;
-import <unordered_set>;
 
 // Forward declarations for test classes, not visible outside this module
 class ScenarioTest_GraphSeparateQueues_Test;

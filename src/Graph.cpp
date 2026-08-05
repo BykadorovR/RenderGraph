@@ -1,7 +1,29 @@
+module;
+
+#include "BS_thread_pool.hpp"
+
+#include <algorithm>
+#include <cstdint>
+#include <future>
+#include <functional>
+#include <iostream>
+#include <iterator>
+#include <limits>
+#include <memory>
+#include <optional>
+#include <ranges>
+#include <set>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
+#include <vector>
+#include <volk.h>
+
 module Graph;
-import <set>;
-import <ranges>;
-import <limits>;
+
 using namespace RenderGraph;
 
 void GraphStorage::add(std::string_view name, std::unique_ptr<ImageViewHolder> imageHolder) {
@@ -553,8 +575,8 @@ void Graph::print() const {
   };
 
   auto accessToString = [](VkAccessFlags2 accessMask) -> std::string_view {
-    const bool read = (accessMask & static_cast<VkAccessFlags2>(VK_ACCESS_MEMORY_READ_BIT)) != 0;
-    const bool write = (accessMask & static_cast<VkAccessFlags2>(VK_ACCESS_MEMORY_WRITE_BIT)) != 0;
+    const bool read = (accessMask & VK_ACCESS_2_MEMORY_READ_BIT) != 0;
+    const bool write = (accessMask & VK_ACCESS_2_MEMORY_WRITE_BIT) != 0;
     if (read && write) return "RW";
     if (read) return "R";
     if (write) return "W";
@@ -816,25 +838,25 @@ void Graph::calculate() {
 
       if (resource.type == Resource::Type::BUFFER) {
         if (std::ranges::contains(compute->getStorageBufferInputs(), resource.name)) {
-          usage.stageMask |= VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
-          usage.accessMask |= VK_ACCESS_SHADER_READ_BIT;
+          usage.stageMask |= VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+          usage.accessMask |= VK_ACCESS_2_SHADER_READ_BIT;
         }
         if (std::ranges::contains(compute->getStorageBufferOutputs(), resource.name)) {
-          usage.stageMask |= VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
-          usage.accessMask |= VK_ACCESS_SHADER_WRITE_BIT;
+          usage.stageMask |= VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+          usage.accessMask |= VK_ACCESS_2_SHADER_WRITE_BIT;
         }
         if (std::ranges::contains(compute->getIndirectBufferInputs(), resource.name)) {
-          usage.stageMask |= VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT;
-          usage.accessMask |= VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+          usage.stageMask |= VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT;
+          usage.accessMask |= VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
         }
       } else {
         if (std::ranges::contains(compute->getStorageTextureInputs(), resource.name)) {
-          usage.stageMask |= VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
-          usage.accessMask |= VK_ACCESS_SHADER_READ_BIT;
+          usage.stageMask |= VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+          usage.accessMask |= VK_ACCESS_2_SHADER_READ_BIT;
         }
         if (std::ranges::contains(compute->getStorageTextureOutputs(), resource.name)) {
-          usage.stageMask |= VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
-          usage.accessMask |= VK_ACCESS_SHADER_WRITE_BIT;
+          usage.stageMask |= VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+          usage.accessMask |= VK_ACCESS_2_SHADER_WRITE_BIT;
         }
       }
     } else if (pass->getGraphPassType() == GraphPassType::GRAPHIC) {
@@ -842,51 +864,53 @@ void Graph::calculate() {
 
       if (resource.type == Resource::Type::BUFFER) {
         if (std::ranges::contains(graphic->getVertexBufferInputs(), resource.name)) {
-          usage.stageMask |= VK_PIPELINE_STAGE_VERTEX_INPUT_BIT;
-          usage.accessMask |= VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
+          usage.stageMask |= VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT;
+          usage.accessMask |= VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT;
         }
         if (std::ranges::contains(graphic->getIndexBufferInputs(), resource.name)) {
-          usage.stageMask |= VK_PIPELINE_STAGE_VERTEX_INPUT_BIT;
-          usage.accessMask |= VK_ACCESS_INDEX_READ_BIT;
+          usage.stageMask |= VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT;
+          usage.accessMask |= VK_ACCESS_2_INDEX_READ_BIT;
         }
         if (std::ranges::contains(graphic->getStorageBufferInputs(), resource.name)) {
-          usage.stageMask |= VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_TESSELLATION_CONTROL_SHADER_BIT |
-                             VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT |
-                             VK_PIPELINE_STAGE_GEOMETRY_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-          usage.accessMask |= VK_ACCESS_SHADER_READ_BIT;
+          usage.stageMask |= VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT |
+                             VK_PIPELINE_STAGE_2_TESSELLATION_CONTROL_SHADER_BIT |
+                             VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT |
+                             VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+          usage.accessMask |= VK_ACCESS_2_SHADER_READ_BIT;
         }
         if (std::ranges::contains(graphic->getIndirectBufferInputs(), resource.name)) {
-          usage.stageMask |= VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT;
-          usage.accessMask |= VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+          usage.stageMask |= VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT;
+          usage.accessMask |= VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
         }
       } else if (std::ranges::contains(graphic->getTextureInputs(), resource.name)) {
         // The exact shader stage is currently unknown, so include both
         // shader stages that may consume a graphics texture input.
-        usage.stageMask |= VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-        usage.accessMask |= VK_ACCESS_SHADER_READ_BIT;
+        usage.stageMask |= VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+        usage.accessMask |= VK_ACCESS_2_SHADER_READ_BIT;
       }
 
       if (std::ranges::contains(graphic->getColorTargets(), resource.name)) {
-        usage.stageMask |= VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        usage.stageMask |= VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
 
         if (hasOperation(resource, Resource::Operation::READ)) {
-          usage.accessMask |= VK_ACCESS_COLOR_ATTACHMENT_READ_BIT;
+          usage.accessMask |= VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT;
         }
         if (hasOperation(resource, Resource::Operation::WRITE)) {
-          usage.accessMask |= VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+          usage.accessMask |= VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
         }
       }
 
       const auto depthTarget = graphic->getDepthTarget();
 
       if (depthTarget && *depthTarget == resource.name) {
-        usage.stageMask |= VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+        usage.stageMask |= VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
+                           VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
 
         if (hasOperation(resource, Resource::Operation::READ)) {
-          usage.accessMask |= VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+          usage.accessMask |= VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
         }
         if (hasOperation(resource, Resource::Operation::WRITE)) {
-          usage.accessMask |= VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+          usage.accessMask |= VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
         }
       }
     }
@@ -1087,20 +1111,21 @@ bool Graph::render() {
             auto& imageView = _graphStorage->getImageViewHolder(colorTarget).getImageView();
             auto& image = imageView.getImage();
             if (image.getImageLayout() != VK_IMAGE_LAYOUT_GENERAL) {
-              const auto dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT;
+              const auto dstAccessMask =
+                  VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT;
               image.changeLayout(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, 0, 0,
-                                 VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, dstAccessMask, *commandBuffer);
+                                 VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, dstAccessMask, *commandBuffer);
             }
           }
           if (const auto& depthTarget = passGraphic->getDepthTarget()) {
             auto& imageView = _graphStorage->getImageViewHolder(*depthTarget).getImageView();
             auto& image = imageView.getImage();
             if (image.getImageLayout() != VK_IMAGE_LAYOUT_GENERAL) {
-              const auto dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
-                                         VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+              const auto dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
+                                         VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
               image.changeLayout(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, 0, 0,
-                                 VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
-                                     VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                                 VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
+                                     VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
                                  dstAccessMask, *commandBuffer);
             }
           }
@@ -1148,7 +1173,7 @@ bool Graph::render() {
           .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
           .semaphore = semaphore,
           .value = 0,
-          .stageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+          .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
       });
     }
     std::vector<VkSemaphoreSubmitInfo> signalSemaphoreInfos;
@@ -1158,7 +1183,7 @@ bool Graph::render() {
           .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
           .semaphore = signalSemaphores[i],
           .value = signalValues ? signalValues->at(i) : 0,
-          .stageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+          .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
       });
     }
 
@@ -1221,7 +1246,7 @@ bool Graph::render() {
   if (_swapchain->getImage(swapchainIndex).getImageLayout() != VK_IMAGE_LAYOUT_PRESENT_SRC_KHR) {
     _swapchain->getImage(swapchainIndex)
         .changeLayout(_swapchain->getImage(swapchainIndex).getImageLayout(), VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-                      VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_MEMORY_WRITE_BIT, 0, 0,
+                      VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT, 0, 0,
                       *commandBufferSubmit.back());
   }
 

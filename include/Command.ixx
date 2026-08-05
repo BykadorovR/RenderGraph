@@ -1,7 +1,11 @@
+module;
+
+#include <volk.h>
+
 export module Command;
+
 import Device;
 import CommandPool;
-import <volk.h>;
 
 export namespace RenderGraph {
 class CommandBuffer final {

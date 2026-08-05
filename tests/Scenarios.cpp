@@ -1,4 +1,19 @@
+#define VK_NO_PROTOTYPES
+#include <volk.h>
+
 #include <gtest/gtest.h>
+
+#include <algorithm>
+#include <atomic>
+#include <iterator>
+#include <memory>
+#include <optional>
+#include <ranges>
+#include <stdexcept>
+#include <string_view>
+#include <utility>
+#include <vector>
+
 import Instance;
 import Window;
 import Surface;
@@ -65,7 +80,8 @@ TEST(ScenarioTest, GraphOneQueue) {
     positionImage->createImage(VK_FORMAT_R16G16B16A16_SFLOAT, resolution, 1, 1, VK_IMAGE_ASPECT_COLOR_BIT,
                                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
     positionImage->changeLayout(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, 0, 0,
-                                VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                                 commandBuffer[graph.getFrameInFlight()]);
     auto positionImageView = std::make_shared<RenderGraph::ImageView>(std::move(positionImage), device);
     positionImageView->createImageView(VK_IMAGE_VIEW_TYPE_2D, 0, 0);
@@ -172,7 +188,7 @@ TEST(ScenarioTest, GraphOneQueue) {
   VkSemaphoreSubmitInfo signalSemaphoreInfo{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
                                             .semaphore = semaphore,
                                             .value = loadCounter,
-                                            .stageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT};
+                                            .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};
   VkSubmitInfo2 submitInfo{.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
                            .commandBufferInfoCount = 1,
                            .pCommandBufferInfos = &commandBufferInfo,
@@ -280,7 +296,8 @@ TEST(ScenarioTest, GraphSeparateQueues) {
     positionImage->createImage(VK_FORMAT_R16G16B16A16_SFLOAT, resolution, 1, 1, VK_IMAGE_ASPECT_COLOR_BIT,
                                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
     positionImage->changeLayout(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, 0, 0,
-                                VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                                 commandBuffer[graph.getFrameInFlight()]);
     auto positionImageView = std::make_shared<RenderGraph::ImageView>(std::move(positionImage), device);
     positionImageView->createImageView(VK_IMAGE_VIEW_TYPE_2D, 0, 0);
@@ -369,7 +386,7 @@ TEST(ScenarioTest, GraphSeparateQueues) {
   VkSemaphoreSubmitInfo signalSemaphoreInfo{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
                                             .semaphore = semaphore,
                                             .value = loadCounter,
-                                            .stageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT};
+                                            .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};
   VkSubmitInfo2 submitInfo{.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
                            .commandBufferInfoCount = 1,
                            .pCommandBufferInfos = &commandBufferInfo,
@@ -600,9 +617,9 @@ TEST(ScenarioTest, GraphicsPassBufferInputs) {
   const VkBuffer vertexBuffer = graph.getGraphStorage().getBuffer("Vertices")[0]->getBuffer();
   const VkBuffer indexBuffer = graph.getGraphStorage().getBuffer("Indices")[0]->getBuffer();
   const VkPipelineStageFlags2 graphicsShaderStages =
-      VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_TESSELLATION_CONTROL_SHADER_BIT |
-      VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_GEOMETRY_SHADER_BIT |
-      VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+      VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_CONTROL_SHADER_BIT |
+      VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT |
+      VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
 
   bool foundStorageBarrier = false;
   bool foundIndirectBarrier = false;
@@ -611,25 +628,25 @@ TEST(ScenarioTest, GraphicsPassBufferInputs) {
   for (const auto* barrier : barriers) {
     ASSERT_EQ(barrier->getBufferBarriers().size(), 1);
     const auto& bufferBarrier = barrier->getBufferBarriers().front();
-    EXPECT_EQ(bufferBarrier.srcStageMask, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
-    EXPECT_EQ(bufferBarrier.srcAccessMask, VK_ACCESS_SHADER_WRITE_BIT);
+    EXPECT_EQ(bufferBarrier.srcStageMask, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
+    EXPECT_EQ(bufferBarrier.srcAccessMask, VK_ACCESS_2_SHADER_WRITE_BIT);
 
     if (bufferBarrier.buffer == visibleObjectsBuffer) {
       foundStorageBarrier = true;
       EXPECT_EQ(bufferBarrier.dstStageMask, graphicsShaderStages);
-      EXPECT_EQ(bufferBarrier.dstAccessMask, VK_ACCESS_SHADER_READ_BIT);
+      EXPECT_EQ(bufferBarrier.dstAccessMask, VK_ACCESS_2_SHADER_READ_BIT);
     } else if (bufferBarrier.buffer == indirectCommandsBuffer) {
       foundIndirectBarrier = true;
-      EXPECT_EQ(bufferBarrier.dstStageMask, VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT);
-      EXPECT_EQ(bufferBarrier.dstAccessMask, VK_ACCESS_INDIRECT_COMMAND_READ_BIT);
+      EXPECT_EQ(bufferBarrier.dstStageMask, VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT);
+      EXPECT_EQ(bufferBarrier.dstAccessMask, VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT);
     } else if (bufferBarrier.buffer == vertexBuffer) {
       foundVertexBarrier = true;
-      EXPECT_EQ(bufferBarrier.dstStageMask, VK_PIPELINE_STAGE_VERTEX_INPUT_BIT);
-      EXPECT_EQ(bufferBarrier.dstAccessMask, VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT);
+      EXPECT_EQ(bufferBarrier.dstStageMask, VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT);
+      EXPECT_EQ(bufferBarrier.dstAccessMask, VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT);
     } else if (bufferBarrier.buffer == indexBuffer) {
       foundIndexBarrier = true;
-      EXPECT_EQ(bufferBarrier.dstStageMask, VK_PIPELINE_STAGE_VERTEX_INPUT_BIT);
-      EXPECT_EQ(bufferBarrier.dstAccessMask, VK_ACCESS_INDEX_READ_BIT);
+      EXPECT_EQ(bufferBarrier.dstStageMask, VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT);
+      EXPECT_EQ(bufferBarrier.dstAccessMask, VK_ACCESS_2_INDEX_READ_BIT);
     } else {
       FAIL() << "Barrier references an unexpected buffer";
     }
@@ -687,10 +704,10 @@ TEST(ScenarioTest, ComputePassIndirectBufferInput) {
   ASSERT_EQ(barriers.front()->getBufferBarriers().size(), 1);
 
   const auto& bufferBarrier = barriers.front()->getBufferBarriers().front();
-  EXPECT_EQ(bufferBarrier.srcStageMask, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
-  EXPECT_EQ(bufferBarrier.srcAccessMask, VK_ACCESS_SHADER_WRITE_BIT);
-  EXPECT_EQ(bufferBarrier.dstStageMask, VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT);
-  EXPECT_EQ(bufferBarrier.dstAccessMask, VK_ACCESS_INDIRECT_COMMAND_READ_BIT);
+  EXPECT_EQ(bufferBarrier.srcStageMask, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
+  EXPECT_EQ(bufferBarrier.srcAccessMask, VK_ACCESS_2_SHADER_WRITE_BIT);
+  EXPECT_EQ(bufferBarrier.dstStageMask, VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT);
+  EXPECT_EQ(bufferBarrier.dstAccessMask, VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT);
 }
 
 TEST(ScenarioTest, GraphReset) {
@@ -730,7 +747,8 @@ TEST(ScenarioTest, GraphReset) {
     positionImage->createImage(VK_FORMAT_R16G16B16A16_SFLOAT, resolution, 1, 1, VK_IMAGE_ASPECT_COLOR_BIT,
                                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
     positionImage->changeLayout(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, 0, 0,
-                                VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                                 commandBuffer[graph.getFrameInFlight()]);
     auto positionImageView = std::make_shared<RenderGraph::ImageView>(std::move(positionImage), device);
     positionImageView->createImageView(VK_IMAGE_VIEW_TYPE_2D, 0, 0);
@@ -771,7 +789,7 @@ TEST(ScenarioTest, GraphReset) {
   VkSemaphoreSubmitInfo signalSemaphoreInfo{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
                                             .semaphore = semaphore,
                                             .value = loadCounter,
-                                            .stageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT};
+                                            .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};
   VkSubmitInfo2 submitInfo{.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
                            .commandBufferInfoCount = 1,
                            .pCommandBufferInfos = &commandBufferInfo,
@@ -883,8 +901,8 @@ TEST(ScenarioTest, DepthExistance) {
   // set layout to depth image
   depthAttachment->changeLayout(
       depthAttachment->getImageLayout(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 0, 0,
-      VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
-      VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, commandBuffer[graph.getFrameInFlight()]);
+      VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+      VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, commandBuffer[graph.getFrameInFlight()]);
 
   auto depthAttachmentImageView = std::make_shared<RenderGraph::ImageView>(std::move(depthAttachment), device);
   depthAttachmentImageView->createImageView(VK_IMAGE_VIEW_TYPE_2D, 0, 0);
@@ -912,7 +930,7 @@ TEST(ScenarioTest, DepthExistance) {
   VkSemaphoreSubmitInfo signalSemaphoreInfo{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
                                             .semaphore = semaphore,
                                             .value = loadCounter,
-                                            .stageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT};
+                                            .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};
   VkSubmitInfo2 submitInfo{.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
                            .commandBufferInfoCount = 1,
                            .pCommandBufferInfos = &commandBufferInfo,
