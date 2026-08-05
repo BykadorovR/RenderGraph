@@ -10,7 +10,7 @@ import Instance;
 export namespace RenderGraph {
 class Surface final {
  private:
-  VkSurfaceKHR _surface;
+  VkSurfaceKHR _surface = VK_NULL_HANDLE;
   const Instance* _instance;
 
  public:

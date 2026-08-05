@@ -2,6 +2,7 @@ module;
 
 #include "BS_thread_pool.hpp"
 
+#include <VkBootstrap.h>
 #include <algorithm>
 #include <cstdint>
 #include <future>

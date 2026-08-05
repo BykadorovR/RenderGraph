@@ -1,11 +1,36 @@
 module;
 
-#include "GLFW/glfw3.h"
+#if defined(__ANDROID__)
+#include <android/native_window.h>
+#else
+#include <GLFW/glfw3.h>
+#endif
 
 module Window;
 
 using namespace RenderGraph;
 
+#if defined(__ANDROID__)
+ANativeWindow* Window::getWindow() const noexcept { return _window; }
+
+Window::Window(ANativeWindow* window) noexcept : _window(window) {
+  if (_window) ANativeWindow_acquire(_window);
+}
+
+glm::ivec2 Window::getResolution() const noexcept {
+  if (!_window) return {0, 0};
+
+  return {ANativeWindow_getWidth(_window), ANativeWindow_getHeight(_window)};
+}
+
+void Window::setFullScreen(bool fullScreen) { static_cast<void>(fullScreen); }
+
+void Window::initialize() {}
+
+Window::~Window() {
+  if (_window) ANativeWindow_release(_window);
+}
+#else
 GLFWwindow* Window::getWindow() const noexcept { return _window; }
 
 Window::Window(glm::ivec2 resolution) noexcept { _resolution = resolution; }
@@ -40,6 +65,7 @@ void Window::initialize() {
 }
 
 Window::~Window() {
-  glfwDestroyWindow(_window);
+  if (_window) glfwDestroyWindow(_window);
   glfwTerminate();
 }
+#endif
