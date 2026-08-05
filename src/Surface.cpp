@@ -1,4 +1,11 @@
+module;
+
+#include <GLFW/glfw3.h>
+#include <stdexcept>
+#include <volk.h>
+
 module Surface;
+
 using namespace RenderGraph;
 
 Surface::Surface(const Window& window, const Instance& instance) : _instance(&instance) {

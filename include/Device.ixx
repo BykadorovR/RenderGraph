@@ -1,8 +1,14 @@
+module;
+
+#include <VkBootstrap.h>
+#include <string>
+#include <vector>
+#include <volk.h>
+
 export module Device;
+
 import Instance;
 import Surface;
-import <VkBootstrap.h>;
-import <volk.h>;
 
 export namespace RenderGraph {
 class Device final {

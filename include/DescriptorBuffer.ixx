@@ -1,13 +1,18 @@
+module;
+
+#include <map>
+#include <memory>
+#include <utility>
+#include <vector>
+#include <volk.h>
+
 export module DescriptorBuffer;
+
 import Device;
 import Buffer;
 import Allocator;
 import Command;
 import Texture;
-import <vector>;
-import <map>;
-import <volk.h>;
-import <memory>;
 
 // Forward declarations for test classes, not visible outside this module
 class DescriptorBufferTest_Create_Test;

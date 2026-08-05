@@ -1,19 +1,22 @@
 module;
+
 #define VMA_STATIC_VULKAN_FUNCTIONS 0
 #define VMA_DYNAMIC_VULKAN_FUNCTIONS 0
+
+#include <concepts>
+#include <functional>
+#include <memory>
+#include <utility>
+#include <vector>
+#include <vk_mem_alloc.h>
+
 export module Texture;
-import <vk_mem_alloc.h>;
+
 import Buffer;
 import Allocator;
 import Command;
 import Device;
 import glm;
-import <volk.h>;
-import <memory>;
-import <vector>;
-import <functional>;
-import <stdexcept>;
-import <utility>;
 
 export namespace RenderGraph {
 template <class T>

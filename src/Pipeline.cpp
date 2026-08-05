@@ -1,4 +1,16 @@
+module;
+
+#include <algorithm>
+#include <optional>
+#include <ranges>
+#include <stdexcept>
+#include <string>
+#include <unordered_map>
+#include <vector>
+#include <volk.h>
+
 module Pipeline;
+
 using namespace RenderGraph;
 
 PipelineGraphic::PipelineGraphic() {

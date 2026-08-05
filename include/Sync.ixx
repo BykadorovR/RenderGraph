@@ -1,9 +1,12 @@
+module;
+
+#include <vector>
+#include <volk.h>
+
 export module Sync;
+
 import Device;
 import Buffer;
-import <volk.h>;
-import <vector>;
-import <functional>;
 
 export namespace RenderGraph {
 class Semaphore final {

@@ -1,3 +1,13 @@
+module;
+
+#include <VkBootstrap.h>
+#include <mutex>
+#include <stdexcept>
+#include <string>
+#include <unordered_map>
+#include <vector>
+#include <volk.h>
+
 module Timestamps;
 
 using namespace RenderGraph;
@@ -70,7 +80,7 @@ void Timestamps::pushTimestamp(std::string_view name, const CommandBuffer& comma
   }
 
   const int currentIndex = frame.timestampIndex++;
-  vkCmdWriteTimestamp2(commandBuffer.getCommandBuffer(), VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, frame.queryPool,
+  vkCmdWriteTimestamp2(commandBuffer.getCommandBuffer(), VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, frame.queryPool,
                        static_cast<uint32_t>(currentIndex));
   frame.timestampRanges[std::string(name)] = {
       currentIndex,
@@ -91,7 +101,7 @@ void Timestamps::popTimestamp(std::string_view name, const CommandBuffer& comman
   }
 
   const int currentIndex = frame.timestampIndex++;
-  vkCmdWriteTimestamp2(commandBuffer.getCommandBuffer(), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, frame.queryPool,
+  vkCmdWriteTimestamp2(commandBuffer.getCommandBuffer(), VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, frame.queryPool,
                        static_cast<uint32_t>(currentIndex));
   rangeIt->second.y = currentIndex;
 }

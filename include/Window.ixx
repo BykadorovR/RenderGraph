@@ -1,6 +1,10 @@
+module;
+
+#include <GLFW/glfw3.h>
+
 export module Window;
+
 import glm;
-import <GLFW/glfw3.h>;
 
 export namespace RenderGraph {
 class Window final {

@@ -1,14 +1,16 @@
+module;
+
+#include <mutex>
+#include <string>
+#include <unordered_map>
+#include <vector>
+#include <volk.h>
+
 export module Timestamps;
 
 import Device;
 import Command;
 import glm;
-
-import <volk.h>;
-import <mutex>;
-import <string>;
-import <unordered_map>;
-import <vector>;
 
 export namespace RenderGraph {
 

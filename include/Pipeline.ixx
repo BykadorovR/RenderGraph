@@ -1,13 +1,16 @@
+module;
+
+#include <optional>
+#include <string>
+#include <unordered_map>
+#include <vector>
+#include <volk.h>
+
 export module Pipeline;
+
 import Buffer;
 import DescriptorBuffer;
 import Device;
-import <volk.h>;
-import <vector>;
-import <unordered_map>;
-import <string>;
-import <optional>;
-import <ranges>;
 
 export namespace RenderGraph {
 class PipelineGraphic final {

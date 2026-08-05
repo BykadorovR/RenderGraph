@@ -1,8 +1,18 @@
 module;
+
 #define VMA_STATIC_VULKAN_FUNCTIONS 0
 #define VMA_DYNAMIC_VULKAN_FUNCTIONS 0
+
+#include <cstddef>
+#include <memory>
+#include <span>
+#include <stdexcept>
+#include <string>
+#include <vk_mem_alloc.h>
+#include <volk.h>
+
 module Buffer;
-import <vk_mem_alloc.h>;
+
 using namespace RenderGraph;
 
 Buffer::Buffer(VkDeviceSize size,
@@ -60,10 +70,10 @@ void Buffer::setData(std::span<const std::byte> data, const CommandBuffer& comma
     if (result != VK_SUCCESS) throw std::runtime_error("Can't vmaCopyMemoryToAllocation " + std::to_string(result));
 
     VkBufferMemoryBarrier2 barrierCopy = {.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-                                          .srcStageMask = VK_PIPELINE_STAGE_HOST_BIT,
-                                          .srcAccessMask = VK_ACCESS_HOST_WRITE_BIT,
-                                          .dstStageMask = VK_PIPELINE_STAGE_ALL_SHADER_BITS,
-                                          .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+                                          .srcStageMask = VK_PIPELINE_STAGE_2_HOST_BIT,
+                                          .srcAccessMask = VK_ACCESS_2_HOST_WRITE_BIT,
+                                          .dstStageMask = _allShaderStageMask,
+                                          .dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT,
                                           .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                                           .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                                           .buffer = _buffer,
@@ -86,10 +96,10 @@ void Buffer::setData(std::span<const std::byte> data, const CommandBuffer& comma
     if (result != VK_SUCCESS) throw std::runtime_error("Can't vmaCopyMemoryToAllocation " + std::to_string(result));
 
     VkBufferMemoryBarrier2 barrierStage{.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-                                        .srcStageMask = VK_PIPELINE_STAGE_HOST_BIT,
-                                        .srcAccessMask = VK_ACCESS_HOST_WRITE_BIT,
-                                        .dstStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT,
-                                        .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+                                        .srcStageMask = VK_PIPELINE_STAGE_2_HOST_BIT,
+                                        .srcAccessMask = VK_ACCESS_2_HOST_WRITE_BIT,
+                                        .dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                                        .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT,
                                         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                                         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                                         .buffer = _bufferStaging->getBuffer(),
@@ -107,10 +117,10 @@ void Buffer::setData(std::span<const std::byte> data, const CommandBuffer& comma
     vkCmdCopyBuffer(commandBufferTransfer.getCommandBuffer(), _bufferStaging->getBuffer(), _buffer, 1, &copyRegion);
 
     VkBufferMemoryBarrier2 barrierCopy = {.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-                                          .srcStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT,
-                                          .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-                                          .dstStageMask = VK_PIPELINE_STAGE_ALL_SHADER_BITS,
-                                          .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+                                          .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                                          .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                                          .dstStageMask = _allShaderStageMask,
+                                          .dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT,
                                           .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                                           .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                                           .buffer = _buffer,

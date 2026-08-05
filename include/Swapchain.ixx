@@ -1,13 +1,17 @@
+module;
+
+#include <VkBootstrap.h>
+#include <memory>
+#include <vector>
+
 export module Swapchain;
+
 import Allocator;
 import Device;
 import Texture;
 import Command;
 import Sync;
 import glm;
-import <volk.h>;
-import <VkBootstrap.h>;
-import <memory>;
 
 export namespace RenderGraph {
 class Swapchain {

@@ -1,16 +1,18 @@
 module;
+
 #define VMA_STATIC_VULKAN_FUNCTIONS 0
 #define VMA_DYNAMIC_VULKAN_FUNCTIONS 0
+
+#include <cstddef>
+#include <memory>
+#include <span>
+#include <vk_mem_alloc.h>
+
 export module Buffer;
-import <vk_mem_alloc.h>;
+
 import Allocator;
 import Command;
 import Device;
-import <span>;
-import <memory>;
-import <string>;
-import <stdexcept>;
-import <volk.h>;
 
 export namespace RenderGraph {
 export VmaAllocationCreateFlagBits;
@@ -23,10 +25,10 @@ class Buffer final {
   VmaAllocationInfo _allocationInfo;
   VkDeviceSize _size;
   std::unique_ptr<Buffer> _bufferStaging;
-  static constexpr VkPipelineStageFlags2 VK_PIPELINE_STAGE_ALL_SHADER_BITS =
-      VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
-      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_GEOMETRY_SHADER_BIT |
-      VK_PIPELINE_STAGE_TESSELLATION_CONTROL_SHADER_BIT | VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT;
+  static constexpr VkPipelineStageFlags2 _allShaderStageMask =
+      VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+      VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT |
+      VK_PIPELINE_STAGE_2_TESSELLATION_CONTROL_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT;
 
  public:
   Buffer(VkDeviceSize size,

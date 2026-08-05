@@ -1,6 +1,16 @@
+module;
+
+#include <algorithm>
+#include <memory>
+#include <ranges>
+#include <spirv_reflect.h>
+#include <stdexcept>
+#include <utility>
+#include <vector>
+#include <volk.h>
+
 module Shader;
-import <ranges>;
-import <algorithm>;
+
 using namespace RenderGraph;
 
 VkShaderModule Shader::_createShaderModule(const std::vector<char>& code) {
