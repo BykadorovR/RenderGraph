@@ -11,6 +11,8 @@ import Instance;
 import Surface;
 
 export namespace RenderGraph {
+enum class QueueType { PRESENT, GRAPHICS, COMPUTE, TRANSFER };
+
 class Device final {
  private:
   vkb::Device _device;
@@ -31,8 +33,8 @@ class Device final {
   bool isFormatFeatureSupported(VkFormat format, VkImageTiling tiling, VkFormatFeatureFlagBits featureFlagBit) const;
   const VkDevice getLogicalDevice() const noexcept;
   const VkPhysicalDevice getPhysicalDevice() const noexcept;
-  const VkQueue getQueue(vkb::QueueType type) const;
-  int getQueueIndex(vkb::QueueType type) const;
+  const VkQueue getQueue(QueueType type) const;
+  int getQueueIndex(QueueType type) const;
 
   const vkb::Device& getDevice() const noexcept;
   bool isExtensionSupported(std::string name) const;
@@ -42,7 +44,7 @@ class Device final {
                                             .pNext = &property};
     vkGetPhysicalDeviceProperties2(getPhysicalDevice(), &properties2);
   }
-  const VkQueueFamilyProperties& getQueueFamilyProperties(vkb::QueueType type) const;
+  const VkQueueFamilyProperties& getQueueFamilyProperties(QueueType type) const;
 
   ~Device();
 };

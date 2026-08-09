@@ -103,7 +103,7 @@ TEST(DeviceTest, QueueFamilyProperties) {
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(surface, instance);
   device.initialize();
-  auto properties = device.getQueueFamilyProperties(vkb::QueueType::graphics);
+  auto properties = device.getQueueFamilyProperties(RenderGraph::QueueType::GRAPHICS);
   EXPECT_GT(properties.queueCount, 0);
 }
 
@@ -152,7 +152,7 @@ TEST(CommandTest, Create) {
   RenderGraph::Device device(surface, instance);
   device.initialize();
   RenderGraph::MemoryAllocator allocator(device, instance);
-  RenderGraph::CommandPool commandPool(vkb::QueueType::graphics, device);
+  RenderGraph::CommandPool commandPool(RenderGraph::QueueType::GRAPHICS, device);
   EXPECT_NO_THROW(RenderGraph::CommandBuffer commandBuffer(commandPool, device));
 }
 
@@ -164,7 +164,7 @@ TEST(CommandTest, BeginEnd) {
   RenderGraph::Device device(surface, instance);
   device.initialize();
   RenderGraph::MemoryAllocator allocator(device, instance);
-  RenderGraph::CommandPool commandPool(vkb::QueueType::graphics, device);
+  RenderGraph::CommandPool commandPool(RenderGraph::QueueType::GRAPHICS, device);
   RenderGraph::CommandBuffer commandBuffer(commandPool, device);
   commandBuffer.beginCommands();
   EXPECT_TRUE(commandBuffer.getActive());
@@ -179,7 +179,7 @@ TEST(TimestampsTest, NotReadyIsNonFatal) {
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(surface, instance);
   device.initialize();
-  RenderGraph::CommandPool commandPool(vkb::QueueType::graphics, device);
+  RenderGraph::CommandPool commandPool(RenderGraph::QueueType::GRAPHICS, device);
   RenderGraph::CommandBuffer commandBuffer(commandPool, device);
   RenderGraph::Timestamps timestamps(device, 1);
 
@@ -205,7 +205,7 @@ TEST(BufferTest, SetDataCPU) {
   RenderGraph::Buffer buffer(1024, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
                              VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
                              allocator);
-  RenderGraph::CommandPool commandPool(vkb::QueueType::graphics, device);
+  RenderGraph::CommandPool commandPool(RenderGraph::QueueType::GRAPHICS, device);
   RenderGraph::CommandBuffer commandBuffer(commandPool, device);
   commandBuffer.beginCommands();
   std::vector<std::byte> data(512, std::byte{1});
@@ -225,7 +225,7 @@ TEST(BufferTest, SetDataPotentiallyStaging) {
                              VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
                                  VMA_ALLOCATION_CREATE_HOST_ACCESS_ALLOW_TRANSFER_INSTEAD_BIT,
                              allocator);
-  RenderGraph::CommandPool commandPool(vkb::QueueType::graphics, device);
+  RenderGraph::CommandPool commandPool(RenderGraph::QueueType::GRAPHICS, device);
   RenderGraph::CommandBuffer commandBuffer(commandPool, device);
   commandBuffer.beginCommands();
   std::vector<std::byte> data(512, std::byte{1});
@@ -328,7 +328,7 @@ TEST(DescriptorSetTest, Update) {
   VkDescriptorBufferInfo bufferInfo{.buffer = buffer.getBuffer(), .offset = 0, .range = buffer.getSize()};
   descriptorSet.add({&buffer});
   EXPECT_EQ(descriptorSet._resources.size(), 1);
-  RenderGraph::CommandPool commandPool(vkb::QueueType::graphics, device);
+  RenderGraph::CommandPool commandPool(RenderGraph::QueueType::GRAPHICS, device);
   RenderGraph::CommandBuffer commandBuffer(commandPool, device);
   commandBuffer.beginCommands();
   descriptorSet.initialize(commandBuffer);
@@ -352,7 +352,7 @@ TEST(DescriptorBufferTest, Create) {
                                                          .pImmutableSamplers = nullptr}};
   layout.createCustom(layoutColor);
   RenderGraph::DescriptorBuffer descriptorBuffer({&layout}, allocator, device);
-  RenderGraph::CommandPool commandPool(vkb::QueueType::graphics, device);
+  RenderGraph::CommandPool commandPool(RenderGraph::QueueType::GRAPHICS, device);
   RenderGraph::CommandBuffer commandBuffer(commandPool, device);
   commandBuffer.beginCommands();
   EXPECT_THROW(descriptorBuffer.initialize(commandBuffer), std::runtime_error);
@@ -379,7 +379,7 @@ TEST(DescriptorBufferTest, BigDescriptorCount) {
                                                          .pImmutableSamplers = nullptr}};
   layout.createCustom(layoutColor);
   RenderGraph::DescriptorBuffer descriptorBuffer({&layout}, allocator, device);
-  RenderGraph::CommandPool commandPool(vkb::QueueType::graphics, device);
+  RenderGraph::CommandPool commandPool(RenderGraph::QueueType::GRAPHICS, device);
   RenderGraph::CommandBuffer commandBuffer(commandPool, device);
   commandBuffer.beginCommands();
   EXPECT_THROW(descriptorBuffer.initialize(commandBuffer), std::runtime_error);
@@ -461,7 +461,7 @@ TEST(DescriptorBufferTest, DifferentSets) {
   descriptorBuffer.add({&buffer});
   descriptorBuffer.add({&buffer});
   descriptorBuffer.add({&buffer});
-  RenderGraph::CommandPool commandPool(vkb::QueueType::graphics, device);
+  RenderGraph::CommandPool commandPool(RenderGraph::QueueType::GRAPHICS, device);
   RenderGraph::CommandBuffer commandBuffer(commandPool, device);
   commandBuffer.beginCommands();
   descriptorBuffer.initialize(commandBuffer);
@@ -504,7 +504,7 @@ TEST(DescriptorBufferTest, Update) {
   layout.createCustom(layoutColor);
   RenderGraph::DescriptorBuffer descriptorBuffer({&layout}, allocator, device);
   descriptorBuffer.add({&buffer});
-  RenderGraph::CommandPool commandPool(vkb::QueueType::graphics, device);
+  RenderGraph::CommandPool commandPool(RenderGraph::QueueType::GRAPHICS, device);
   RenderGraph::CommandBuffer commandBuffer(commandPool, device);
   commandBuffer.beginCommands();
   descriptorBuffer.initialize(commandBuffer);
@@ -587,7 +587,7 @@ TEST(SwapchainTest, CreateWithInitialization) {
   device.initialize();
   RenderGraph::MemoryAllocator allocator(device, instance);
   RenderGraph::Swapchain swapchain(resolution, allocator, device);
-  RenderGraph::CommandPool commandPool(vkb::QueueType::graphics, device);
+  RenderGraph::CommandPool commandPool(RenderGraph::QueueType::GRAPHICS, device);
   RenderGraph::CommandBuffer commandBuffer(commandPool, device);
   commandBuffer.beginCommands();
   swapchain.initialize();

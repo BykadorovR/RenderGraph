@@ -1,6 +1,5 @@
 module;
 
-#include <VkBootstrap.h>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -15,9 +14,9 @@ using namespace RenderGraph;
 Timestamps::Timestamps(const Device& device, uint32_t maxFramesInFlight)
     : _device(&device),
       _frames(maxFramesInFlight) {
-  if (_device->getQueueFamilyProperties(vkb::QueueType::graphics).timestampValidBits == 0)
+  if (_device->getQueueFamilyProperties(QueueType::GRAPHICS).timestampValidBits == 0)
     throw std::runtime_error("Graphics queue doesn't support timestamps");
-  if (_device->getQueueFamilyProperties(vkb::QueueType::compute).timestampValidBits == 0)
+  if (_device->getQueueFamilyProperties(QueueType::COMPUTE).timestampValidBits == 0)
     throw std::runtime_error("Compute queue doesn't support timestamps");
 
   _timestampPeriod = _device->getDevice().physical_device.properties.limits.timestampPeriod;

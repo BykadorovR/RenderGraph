@@ -2,7 +2,6 @@ module;
 
 #include "BS_thread_pool.hpp"
 
-#include <VkBootstrap.h>
 #include <algorithm>
 #include <cstdint>
 #include <future>
@@ -115,7 +114,7 @@ GraphPassGraphic::GraphPassGraphic(std::string_view name,
                                    const Device& device)
     : GraphPass(name, GraphPassType::GRAPHIC, graphStorage) {
   _device = &device;
-  _commandPool = std::make_unique<CommandPool>(vkb::QueueType::graphics, device);
+  _commandPool = std::make_unique<CommandPool>(QueueType::GRAPHICS, device);
   _commandBuffers.resize(maxFramesInFlight);
   std::ranges::generate(_commandBuffers, [&] { return std::make_unique<CommandBuffer>(*_commandPool, device); });
   _pipelineGraphic = std::make_unique<PipelineGraphic>();
@@ -250,8 +249,8 @@ GraphPassCompute::GraphPassCompute(std::string_view name,
   _device = &device;
   _separate = separate;
 
-  auto queueType = vkb::QueueType::graphics;
-  if (separate) queueType = vkb::QueueType::compute;
+  auto queueType = QueueType::GRAPHICS;
+  if (separate) queueType = QueueType::COMPUTE;
   _commandPool = std::make_unique<CommandPool>(queueType, device);
   _commandBuffers.resize(maxFramesInFlight);
   std::ranges::generate(_commandBuffers, [&] { return std::make_unique<CommandBuffer>(*_commandPool, device); });
@@ -972,7 +971,7 @@ void Graph::calculate() {
   };
 
   auto getQueueFamilyIndex = [this](GraphPass* pass) -> uint32_t {
-    const auto queueType = _usesSeparateQueue(pass) ? vkb::QueueType::compute : vkb::QueueType::graphics;
+    const auto queueType = _usesSeparateQueue(pass) ? QueueType::COMPUTE : QueueType::GRAPHICS;
 
     return static_cast<uint32_t>(_device->getQueueIndex(queueType));
   };
@@ -1188,11 +1187,11 @@ bool Graph::render() {
       });
     }
 
-    auto queueType = vkb::QueueType::graphics;
+    auto queueType = QueueType::GRAPHICS;
     if (previousPass->getGraphPassType() == GraphPassType::COMPUTE) {
       auto* passCompute = static_cast<GraphPassCompute*>(previousPass);
       if (passCompute->isSeparate()) {
-        queueType = vkb::QueueType::compute;
+        queueType = QueueType::COMPUTE;
       }
     }
 
@@ -1278,7 +1277,7 @@ bool Graph::render() {
 
   _frameInFlight = (_valueSemaphoreInFlight - 1) % _maxFramesInFlight;
 
-  auto result = vkQueuePresentKHR(_device->getQueue(vkb::QueueType::present), &presentInfo);
+  auto result = vkQueuePresentKHR(_device->getQueue(QueueType::PRESENT), &presentInfo);
 
   if (result != VK_SUCCESS) {
     return true;

@@ -60,7 +60,7 @@ TEST(ScenarioTest, GraphOneQueue) {
   int framesInFlight = 2;
   RenderGraph::Graph graph(4, framesInFlight, swapchain, window, device);
 
-  auto commandPool = std::make_shared<RenderGraph::CommandPool>(vkb::QueueType::graphics, device);
+  auto commandPool = std::make_shared<RenderGraph::CommandPool>(RenderGraph::QueueType::GRAPHICS, device);
   std::vector<RenderGraph::CommandBuffer> commandBuffer;
   commandBuffer.reserve(framesInFlight);
   for (int i = 0; i < framesInFlight; i++) {
@@ -198,7 +198,7 @@ TEST(ScenarioTest, GraphOneQueue) {
                            .pCommandBufferInfos = &commandBufferInfo,
                            .signalSemaphoreInfoCount = 1,
                            .pSignalSemaphoreInfos = &signalSemaphoreInfo};
-  vkQueueSubmit2(device.getQueue(vkb::QueueType::graphics), 1, &submitInfo, nullptr);
+  vkQueueSubmit2(device.getQueue(RenderGraph::QueueType::GRAPHICS), 1, &submitInfo, nullptr);
 
   VkSemaphoreWaitInfo waitInfo = {
       .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
@@ -276,7 +276,7 @@ TEST(ScenarioTest, GraphSeparateQueues) {
   int framesInFlight = 2;
   RenderGraph::Graph graph(4, framesInFlight, swapchain, window, device);
 
-  auto commandPool = std::make_shared<RenderGraph::CommandPool>(vkb::QueueType::graphics, device);
+  auto commandPool = std::make_shared<RenderGraph::CommandPool>(RenderGraph::QueueType::GRAPHICS, device);
   std::vector<RenderGraph::CommandBuffer> commandBuffer;
   commandBuffer.reserve(framesInFlight);
   for (int i = 0; i < framesInFlight; i++) {
@@ -358,8 +358,8 @@ TEST(ScenarioTest, GraphSeparateQueues) {
   EXPECT_EQ(guiPass.getPipelineGraphic(graph.getGraphStorage()).getColorAttachments().size(), 1);
 
   graph.calculate();
-  const bool separateQueueFamilies = device.getQueueIndex(vkb::QueueType::graphics) !=
-                                     device.getQueueIndex(vkb::QueueType::compute);
+  const bool separateQueueFamilies = device.getQueueIndex(RenderGraph::QueueType::GRAPHICS) !=
+                                     device.getQueueIndex(RenderGraph::QueueType::COMPUTE);
 
   // Ownership transfer: Render -> Postprocessing.
   EXPECT_EQ(graph._sync.at(&renderPass).getBarriersAfter().size(), separateQueueFamilies ? 1 : 0);
@@ -396,7 +396,7 @@ TEST(ScenarioTest, GraphSeparateQueues) {
                            .pCommandBufferInfos = &commandBufferInfo,
                            .signalSemaphoreInfoCount = 1,
                            .pSignalSemaphoreInfos = &signalSemaphoreInfo};
-  vkQueueSubmit2(device.getQueue(vkb::QueueType::graphics), 1, &submitInfo, nullptr);
+  vkQueueSubmit2(device.getQueue(RenderGraph::QueueType::GRAPHICS), 1, &submitInfo, nullptr);
 
   VkSemaphoreWaitInfo waitInfo = {
       .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
@@ -521,8 +521,8 @@ TEST(ScenarioTest, BufferOwnershipTransferUsesLastResourceOwner) {
 
   graph.calculate();
 
-  const bool separateQueueFamilies = device.getQueueIndex(vkb::QueueType::graphics) !=
-                                     device.getQueueIndex(vkb::QueueType::compute);
+  const bool separateQueueFamilies = device.getQueueIndex(RenderGraph::QueueType::GRAPHICS) !=
+                                     device.getQueueIndex(RenderGraph::QueueType::COMPUTE);
 
   ASSERT_TRUE(graph._sync.contains(&middlePass));
   ASSERT_TRUE(graph._sync.contains(&lastPass));
@@ -727,7 +727,7 @@ TEST(ScenarioTest, GraphReset) {
   int framesInFlight = 2;
   RenderGraph::Graph graph(4, framesInFlight, swapchain, window, device);
 
-  auto commandPool = std::make_shared<RenderGraph::CommandPool>(vkb::QueueType::graphics, device);
+  auto commandPool = std::make_shared<RenderGraph::CommandPool>(RenderGraph::QueueType::GRAPHICS, device);
   std::vector<RenderGraph::CommandBuffer> commandBuffer;
   commandBuffer.reserve(framesInFlight);
   for (int i = 0; i < framesInFlight; i++) {
@@ -799,7 +799,7 @@ TEST(ScenarioTest, GraphReset) {
                            .pCommandBufferInfos = &commandBufferInfo,
                            .signalSemaphoreInfoCount = 1,
                            .pSignalSemaphoreInfos = &signalSemaphoreInfo};
-  vkQueueSubmit2(device.getQueue(vkb::QueueType::graphics), 1, &submitInfo, nullptr);
+  vkQueueSubmit2(device.getQueue(RenderGraph::QueueType::GRAPHICS), 1, &submitInfo, nullptr);
 
   VkSemaphoreWaitInfo waitInfo = {
       .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
@@ -883,7 +883,7 @@ TEST(ScenarioTest, DepthExistance) {
   int framesInFlight = 2;
   RenderGraph::Graph graph(4, framesInFlight, swapchain, window, device);
 
-  auto commandPool = std::make_shared<RenderGraph::CommandPool>(vkb::QueueType::graphics, device);
+  auto commandPool = std::make_shared<RenderGraph::CommandPool>(RenderGraph::QueueType::GRAPHICS, device);
   std::vector<RenderGraph::CommandBuffer> commandBuffer;
   commandBuffer.reserve(framesInFlight);
   for (int i = 0; i < framesInFlight; i++) {
@@ -940,7 +940,7 @@ TEST(ScenarioTest, DepthExistance) {
                            .pCommandBufferInfos = &commandBufferInfo,
                            .signalSemaphoreInfoCount = 1,
                            .pSignalSemaphoreInfos = &signalSemaphoreInfo};
-  vkQueueSubmit2(device.getQueue(vkb::QueueType::graphics), 1, &submitInfo, nullptr);
+  vkQueueSubmit2(device.getQueue(RenderGraph::QueueType::GRAPHICS), 1, &submitInfo, nullptr);
 
   VkSemaphoreWaitInfo waitInfo = {
       .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
