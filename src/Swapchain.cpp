@@ -18,6 +18,9 @@ Swapchain::Swapchain(glm::ivec2 resolution, const MemoryAllocator& allocator, co
     : _allocator(&allocator),
       _device(&device) {
   vkb::SwapchainBuilder builder{device.getDevice()};
+#if defined(__ANDROID__)
+  builder.set_pre_transform_flags(VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR);
+#endif
   builder.set_desired_extent(static_cast<uint32_t>(resolution.x), static_cast<uint32_t>(resolution.y));
   builder.set_composite_alpha_flags(VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR);
   builder.set_desired_format(
@@ -79,6 +82,9 @@ uint32_t Swapchain::getSwapchainIndex() const noexcept { return _swapchainIndex;
 
 std::vector<std::shared_ptr<ImageView>> Swapchain::reset(glm::ivec2 resolution) {
   vkb::SwapchainBuilder builder{_device->getDevice()};
+#if defined(__ANDROID__)
+  builder.set_pre_transform_flags(VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR);
+#endif
   builder.set_desired_extent(static_cast<uint32_t>(resolution.x), static_cast<uint32_t>(resolution.y));
   builder.set_old_swapchain(_swapchain);
   builder.set_composite_alpha_flags(VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR);
