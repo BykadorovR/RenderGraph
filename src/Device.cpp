@@ -82,11 +82,9 @@ void Device::initialize() {
   vkGetPhysicalDeviceQueueFamilyProperties(getPhysicalDevice(), &queueFamilyCount, _queueFamilyProperties.data());
 }
 
-void Device::setOptionalExtensions(const std::vector<std::string>& extensions) {
-  _optionalExtensions = extensions;
-}
+void Device::setOptionalExtensions(const std::vector<std::string>& extensions) { _optionalExtensions = extensions; }
 
-const VkQueueFamilyProperties& Device::getQueueFamilyProperties(vkb::QueueType type) const {
+const VkQueueFamilyProperties& Device::getQueueFamilyProperties(QueueType type) const {
   return _queueFamilyProperties[getQueueIndex(type)];
 }
 
@@ -117,10 +115,25 @@ const VkPhysicalDevice Device::getPhysicalDevice() const noexcept { return _devi
 
 const vkb::Device& Device::getDevice() const noexcept { return _device; }
 
-const VkQueue Device::getQueue(vkb::QueueType type) const {
-  auto queueResult = _device.get_dedicated_queue(type);
+const VkQueue Device::getQueue(QueueType type) const {
+  vkb::QueueType bootstrapType;
+  switch (type) {
+    case QueueType::PRESENT:
+      bootstrapType = vkb::QueueType::present;
+      break;
+    case QueueType::GRAPHICS:
+      bootstrapType = vkb::QueueType::graphics;
+      break;
+    case QueueType::COMPUTE:
+      bootstrapType = vkb::QueueType::compute;
+      break;
+    case QueueType::TRANSFER:
+      bootstrapType = vkb::QueueType::transfer;
+      break;
+  }
+  auto queueResult = _device.get_dedicated_queue(bootstrapType);
   if (!queueResult) {
-    queueResult = _device.get_queue(type);
+    queueResult = _device.get_queue(bootstrapType);
     // use default queue that should support everything
     if (!queueResult) {
       queueResult = _device.get_queue(vkb::QueueType::present);
@@ -130,10 +143,25 @@ const VkQueue Device::getQueue(vkb::QueueType type) const {
   return queueResult.value();
 }
 
-int Device::getQueueIndex(vkb::QueueType type) const {
-  auto queueResult = _device.get_dedicated_queue_index(type);
+int Device::getQueueIndex(QueueType type) const {
+  vkb::QueueType bootstrapType;
+  switch (type) {
+    case QueueType::PRESENT:
+      bootstrapType = vkb::QueueType::present;
+      break;
+    case QueueType::GRAPHICS:
+      bootstrapType = vkb::QueueType::graphics;
+      break;
+    case QueueType::COMPUTE:
+      bootstrapType = vkb::QueueType::compute;
+      break;
+    case QueueType::TRANSFER:
+      bootstrapType = vkb::QueueType::transfer;
+      break;
+  }
+  auto queueResult = _device.get_dedicated_queue_index(bootstrapType);
   if (!queueResult) {
-    queueResult = _device.get_queue_index(type);
+    queueResult = _device.get_queue_index(bootstrapType);
     // use default queue that should support everything
     if (!queueResult) {
       queueResult = _device.get_queue_index(vkb::QueueType::present);

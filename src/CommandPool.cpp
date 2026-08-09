@@ -1,6 +1,5 @@
 module;
 
-#include <VkBootstrap.h>
 #include <stdexcept>
 #include <volk.h>
 
@@ -8,7 +7,7 @@ module CommandPool;
 
 using namespace RenderGraph;
 
-CommandPool::CommandPool(vkb::QueueType type, const Device& device) : _device(&device) {
+CommandPool::CommandPool(QueueType type, const Device& device) : _device(&device) {
   _type = type;
   VkCommandPoolCreateInfo poolInfo{.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
                                    .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
@@ -19,7 +18,7 @@ CommandPool::CommandPool(vkb::QueueType type, const Device& device) : _device(&d
   }
 }
 
-vkb::QueueType CommandPool::getType() const noexcept { return _type; }
+QueueType CommandPool::getType() const noexcept { return _type; }
 
 VkCommandPool CommandPool::getCommandPool() const noexcept { return _commandPool; }
 
