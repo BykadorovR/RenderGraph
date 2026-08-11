@@ -213,6 +213,45 @@ TEST(BufferTest, SetDataCPU) {
   commandBuffer.endCommands();
 }
 
+TEST(BufferTest, SetDataCPUWithOffset) {
+  RenderGraph::Instance instance("TestApp", false);
+  RenderGraph::Window window({1920, 1080});
+  window.initialize();
+  RenderGraph::Surface surface(window, instance);
+  RenderGraph::Device device(surface, instance);
+  device.initialize();
+  RenderGraph::MemoryAllocator allocator(device, instance);
+  RenderGraph::Buffer buffer(1024, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                             VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+                             allocator);
+  RenderGraph::CommandPool commandPool(RenderGraph::QueueType::GRAPHICS, device);
+  RenderGraph::CommandBuffer commandBuffer(commandPool, device);
+  commandBuffer.beginCommands();
+  constexpr VkDeviceSize offset = 256;
+  std::vector<std::byte> data(128, std::byte{2});
+  EXPECT_NO_THROW(buffer.setData(data, offset, commandBuffer));
+  const auto* bufferData = static_cast<const std::byte*>(buffer.getAllocationInfo().pMappedData);
+  EXPECT_TRUE(std::equal(data.begin(), data.end(), bufferData + offset));
+  commandBuffer.endCommands();
+}
+
+TEST(BufferTest, SetDataRejectsOutOfBoundsRange) {
+  RenderGraph::Instance instance("TestApp", false);
+  RenderGraph::Window window({1920, 1080});
+  window.initialize();
+  RenderGraph::Surface surface(window, instance);
+  RenderGraph::Device device(surface, instance);
+  device.initialize();
+  RenderGraph::MemoryAllocator allocator(device, instance);
+  RenderGraph::Buffer buffer(1024, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                             VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+                             allocator);
+  RenderGraph::CommandPool commandPool(RenderGraph::QueueType::GRAPHICS, device);
+  RenderGraph::CommandBuffer commandBuffer(commandPool, device);
+  std::vector<std::byte> data(128, std::byte{1});
+  EXPECT_THROW(buffer.setData(data, 960, commandBuffer), std::out_of_range);
+}
+
 TEST(BufferTest, SetDataPotentiallyStaging) {
   RenderGraph::Instance instance("TestApp", false);
   RenderGraph::Window window({1920, 1080});
@@ -228,8 +267,10 @@ TEST(BufferTest, SetDataPotentiallyStaging) {
   RenderGraph::CommandPool commandPool(RenderGraph::QueueType::GRAPHICS, device);
   RenderGraph::CommandBuffer commandBuffer(commandPool, device);
   commandBuffer.beginCommands();
-  std::vector<std::byte> data(512, std::byte{1});
-  EXPECT_NO_THROW(buffer.setData(data, commandBuffer));
+  std::vector<std::byte> firstChunk(256, std::byte{1});
+  std::vector<std::byte> secondChunk(256, std::byte{2});
+  EXPECT_NO_THROW(buffer.setData(firstChunk, 0, commandBuffer));
+  EXPECT_NO_THROW(buffer.setData(secondChunk, 512, commandBuffer));
   commandBuffer.endCommands();
 }
 
