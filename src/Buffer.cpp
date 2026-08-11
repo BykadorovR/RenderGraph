@@ -60,13 +60,24 @@ Buffer::Buffer(VkDeviceSize size,
  * and perform explicit transfers.
  */
 void Buffer::setData(std::span<const std::byte> data, const CommandBuffer& commandBufferTransfer) {
+  setData(data, 0, commandBufferTransfer);
+}
+
+void Buffer::setData(std::span<const std::byte> data, VkDeviceSize offset, const CommandBuffer& commandBufferTransfer) {
+  const auto dataSize = static_cast<VkDeviceSize>(data.size());
+  if (offset > _size || dataSize > _size - offset) {
+    throw std::out_of_range("Buffer data range exceeds buffer size");
+  }
+  if (data.empty()) return;
+
   VkMemoryPropertyFlags memPropFlags;
   vmaGetAllocationMemoryProperties(_memoryAllocator->getAllocator(), _allocation, &memPropFlags);
 
   // The Allocation ended up in a mappable memory.
   if (memPropFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) {
     // Calling vmaCopyMemoryToAllocation() does vmaMapMemory(), memcpy(), vmaUnmapMemory(), and vmaFlushAllocation().
-    auto result = vmaCopyMemoryToAllocation(_memoryAllocator->getAllocator(), data.data(), _allocation, 0, data.size());
+    auto result = vmaCopyMemoryToAllocation(_memoryAllocator->getAllocator(), data.data(), _allocation, offset,
+                                            data.size());
     if (result != VK_SUCCESS) throw std::runtime_error("Can't vmaCopyMemoryToAllocation " + std::to_string(result));
 
     VkBufferMemoryBarrier2 barrierCopy = {.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
@@ -77,8 +88,8 @@ void Buffer::setData(std::span<const std::byte> data, const CommandBuffer& comma
                                           .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                                           .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                                           .buffer = _buffer,
-                                          .offset = 0,
-                                          .size = data.size()};
+                                          .offset = offset,
+                                          .size = dataSize};
     VkDependencyInfo dependencyInfo{.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
                                     .bufferMemoryBarrierCount = 1,
                                     .pBufferMemoryBarriers = &barrierCopy};
@@ -86,13 +97,13 @@ void Buffer::setData(std::span<const std::byte> data, const CommandBuffer& comma
     // It's important to insert a buffer memory barrier here to ensure writing to the buffer has finished.
     vkCmdPipelineBarrier2(commandBufferTransfer.getCommandBuffer(), &dependencyInfo);
   } else {
-    _bufferStaging = std::make_unique<Buffer>(
+    Buffer& bufferStaging = *_stagingBuffers.emplace_back(std::make_unique<Buffer>(
         data.size(), VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-        VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT, *_memoryAllocator);
+        VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT, *_memoryAllocator));
 
     // Calling vmaCopyMemoryToAllocation() does vmaMapMemory(), memcpy(), vmaUnmapMemory(), and vmaFlushAllocation().
     auto result = vmaCopyMemoryToAllocation(_memoryAllocator->getAllocator(), data.data(),
-                                            _bufferStaging->getAllocation(), 0, data.size());
+                                            bufferStaging.getAllocation(), 0, data.size());
     if (result != VK_SUCCESS) throw std::runtime_error("Can't vmaCopyMemoryToAllocation " + std::to_string(result));
 
     VkBufferMemoryBarrier2 barrierStage{.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
@@ -102,9 +113,9 @@ void Buffer::setData(std::span<const std::byte> data, const CommandBuffer& comma
                                         .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT,
                                         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                                         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                                        .buffer = _bufferStaging->getBuffer(),
+                                        .buffer = bufferStaging.getBuffer(),
                                         .offset = 0,
-                                        .size = data.size()};
+                                        .size = dataSize};
     VkDependencyInfo stagingDependencyInfo{.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
                                            .bufferMemoryBarrierCount = 1,
                                            .pBufferMemoryBarriers = &barrierStage};
@@ -113,8 +124,8 @@ void Buffer::setData(std::span<const std::byte> data, const CommandBuffer& comma
     vkCmdPipelineBarrier2(commandBufferTransfer.getCommandBuffer(), &stagingDependencyInfo);
 
     // copy from staging buffer to current buffer
-    VkBufferCopy copyRegion{.srcOffset = 0, .dstOffset = 0, .size = data.size()};
-    vkCmdCopyBuffer(commandBufferTransfer.getCommandBuffer(), _bufferStaging->getBuffer(), _buffer, 1, &copyRegion);
+    VkBufferCopy copyRegion{.srcOffset = 0, .dstOffset = offset, .size = dataSize};
+    vkCmdCopyBuffer(commandBufferTransfer.getCommandBuffer(), bufferStaging.getBuffer(), _buffer, 1, &copyRegion);
 
     VkBufferMemoryBarrier2 barrierCopy = {.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
                                           .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
@@ -124,8 +135,8 @@ void Buffer::setData(std::span<const std::byte> data, const CommandBuffer& comma
                                           .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                                           .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                                           .buffer = _buffer,
-                                          .offset = 0,
-                                          .size = data.size()};
+                                          .offset = offset,
+                                          .size = dataSize};
     VkDependencyInfo copyDependencyInfo{.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
                                         .bufferMemoryBarrierCount = 1,
                                         .pBufferMemoryBarriers = &barrierCopy};

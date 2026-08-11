@@ -6,6 +6,7 @@ module;
 #include <cstddef>
 #include <memory>
 #include <span>
+#include <vector>
 #include <vk_mem_alloc.h>
 
 export module Buffer;
@@ -22,11 +23,13 @@ class Buffer final {
   VmaAllocation _allocation;
   VmaAllocationInfo _allocationInfo;
   VkDeviceSize _size;
-  std::unique_ptr<Buffer> _bufferStaging;
-  static constexpr VkPipelineStageFlags2 _allShaderStageMask =
-      VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
-      VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT |
-      VK_PIPELINE_STAGE_2_TESSELLATION_CONTROL_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT;
+  std::vector<std::unique_ptr<Buffer>> _stagingBuffers;
+  static constexpr VkPipelineStageFlags2 _allShaderStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT |
+                                                               VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+                                                               VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
+                                                               VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT |
+                                                               VK_PIPELINE_STAGE_2_TESSELLATION_CONTROL_SHADER_BIT |
+                                                               VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT;
 
  public:
   Buffer(VkDeviceSize size,
@@ -39,6 +42,7 @@ class Buffer final {
   Buffer& operator=(Buffer&&) = delete;
 
   void setData(std::span<const std::byte> data, const CommandBuffer& commandBufferTransfer);
+  void setData(std::span<const std::byte> data, VkDeviceSize offset, const CommandBuffer& commandBufferTransfer);
   VkBuffer getBuffer() const noexcept;
   VkDeviceSize getSize() const noexcept;
   const VmaAllocationInfo& getAllocationInfo() const noexcept;
