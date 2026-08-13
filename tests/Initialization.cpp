@@ -24,6 +24,7 @@ import Window;
 import Surface;
 import Allocator;
 import Buffer;
+import ResourceUploader;
 import Command;
 import CommandPool;
 import Shader;
@@ -194,7 +195,7 @@ TEST(TimestampsTest, NotReadyIsNonFatal) {
   EXPECT_TRUE(timestamps.getTimestamps().empty());
 }
 
-TEST(BufferTest, SetDataCPU) {
+TEST(ResourceUploaderTest, UploadToHostVisibleBuffer) {
   RenderGraph::Instance instance("TestApp", false);
   RenderGraph::Window window({1920, 1080});
   window.initialize();
@@ -205,15 +206,15 @@ TEST(BufferTest, SetDataCPU) {
   RenderGraph::Buffer buffer(1024, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
                              VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
                              allocator);
-  RenderGraph::CommandPool commandPool(RenderGraph::QueueType::GRAPHICS, device);
-  RenderGraph::CommandBuffer commandBuffer(commandPool, device);
-  commandBuffer.beginCommands();
+  RenderGraph::ResourceUploader resourceUploader(allocator, device);
   std::vector<std::byte> data(512, std::byte{1});
-  EXPECT_NO_THROW(buffer.setData(data, commandBuffer));
-  commandBuffer.endCommands();
+  EXPECT_NO_THROW(resourceUploader.upload(buffer, data));
+  EXPECT_NO_THROW(resourceUploader.submit());
+  ASSERT_EQ(vkQueueWaitIdle(device.getQueue(RenderGraph::QueueType::GRAPHICS)), VK_SUCCESS);
+  EXPECT_NO_THROW(resourceUploader.reclaim());
 }
 
-TEST(BufferTest, SetDataCPUWithOffset) {
+TEST(ResourceUploaderTest, UploadToHostVisibleBufferWithOffset) {
   RenderGraph::Instance instance("TestApp", false);
   RenderGraph::Window window({1920, 1080});
   window.initialize();
@@ -224,18 +225,18 @@ TEST(BufferTest, SetDataCPUWithOffset) {
   RenderGraph::Buffer buffer(1024, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
                              VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
                              allocator);
-  RenderGraph::CommandPool commandPool(RenderGraph::QueueType::GRAPHICS, device);
-  RenderGraph::CommandBuffer commandBuffer(commandPool, device);
-  commandBuffer.beginCommands();
+  RenderGraph::ResourceUploader resourceUploader(allocator, device);
   constexpr VkDeviceSize offset = 256;
   std::vector<std::byte> data(128, std::byte{2});
-  EXPECT_NO_THROW(buffer.setData(data, offset, commandBuffer));
+  EXPECT_NO_THROW(resourceUploader.upload(buffer, data, offset));
+  EXPECT_NO_THROW(resourceUploader.submit());
+  ASSERT_EQ(vkQueueWaitIdle(device.getQueue(RenderGraph::QueueType::GRAPHICS)), VK_SUCCESS);
+  EXPECT_NO_THROW(resourceUploader.reclaim());
   const auto* bufferData = static_cast<const std::byte*>(buffer.getAllocationInfo().pMappedData);
   EXPECT_TRUE(std::equal(data.begin(), data.end(), bufferData + offset));
-  commandBuffer.endCommands();
 }
 
-TEST(BufferTest, SetDataRejectsOutOfBoundsRange) {
+TEST(ResourceUploaderTest, RejectsOutOfBoundsBufferRange) {
   RenderGraph::Instance instance("TestApp", false);
   RenderGraph::Window window({1920, 1080});
   window.initialize();
@@ -246,13 +247,12 @@ TEST(BufferTest, SetDataRejectsOutOfBoundsRange) {
   RenderGraph::Buffer buffer(1024, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
                              VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
                              allocator);
-  RenderGraph::CommandPool commandPool(RenderGraph::QueueType::GRAPHICS, device);
-  RenderGraph::CommandBuffer commandBuffer(commandPool, device);
+  RenderGraph::ResourceUploader resourceUploader(allocator, device);
   std::vector<std::byte> data(128, std::byte{1});
-  EXPECT_THROW(buffer.setData(data, 960, commandBuffer), std::out_of_range);
+  EXPECT_THROW(resourceUploader.upload(buffer, data, 960), std::out_of_range);
 }
 
-TEST(BufferTest, SetDataPotentiallyStaging) {
+TEST(ResourceUploaderTest, UploadsMultipleChunksInOneBatch) {
   RenderGraph::Instance instance("TestApp", false);
   RenderGraph::Window window({1920, 1080});
   window.initialize();
@@ -264,14 +264,14 @@ TEST(BufferTest, SetDataPotentiallyStaging) {
                              VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
                                  VMA_ALLOCATION_CREATE_HOST_ACCESS_ALLOW_TRANSFER_INSTEAD_BIT,
                              allocator);
-  RenderGraph::CommandPool commandPool(RenderGraph::QueueType::GRAPHICS, device);
-  RenderGraph::CommandBuffer commandBuffer(commandPool, device);
-  commandBuffer.beginCommands();
+  RenderGraph::ResourceUploader resourceUploader(allocator, device);
   std::vector<std::byte> firstChunk(256, std::byte{1});
   std::vector<std::byte> secondChunk(256, std::byte{2});
-  EXPECT_NO_THROW(buffer.setData(firstChunk, 0, commandBuffer));
-  EXPECT_NO_THROW(buffer.setData(secondChunk, 512, commandBuffer));
-  commandBuffer.endCommands();
+  EXPECT_NO_THROW(resourceUploader.upload(buffer, firstChunk, 0));
+  EXPECT_NO_THROW(resourceUploader.upload(buffer, secondChunk, 512));
+  EXPECT_NO_THROW(resourceUploader.submit());
+  ASSERT_EQ(vkQueueWaitIdle(device.getQueue(RenderGraph::QueueType::GRAPHICS)), VK_SUCCESS);
+  EXPECT_NO_THROW(resourceUploader.reclaim());
 }
 
 TEST(BufferTest, ShaderCreate) {
@@ -667,6 +667,50 @@ TEST(ImageTest, Create) {
   EXPECT_EQ(image.getMipMapNumber(), 1);
   EXPECT_EQ(image.getLayerNumber(), 1);
   EXPECT_EQ(image.getImageLayout(), VK_IMAGE_LAYOUT_UNDEFINED);
+}
+
+TEST(ResourceUploaderTest, UploadsImage) {
+  RenderGraph::Instance instance("TestApp", false);
+  RenderGraph::Window window({1920, 1080});
+  window.initialize();
+  RenderGraph::Surface surface(window, instance);
+  RenderGraph::Device device(surface, instance);
+  device.initialize();
+  RenderGraph::MemoryAllocator allocator(device, instance);
+  RenderGraph::Image image(allocator);
+  image.createImage(VK_FORMAT_R8G8B8A8_UNORM, {2, 2}, 2, 1, VK_IMAGE_ASPECT_COLOR_BIT,
+                    VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                        VK_IMAGE_USAGE_SAMPLED_BIT);
+
+  RenderGraph::ResourceUploader resourceUploader(allocator, device);
+  const std::vector<std::byte> pixels(2 * 2 * 4, std::byte{42});
+  const std::vector<VkDeviceSize> bufferOffsets{0};
+  EXPECT_NO_THROW(resourceUploader.upload(image, pixels, bufferOffsets));
+  EXPECT_NO_THROW(resourceUploader.submit());
+  ASSERT_EQ(vkQueueWaitIdle(device.getQueue(RenderGraph::QueueType::GRAPHICS)), VK_SUCCESS);
+  EXPECT_NO_THROW(resourceUploader.reclaim());
+  EXPECT_EQ(image.getImageLayout(), VK_IMAGE_LAYOUT_GENERAL);
+}
+
+TEST(ResourceUploaderTest, RejectsInvalidMipmapUploadBeforeCreatingBatch) {
+  RenderGraph::Instance instance("TestApp", false);
+  RenderGraph::Window window({1920, 1080});
+  window.initialize();
+  RenderGraph::Surface surface(window, instance);
+  RenderGraph::Device device(surface, instance);
+  device.initialize();
+  RenderGraph::MemoryAllocator allocator(device, instance);
+  RenderGraph::Image image(allocator);
+  image.createImage(VK_FORMAT_R8G8B8A8_UNORM, {2, 2}, 2, 1, VK_IMAGE_ASPECT_COLOR_BIT,
+                    VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+
+  RenderGraph::ResourceUploader resourceUploader(allocator, device);
+  const std::vector<std::byte> pixels(2 * 2 * 4, std::byte{42});
+  const std::vector<VkDeviceSize> bufferOffsets{0};
+
+  EXPECT_THROW(resourceUploader.upload(image, pixels, bufferOffsets), std::invalid_argument);
+  EXPECT_EQ(image.getImageLayout(), VK_IMAGE_LAYOUT_UNDEFINED);
+  EXPECT_THROW(resourceUploader.submit(), std::logic_error);
 }
 
 TEST(ImageViewTest, Create) {

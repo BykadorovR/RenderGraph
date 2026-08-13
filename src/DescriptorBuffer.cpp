@@ -207,9 +207,6 @@ void DescriptorBuffer::initialize(const CommandBuffer& commandBuffer) {
           image.changeLayout(image.getImageLayout(), VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0,
                              dstStageMask, dstAccessMask, commandBuffer);
         }
-        // generate mip maps if needed
-        if (image.getMipMapGenerated() == false && image.getMipMapNumber() > 1) image.generateMipmaps(commandBuffer);
-
         auto info = VkDescriptorImageInfo{.imageView = texture->getImageView().getImageView(),
                                           .imageLayout = texture->getImageView().getImage().getImageLayout()};
         auto&& sampler = texture->getSampler();
@@ -241,9 +238,33 @@ void DescriptorBuffer::initialize(const CommandBuffer& commandBuffer) {
       size, _usage, VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
       *_memoryAllocator);
 
-  // and bind all descriptors to it
-  _descriptorBuffer->setData(std::span(reinterpret_cast<const std::byte*>(_descriptors.data()), _descriptors.size()),
-                             commandBuffer);
+  // Descriptor buffers are explicitly created as persistently mapped host-visible buffers.
+  const auto descriptorData =
+      std::span(reinterpret_cast<const std::byte*>(_descriptors.data()), _descriptors.size());
+  const auto result = vmaCopyMemoryToAllocation(_memoryAllocator->getAllocator(), descriptorData.data(),
+                                                _descriptorBuffer->getAllocation(), 0, descriptorData.size());
+  if (result != VK_SUCCESS) {
+    throw std::runtime_error("Can't upload descriptor buffer data: " + std::to_string(result));
+  }
+
+  const VkBufferMemoryBarrier2 descriptorBarrier{
+      .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+      .srcStageMask = VK_PIPELINE_STAGE_2_HOST_BIT,
+      .srcAccessMask = VK_ACCESS_2_HOST_WRITE_BIT,
+      .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+      .dstAccessMask = VK_ACCESS_2_DESCRIPTOR_BUFFER_READ_BIT_EXT,
+      .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .buffer = _descriptorBuffer->getBuffer(),
+      .offset = 0,
+      .size = descriptorData.size(),
+  };
+  const VkDependencyInfo dependencyInfo{
+      .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+      .bufferMemoryBarrierCount = 1,
+      .pBufferMemoryBarriers = &descriptorBarrier,
+  };
+  vkCmdPipelineBarrier2(commandBuffer.getCommandBuffer(), &dependencyInfo);
 }
 
 void DescriptorBuffer::bind(VkPipelineBindPoint bindPoint,
@@ -409,9 +430,6 @@ void DescriptorSet::initialize(const CommandBuffer& commandBuffer) {
           image.changeLayout(image.getImageLayout(), VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0,
                              dstStageMask, dstAccessMask, commandBuffer);
         }
-        // generate mip maps if needed
-        if (image.getMipMapGenerated() == false && image.getMipMapNumber() > 1) image.generateMipmaps(commandBuffer);
-
         imageInfos[i] = VkDescriptorImageInfo{
             .imageView = resource.textures[i]->getImageView().getImageView(),
             .imageLayout = resource.textures[i]->getImageView().getImage().getImageLayout()};

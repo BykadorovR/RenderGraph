@@ -12,7 +12,6 @@ module;
 
 export module Texture;
 
-import Buffer;
 import Allocator;
 import Command;
 import Device;
@@ -56,7 +55,6 @@ class Image final {
   const MemoryAllocator* _memoryAllocator;
   VkImage _image{};
   VmaAllocation _imageMemory = nullptr;
-  std::unique_ptr<Buffer> _stagingBuffer;
   // image mandatory options
   VkFormat _format;
   glm::ivec2 _resolution;
@@ -65,7 +63,6 @@ class Image final {
   VkImageAspectFlags _aspectMask;
   VkImageUsageFlags _usageFlags;
   VkImageLayout _imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-  bool _mipMapGenerated = false;
 
  public:
   Image(const MemoryAllocator& memoryAllocator);
@@ -88,10 +85,6 @@ class Image final {
                  VkImageAspectFlags aspectMask,
                  VkImageUsageFlags usage);
 
-  // bufferOffsets contains offsets for part of buffer that should be copied to corresponding layers of image
-  void copyFrom(std::unique_ptr<Buffer> buffer,
-                const std::vector<int>& bufferOffsets,
-                const CommandBuffer& commandBuffer);
   void changeLayout(VkImageLayout oldLayout,
                     VkImageLayout newLayout,
                     VkPipelineStageFlags2 srcStageMask,
@@ -99,14 +92,11 @@ class Image final {
                     VkPipelineStageFlags2 dstStageMask,
                     VkAccessFlags2 dstAccessMask,
                     const CommandBuffer& commandBuffer);
-  void generateMipmaps(const CommandBuffer& commandBuffer);
-
   glm::ivec2 getResolution() const noexcept;
   VkImage getImage() const noexcept;
   VkFormat getFormat() const noexcept;
   VkImageLayout getImageLayout() const noexcept;
   int getMipMapNumber() const noexcept;
-  bool getMipMapGenerated() const noexcept;
   int getLayerNumber() const noexcept;
   VkImageAspectFlags getAspectMask() const noexcept;
   VkImageUsageFlags getUsageFlags() const noexcept;
