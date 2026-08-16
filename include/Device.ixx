@@ -16,17 +16,19 @@ enum class QueueType { PRESENT, GRAPHICS, COMPUTE, TRANSFER };
 class Device final {
  private:
   vkb::Device _device;
-  const Surface* _surface;
+  const Surface* _surface = nullptr;
   const Instance* _instance;
+  bool _initialized = false;
   std::vector<VkQueueFamilyProperties> _queueFamilyProperties;
   std::vector<std::string> _optionalExtensions = {"VK_EXT_descriptor_buffer"};
 
  public:
-  Device(const Surface& surface, const Instance& instance);
+  explicit Device(const Instance& instance);
   Device(const Device&) = delete;
   Device& operator=(const Device&) = delete;
   Device(Device&&) = delete;
   Device& operator=(Device&&) = delete;
+  void setSurface(const Surface& surface);
   void initialize();
 
   void setOptionalExtensions(const std::vector<std::string>& extensions);
