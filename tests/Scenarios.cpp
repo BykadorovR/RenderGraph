@@ -56,7 +56,8 @@ TEST(ScenarioTest, GraphOneQueue) {
   RenderGraph::Device device(surface, instance);
   device.initialize();
   RenderGraph::MemoryAllocator allocator(device, instance);
-  RenderGraph::Swapchain swapchain(resolution, allocator, device);
+  RenderGraph::Swapchain swapchain(
+      resolution, allocator, device, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT);
   int framesInFlight = 2;
   RenderGraph::Graph graph(4, framesInFlight, swapchain, window, device);
 
@@ -272,7 +273,8 @@ TEST(ScenarioTest, GraphSeparateQueues) {
   RenderGraph::Device device(surface, instance);
   device.initialize();
   RenderGraph::MemoryAllocator allocator(device, instance);
-  RenderGraph::Swapchain swapchain(resolution, allocator, device);
+  RenderGraph::Swapchain swapchain(
+      resolution, allocator, device, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT);
   int framesInFlight = 2;
   RenderGraph::Graph graph(4, framesInFlight, swapchain, window, device);
 
@@ -723,7 +725,8 @@ TEST(ScenarioTest, GraphReset) {
   RenderGraph::Device device(surface, instance);
   device.initialize();
   RenderGraph::MemoryAllocator allocator(device, instance);
-  RenderGraph::Swapchain swapchain(resolution, allocator, device);
+  RenderGraph::Swapchain swapchain(
+      resolution, allocator, device, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT);
   int framesInFlight = 2;
   RenderGraph::Graph graph(4, framesInFlight, swapchain, window, device);
 

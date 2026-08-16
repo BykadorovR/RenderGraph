@@ -26,7 +26,10 @@ class Swapchain {
   void _destroy();
 
  public:
-  Swapchain(glm::ivec2 resolution, const MemoryAllocator& allocator, const Device& device);
+  Swapchain(glm::ivec2 resolution,
+            const MemoryAllocator& allocator,
+            const Device& device,
+            VkImageUsageFlags imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
   Swapchain(const Swapchain&) = delete;
   Swapchain& operator=(const Swapchain&) = delete;
   Swapchain(Swapchain&&) = delete;
