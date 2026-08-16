@@ -353,7 +353,8 @@ TEST_P(ValidationScenarioTest, FullGraphPipelineHasNoValidationErrorsAcrossReset
     RenderGraph::Swapchain swapchain(
         resolution, allocator, device, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT);
     swapchain.initialize();
-    RenderGraph::Graph graph(4, framesInFlight, swapchain, window, device);
+    RenderGraph::Graph graph(4, framesInFlight, device);
+    graph.setSwapchain(swapchain);
     graph.initialize();
 
     if (!device.isFormatFeatureSupported(VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_TILING_OPTIMAL,
@@ -462,7 +463,7 @@ TEST_P(ValidationScenarioTest, FullGraphPipelineHasNoValidationErrorsAcrossReset
 
     graph.calculate();
     graph.calculate();
-    ASSERT_NO_THROW(graph.reset());
+    ASSERT_NO_THROW(graph.reset(resolution));
     int totalResetCount = 1;
 
     constexpr int initialFrameCount = framesInFlight + 2;
@@ -472,10 +473,10 @@ TEST_P(ValidationScenarioTest, FullGraphPipelineHasNoValidationErrorsAcrossReset
 
     constexpr int framesPerReset = framesInFlight + 1;
     for (int resetIndex = 0; resetIndex < resetCycleCount; ++resetIndex) {
-      ASSERT_NO_THROW(graph.reset());
+    ASSERT_NO_THROW(graph.reset(resolution));
       ++totalResetCount;
       if (resetIndex == 1) {
-        ASSERT_NO_THROW(graph.reset());
+    ASSERT_NO_THROW(graph.reset(resolution));
         ++totalResetCount;
       }
       for (int frameIndex = 0; frameIndex < framesPerReset; ++frameIndex) {
@@ -519,7 +520,8 @@ TEST_P(ValidationScenarioTest, GpuDrivenIndexedIndirectCountDrawsTriangle) {
     RenderGraph::MemoryAllocator allocator(device, instance);
     RenderGraph::Swapchain swapchain(resolution, allocator, device);
     swapchain.initialize();
-    RenderGraph::Graph graph(2, framesInFlight, swapchain, window, device);
+    RenderGraph::Graph graph(2, framesInFlight, device);
+    graph.setSwapchain(swapchain);
     graph.initialize();
 
     graph.getGraphStorage().add(
@@ -590,6 +592,75 @@ TEST_P(ValidationScenarioTest, GpuDrivenIndexedIndirectCountDrawsTriangle) {
   EXPECT_TRUE(errors.empty()) << joinErrors(errors);
 }
 
+TEST(ValidationTest, ComputeGraphRunsWithoutSwapchain) {
+  ValidationErrorCollector validationErrors;
+  RenderGraph::Instance instance("ValidationComputeGraphTest", true);
+  if (!instance.isDebug()) {
+    GTEST_SKIP() << "Vulkan validation layers or VK_EXT_debug_utils are unavailable";
+  }
+
+  ValidationMessenger validationMessenger(instance.getInstance().instance, validationErrors);
+
+  {
+    constexpr int framesInFlight = 3;
+    constexpr int frameCount = framesInFlight + 2;
+    const glm::ivec2 resolution(64, 64);
+
+    RenderGraph::Device device(instance);
+    device.initialize();
+    if (!device.isFormatFeatureSupported(VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_TILING_OPTIMAL,
+                                         VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)) {
+      GTEST_SKIP() << "VK_FORMAT_R8G8B8A8_UNORM storage images are unavailable";
+    }
+    RenderGraph::MemoryAllocator allocator(device, instance);
+    RenderGraph::Graph graph(2, framesInFlight, device);
+    graph.initialize();
+
+    std::vector<std::unique_ptr<RenderGraph::Buffer>> storageBuffers;
+    storageBuffers.reserve(framesInFlight);
+    for (int frameIndex = 0; frameIndex < framesInFlight; ++frameIndex) {
+      storageBuffers.push_back(std::make_unique<RenderGraph::Buffer>(
+          4096, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
+          allocator));
+    }
+    graph.getGraphStorage().add("Data", storageBuffers);
+
+    std::vector<std::shared_ptr<RenderGraph::ImageView>> storageImageViews;
+    storageImageViews.reserve(framesInFlight);
+    for (int frameIndex = 0; frameIndex < framesInFlight; ++frameIndex) {
+      auto storageImage = std::make_unique<RenderGraph::Image>(allocator);
+      storageImage->createImage(VK_FORMAT_R8G8B8A8_UNORM, resolution, 1, 1, VK_IMAGE_ASPECT_COLOR_BIT,
+                                VK_IMAGE_USAGE_STORAGE_BIT);
+      auto storageImageView = std::make_shared<RenderGraph::ImageView>(std::move(storageImage), device);
+      storageImageView->createImageView(VK_IMAGE_VIEW_TYPE_2D, 0, 0);
+      storageImageViews.push_back(std::move(storageImageView));
+    }
+    graph.getGraphStorage().add(
+        "Image", std::make_unique<RenderGraph::ImageViewHolder>(
+                     storageImageViews, [&graph]() { return graph.getFrameInFlight(); }));
+
+    auto graphElement = std::make_shared<ValidationGraphElement>();
+    auto& computePass = graph.createPassCompute("Compute", false);
+    computePass.addStorageBufferOutput("Data");
+    computePass.addStorageTextureOutput("Image");
+    computePass.registerGraphElement(graphElement);
+    graph.calculate();
+
+    for (int frameIndex = 0; frameIndex < frameCount; ++frameIndex) {
+      ASSERT_FALSE(graph.render());
+    }
+
+    EXPECT_EQ(graphElement->getDrawCount(), frameCount);
+    ASSERT_EQ(vkDeviceWaitIdle(device.getLogicalDevice()), VK_SUCCESS);
+    for (const auto& imageView : storageImageViews) {
+      EXPECT_EQ(imageView->getImage().getImageLayout(), VK_IMAGE_LAYOUT_GENERAL);
+    }
+  }
+
+  const std::vector<std::string> errors = validationErrors.getErrors();
+  EXPECT_TRUE(errors.empty()) << joinErrors(errors);
+}
+
 TEST(ValidationTest, OffscreenComputeGraphPresentsWithoutWritingSwapchain) {
   ValidationErrorCollector validationErrors;
   RenderGraph::Instance instance("ValidationOffscreenGraphTest", true);
@@ -614,7 +685,8 @@ TEST(ValidationTest, OffscreenComputeGraphPresentsWithoutWritingSwapchain) {
     RenderGraph::MemoryAllocator allocator(device, instance);
     RenderGraph::Swapchain swapchain(resolution, allocator, device);
     swapchain.initialize();
-    RenderGraph::Graph graph(2, framesInFlight, swapchain, window, device);
+    RenderGraph::Graph graph(2, framesInFlight, device);
+    graph.setSwapchain(swapchain);
     graph.initialize();
 
     std::vector<std::unique_ptr<RenderGraph::Buffer>> storageBuffers;
@@ -636,7 +708,7 @@ TEST(ValidationTest, OffscreenComputeGraphPresentsWithoutWritingSwapchain) {
       ASSERT_FALSE(graph.render());
     }
 
-    ASSERT_NO_THROW(graph.reset());
+    ASSERT_NO_THROW(graph.reset(resolution));
 
     for (int frameIndex = 0; frameIndex < framesAfterReset; ++frameIndex) {
       ASSERT_FALSE(graph.render());

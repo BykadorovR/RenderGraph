@@ -24,7 +24,6 @@ import Command;
 import CommandPool;
 import Buffer;
 import Device;
-import Window;
 import glm;
 
 // Forward declarations for test classes, not visible outside this module
@@ -189,9 +188,8 @@ class Graph final {
   friend class ::ScenarioTest_TraversalKeepsTransitiveProducerBeforeConsumer_Test;
   friend class ::ScenarioTest_TraversalDiamondGraph_Test;
 
-  Swapchain* _swapchain;
+  Swapchain* _swapchain = nullptr;
   const Device* _device;
-  const Window* _window;
   std::unique_ptr<BS::thread_pool> _threadPool;
   std::vector<std::unique_ptr<GraphPass>> _passes;
   std::deque<GraphPass*> _passesOrdered;
@@ -257,14 +255,13 @@ class Graph final {
  public:
   Graph(int threadsNumber,
         int maxFramesInFlight,
-        Swapchain& swapchain,
-        const Window& window,
         const Device& device);
   Graph(const Graph&) = delete;
   Graph& operator=(const Graph&) = delete;
   Graph(Graph&&) = delete;
   Graph& operator=(Graph&&) = delete;
 
+  void setSwapchain(Swapchain& swapchain);
   void initialize();
   GraphPassGraphic& createPassGraphic(std::string_view name);
   GraphPassCompute& createPassCompute(std::string_view name, bool separate);
@@ -277,7 +274,7 @@ class Graph final {
   void calculate();
   // true -> need to call reset
   bool render();
-  void reset();
+  void reset(glm::ivec2 resolution);
 
   void print() const;
 };

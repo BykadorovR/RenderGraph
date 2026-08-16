@@ -60,7 +60,7 @@ TEST(ScenarioTest, GraphOneQueue) {
   RenderGraph::Swapchain swapchain(
       resolution, allocator, device, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT);
   int framesInFlight = 2;
-  RenderGraph::Graph graph(4, framesInFlight, swapchain, window, device);
+  RenderGraph::Graph graph(4, framesInFlight, device);
 
   auto commandPool = std::make_shared<RenderGraph::CommandPool>(RenderGraph::QueueType::GRAPHICS, device);
   std::vector<RenderGraph::CommandBuffer> commandBuffer;
@@ -71,6 +71,7 @@ TEST(ScenarioTest, GraphOneQueue) {
 
   commandBuffer[graph.getFrameInFlight()].beginCommands();
   swapchain.initialize();
+  graph.setSwapchain(swapchain);
   graph.initialize();
 
   EXPECT_EQ(graph.getFrameInFlight(), 0);
@@ -157,7 +158,8 @@ TEST(ScenarioTest, GraphOneQueue) {
 
   graph.calculate();
 
-  RenderGraph::Graph offscreenGraph(1, framesInFlight, swapchain, window, device);
+  RenderGraph::Graph offscreenGraph(1, framesInFlight, device);
+  offscreenGraph.setSwapchain(swapchain);
   offscreenGraph.initialize();
   offscreenGraph.getGraphStorage().add(
       "Offscreen", std::make_unique<RenderGraph::ImageViewHolder>(positionImageViews, []() { return 0; }));
@@ -278,7 +280,7 @@ TEST(ScenarioTest, GraphSeparateQueues) {
   RenderGraph::Swapchain swapchain(
       resolution, allocator, device, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT);
   int framesInFlight = 2;
-  RenderGraph::Graph graph(4, framesInFlight, swapchain, window, device);
+  RenderGraph::Graph graph(4, framesInFlight, device);
 
   auto commandPool = std::make_shared<RenderGraph::CommandPool>(RenderGraph::QueueType::GRAPHICS, device);
   std::vector<RenderGraph::CommandBuffer> commandBuffer;
@@ -289,6 +291,7 @@ TEST(ScenarioTest, GraphSeparateQueues) {
 
   commandBuffer[graph.getFrameInFlight()].beginCommands();
   swapchain.initialize();
+  graph.setSwapchain(swapchain);
   graph.initialize();
 
   EXPECT_EQ(graph.getFrameInFlight(), 0);
@@ -480,7 +483,8 @@ TEST(ScenarioTest, BufferOwnershipTransferUsesLastResourceOwner) {
   swapchain.initialize();
 
   constexpr int framesInFlight = 2;
-  RenderGraph::Graph graph(4, framesInFlight, swapchain, window, device);
+  RenderGraph::Graph graph(4, framesInFlight, device);
+  graph.setSwapchain(swapchain);
   graph.initialize();
 
   auto addStorageBuffers = [&](std::string_view name) {
@@ -569,7 +573,8 @@ TEST(ScenarioTest, GraphicsPassBufferInputs) {
   swapchain.initialize();
 
   constexpr int framesInFlight = 2;
-  RenderGraph::Graph graph(2, framesInFlight, swapchain, window, device);
+  RenderGraph::Graph graph(2, framesInFlight, device);
+  graph.setSwapchain(swapchain);
   graph.initialize();
   graph.getGraphStorage().add(
       "Swapchain", std::make_unique<RenderGraph::ImageViewHolder>(
@@ -682,7 +687,8 @@ TEST(ScenarioTest, ComputePassIndirectBufferInput) {
   swapchain.initialize();
 
   constexpr int framesInFlight = 2;
-  RenderGraph::Graph graph(2, framesInFlight, swapchain, window, device);
+  RenderGraph::Graph graph(2, framesInFlight, device);
+  graph.setSwapchain(swapchain);
   graph.initialize();
 
   std::vector<std::unique_ptr<RenderGraph::Buffer>> indirectBuffers;
@@ -734,7 +740,7 @@ TEST(ScenarioTest, GraphReset) {
   RenderGraph::Swapchain swapchain(
       resolution, allocator, device, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT);
   int framesInFlight = 2;
-  RenderGraph::Graph graph(4, framesInFlight, swapchain, window, device);
+  RenderGraph::Graph graph(4, framesInFlight, device);
 
   auto commandPool = std::make_shared<RenderGraph::CommandPool>(RenderGraph::QueueType::GRAPHICS, device);
   std::vector<RenderGraph::CommandBuffer> commandBuffer;
@@ -745,6 +751,7 @@ TEST(ScenarioTest, GraphReset) {
 
   commandBuffer[graph.getFrameInFlight()].beginCommands();
   swapchain.initialize();
+  graph.setSwapchain(swapchain);
   graph.initialize();
 
   auto swapchainOldImages = swapchain.getImageViews();
@@ -832,7 +839,7 @@ TEST(ScenarioTest, GraphReset) {
   EXPECT_EQ(window.getResolution().x, 1920);
   EXPECT_EQ(window.getResolution().y, 1080);
   // call reset explicitly, usually it should be called if render() returns true
-  graph.reset();
+  graph.reset(resolution);
   EXPECT_EQ(elementMock->getResetCount(), 3);
   // we don't change window resolution here
   EXPECT_EQ(window.getResolution().x, 1920);
@@ -891,7 +898,7 @@ TEST(ScenarioTest, DepthExistance) {
   RenderGraph::MemoryAllocator allocator(device, instance);
   RenderGraph::Swapchain swapchain(resolution, allocator, device);
   int framesInFlight = 2;
-  RenderGraph::Graph graph(4, framesInFlight, swapchain, window, device);
+  RenderGraph::Graph graph(4, framesInFlight, device);
 
   auto commandPool = std::make_shared<RenderGraph::CommandPool>(RenderGraph::QueueType::GRAPHICS, device);
   std::vector<RenderGraph::CommandBuffer> commandBuffer;
@@ -902,6 +909,7 @@ TEST(ScenarioTest, DepthExistance) {
 
   commandBuffer[graph.getFrameInFlight()].beginCommands();
   swapchain.initialize();
+  graph.setSwapchain(swapchain);
   graph.initialize();
 
   std::unique_ptr<RenderGraph::ImageViewHolder> swapchainHolder = std::make_unique<RenderGraph::ImageViewHolder>(
@@ -989,7 +997,8 @@ TEST(ScenarioTest, TraversalKeepsTransitiveProducerBeforeConsumer) {
 
   constexpr int framesInFlight = 2;
 
-  RenderGraph::Graph graph(4, framesInFlight, swapchain, window, device);
+  RenderGraph::Graph graph(4, framesInFlight, device);
+  graph.setSwapchain(swapchain);
 
   graph.initialize();
 
@@ -1095,7 +1104,8 @@ TEST(ScenarioTest, TraversalDiamondGraph) {
 
   constexpr int framesInFlight = 2;
 
-  RenderGraph::Graph graph(4, framesInFlight, swapchain, window, device);
+  RenderGraph::Graph graph(4, framesInFlight, device);
+  graph.setSwapchain(swapchain);
 
   graph.initialize();
 
