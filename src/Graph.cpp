@@ -307,26 +307,30 @@ void GraphPassCompute::execute(int currentFrame, const CommandBuffer& commandBuf
 
 Graph::Graph(int threadsNumber,
              int maxFramesInFlight,
-             Swapchain& swapchain,
-             const Window& window,
              const Device& device)
-    : _swapchain(&swapchain),
-      _window(&window),
-      _device(&device) {
+    : _device(&device) {
   _threadPool = std::make_unique<BS::thread_pool>(threadsNumber);
   _timestamps = std::make_unique<Timestamps>(device, static_cast<uint32_t>(maxFramesInFlight));
   _graphStorage = std::make_unique<GraphStorage>();
   _maxFramesInFlight = maxFramesInFlight;
 }
 
-void Graph::initialize() {
-  // create 3 special semaphores
-  // Image-available semaphores are indexed by frame-in-flight slot,
-  // because they are not tied to a specific swapchain image.
+void Graph::setSwapchain(Swapchain& swapchain) {
+  if (_swapchain != nullptr) {
+    throw std::logic_error("Swapchain is already set");
+  }
+  if (swapchain.getImageCount() == 0) {
+    throw std::logic_error("Can't set an uninitialized swapchain");
+  }
+
+  _swapchain = &swapchain;
   std::ranges::generate_n(std::back_inserter(_semaphoreImageAvailable), _maxFramesInFlight,
                           [&] { return std::make_shared<Semaphore>(VK_SEMAPHORE_TYPE_BINARY, *_device); });
   std::ranges::generate_n(std::back_inserter(_semaphoreRenderFinished), _swapchain->getImageCount(),
                           [&] { return std::make_shared<Semaphore>(VK_SEMAPHORE_TYPE_BINARY, *_device); });
+}
+
+void Graph::initialize() {
   _semaphoreInFlight = std::make_unique<Semaphore>(VK_SEMAPHORE_TYPE_TIMELINE, *_device);
 }
 
@@ -976,15 +980,17 @@ void Graph::calculate() {
     return static_cast<uint32_t>(_device->getQueueIndex(queueType));
   };
 
-  // Wait before the first swapchain use, or on the root pass when only its final
-  // layout transition touches the acquired image.
-  const auto acquireWaitIt = std::ranges::find_if(_passesOrdered, [this](GraphPass* pass) {
-    return std::ranges::any_of(_resources.at(pass).getNames(Resource::Type::IMAGE), [this](const auto& name) {
-      return _graphStorage->getImageViewHolder(name).contains(_swapchain->getImageViews());
+  if (_swapchain != nullptr) {
+    // Wait before the first swapchain use, or on the root pass when only its final
+    // layout transition touches the acquired image.
+    const auto acquireWaitIt = std::ranges::find_if(_passesOrdered, [this](GraphPass* pass) {
+      return std::ranges::any_of(_resources.at(pass).getNames(Resource::Type::IMAGE), [this](const auto& name) {
+        return _graphStorage->getImageViewHolder(name).contains(_swapchain->getImageViews());
+      });
     });
-  });
-  GraphPass* acquireWaitPass = acquireWaitIt != _passesOrdered.end() ? *acquireWaitIt : root;
-  _sync[acquireWaitPass].addWaitSemaphore(_semaphoreImageAvailable, [this]() { return _frameInFlight; });
+    GraphPass* acquireWaitPass = acquireWaitIt != _passesOrdered.end() ? *acquireWaitIt : root;
+    _sync[acquireWaitPass].addWaitSemaphore(_semaphoreImageAvailable, [this]() { return _frameInFlight; });
+  }
 
   GraphPass* previousPass = nullptr;
   for (auto&& pass : _passesOrdered) {
@@ -1059,7 +1065,7 @@ void Graph::calculate() {
     }
 
     // end node should signal end semaphore
-    if (pass == root) {
+    if (_swapchain != nullptr && pass == root) {
       _sync[pass].addSignalSemaphore(_semaphoreRenderFinished, [this]() { return _swapchain->getSwapchainIndex(); });
     }
 
@@ -1086,15 +1092,18 @@ bool Graph::render() {
     }
   }
 
-  auto status = _swapchain->acquireNextImage(*_semaphoreImageAvailable[_frameInFlight]);
-  if (status == VK_ERROR_OUT_OF_DATE_KHR) {
-    return true;
-  }
-  if (status != VK_SUCCESS && status != VK_SUBOPTIMAL_KHR) {
-    throw std::runtime_error("failed to acquire swap chain image");
+  uint32_t swapchainIndex = 0;
+  if (_swapchain != nullptr) {
+    auto status = _swapchain->acquireNextImage(*_semaphoreImageAvailable[_frameInFlight]);
+    if (status == VK_ERROR_OUT_OF_DATE_KHR) {
+      return true;
+    }
+    if (status != VK_SUCCESS && status != VK_SUBOPTIMAL_KHR) {
+      throw std::runtime_error("failed to acquire swap chain image");
+    }
+    swapchainIndex = _swapchain->getSwapchainIndex();
   }
 
-  auto swapchainIndex = _swapchain->getSwapchainIndex();
   _timestamps->resetQueryPool();
   // Record all pass command buffers.
   std::vector<std::future<void>> futureTasks =
@@ -1104,7 +1113,7 @@ bool Graph::render() {
           commandBuffer->beginCommands();
         }
 
-        // Change layouts required for dynamic rendering.
+        // Change image layouts required by the pass.
         if (pass->getGraphPassType() == GraphPassType::GRAPHIC) {
           auto* passGraphic = static_cast<GraphPassGraphic*>(pass);
           for (const auto& colorTarget : passGraphic->getColorTargets()) {
@@ -1127,6 +1136,24 @@ bool Graph::render() {
                                  VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
                                      VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
                                  dstAccessMask, *commandBuffer);
+            }
+          }
+        } else if (pass->getGraphPassType() == GraphPassType::COMPUTE) {
+          auto* passCompute = static_cast<GraphPassCompute*>(pass);
+          std::unordered_map<std::string, VkAccessFlags2> storageImages;
+          for (const auto& name : passCompute->getStorageTextureInputs()) {
+            storageImages[name] |= VK_ACCESS_2_SHADER_READ_BIT;
+          }
+          for (const auto& name : passCompute->getStorageTextureOutputs()) {
+            storageImages[name] |= VK_ACCESS_2_SHADER_WRITE_BIT;
+          }
+
+          for (const auto& [name, dstAccessMask] : storageImages) {
+            auto& imageView = _graphStorage->getImageViewHolder(name).getImageView();
+            auto& image = imageView.getImage();
+            if (image.getImageLayout() != VK_IMAGE_LAYOUT_GENERAL) {
+              image.changeLayout(image.getImageLayout(), VK_IMAGE_LAYOUT_GENERAL, 0, 0,
+                                 VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, dstAccessMask, *commandBuffer);
             }
           }
         }
@@ -1243,7 +1270,8 @@ bool Graph::render() {
   }
 
   // Change the swapchain image layout before presentation.
-  if (_swapchain->getImage(swapchainIndex).getImageLayout() != VK_IMAGE_LAYOUT_PRESENT_SRC_KHR) {
+  if (_swapchain != nullptr &&
+      _swapchain->getImage(swapchainIndex).getImageLayout() != VK_IMAGE_LAYOUT_PRESENT_SRC_KHR) {
     _swapchain->getImage(swapchainIndex)
         .changeLayout(_swapchain->getImage(swapchainIndex).getImageLayout(), VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
                       VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT, 0, 0,
@@ -1258,42 +1286,45 @@ bool Graph::render() {
 
   _timestamps->finishFrame();
 
-  auto semaphoreRenderFinished = _semaphoreRenderFinished[swapchainIndex]->getSemaphore();
-
-  VkSwapchainKHR swapChains[]{
-      _swapchain->getSwapchain(),
-  };
-
-  VkPresentInfoKHR presentInfo{
-      .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
-      .waitSemaphoreCount = 1,
-      .pWaitSemaphores = &semaphoreRenderFinished,
-      .swapchainCount = 1,
-      .pSwapchains = swapChains,
-      .pImageIndices = &swapchainIndex,
-  };
-
   ++_valueSemaphoreInFlight;
 
   _frameInFlight = (_valueSemaphoreInFlight - 1) % _maxFramesInFlight;
 
-  auto result = vkQueuePresentKHR(_device->getQueue(QueueType::PRESENT), &presentInfo);
+  if (_swapchain != nullptr) {
+    auto semaphoreRenderFinished = _semaphoreRenderFinished[swapchainIndex]->getSemaphore();
+    VkSwapchainKHR swapChains[]{
+        _swapchain->getSwapchain(),
+    };
+    VkPresentInfoKHR presentInfo{
+        .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .waitSemaphoreCount = 1,
+        .pWaitSemaphores = &semaphoreRenderFinished,
+        .swapchainCount = 1,
+        .pSwapchains = swapChains,
+        .pImageIndices = &swapchainIndex,
+    };
+    auto result = vkQueuePresentKHR(_device->getQueue(QueueType::PRESENT), &presentInfo);
 
-  if (result != VK_SUCCESS) {
-    return true;
+    if (result != VK_SUCCESS) {
+      return true;
+    }
   }
 
   return false;
 }
 
-void Graph::reset() {
+void Graph::reset(glm::ivec2 resolution) {
+  if (_swapchain == nullptr) {
+    throw std::logic_error("Can't reset presentation without a swapchain");
+  }
+
   // wait all queues idle before reset
   if (vkDeviceWaitIdle(_device->getLogicalDevice()) != VK_SUCCESS) throw std::runtime_error("failed to reset");
 
-  if (_window->getResolution().x == 0 || _window->getResolution().y == 0)
+  if (resolution.x == 0 || resolution.y == 0)
     throw std::runtime_error("Can't reset if resolution is 0");
 
-  auto oldSwapchain = _swapchain->reset(_window->getResolution());
+  auto oldSwapchain = _swapchain->reset(resolution);
   _graphStorage->reset(oldSwapchain, _swapchain->getImageViews());
 
   _semaphoreRenderFinished.clear();
