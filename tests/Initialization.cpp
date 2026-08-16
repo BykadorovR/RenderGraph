@@ -614,6 +614,7 @@ TEST(SwapchainTest, CreateWithoutInitialization) {
   RenderGraph::MemoryAllocator allocator(device, instance);
   RenderGraph::Swapchain swapchain(resolution, allocator, device);
   EXPECT_NE(swapchain.getSwapchain(), nullptr);
+  EXPECT_EQ(swapchain.getSwapchain().image_usage_flags, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
   EXPECT_EQ(swapchain.getImageCount(), 0);
   EXPECT_EQ(swapchain.getImageViews().size(), 0);
 }

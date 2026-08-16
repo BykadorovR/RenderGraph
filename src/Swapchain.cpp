@@ -14,7 +14,10 @@ module Swapchain;
 
 using namespace RenderGraph;
 
-Swapchain::Swapchain(glm::ivec2 resolution, const MemoryAllocator& allocator, const Device& device)
+Swapchain::Swapchain(glm::ivec2 resolution,
+                     const MemoryAllocator& allocator,
+                     const Device& device,
+                     VkImageUsageFlags imageUsage)
     : _allocator(&allocator),
       _device(&device) {
   vkb::SwapchainBuilder builder{device.getDevice()};
@@ -25,8 +28,7 @@ Swapchain::Swapchain(glm::ivec2 resolution, const MemoryAllocator& allocator, co
   builder.set_composite_alpha_flags(VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR);
   builder.set_desired_format(
       VkSurfaceFormatKHR{.format = _swapchainFormat, .colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR});
-  // because we use swapchain in compute shader
-  builder.add_image_usage_flags(VK_IMAGE_USAGE_STORAGE_BIT);
+  builder.set_image_usage_flags(imageUsage);
   if (_verticalSync) {
     builder.set_desired_present_mode(VK_PRESENT_MODE_MAILBOX_KHR);
   } else {
@@ -90,8 +92,7 @@ std::vector<std::shared_ptr<ImageView>> Swapchain::reset(glm::ivec2 resolution) 
   builder.set_composite_alpha_flags(VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR);
   builder.set_desired_format(
       VkSurfaceFormatKHR{.format = _swapchainFormat, .colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR});
-  // because we use swapchain in compute shader
-  builder.add_image_usage_flags(VK_IMAGE_USAGE_STORAGE_BIT);
+  builder.set_image_usage_flags(_swapchain.image_usage_flags);
   auto swapchainResult = builder.build();
   if (!swapchainResult) {
     // If it failed to create a swapchain, the old swapchain handle is invalid.

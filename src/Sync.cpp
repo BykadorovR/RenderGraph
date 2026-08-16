@@ -12,8 +12,8 @@ Semaphore::Semaphore(VkSemaphoreType type, const Device& device) : _device(&devi
   _type = type;
 
   VkSemaphoreCreateInfo semaphoreInfo{};
+  VkSemaphoreTypeCreateInfo timelineCreateInfo{};
   if (type & VK_SEMAPHORE_TYPE_TIMELINE) {
-    VkSemaphoreTypeCreateInfo timelineCreateInfo{};
     timelineCreateInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
     timelineCreateInfo.pNext = nullptr;
     timelineCreateInfo.semaphoreType = type;
