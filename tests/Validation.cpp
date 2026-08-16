@@ -607,6 +607,7 @@ TEST(ValidationTest, ComputeGraphRunsWithoutSwapchain) {
     const glm::ivec2 resolution(64, 64);
 
     RenderGraph::Device device(instance);
+    device.setOptionalExtensions({});
     device.initialize();
     if (!device.isFormatFeatureSupported(VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_TILING_OPTIMAL,
                                          VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)) {
@@ -616,14 +617,27 @@ TEST(ValidationTest, ComputeGraphRunsWithoutSwapchain) {
     RenderGraph::Graph graph(2, framesInFlight, device);
     graph.initialize();
 
-    std::vector<std::unique_ptr<RenderGraph::Buffer>> storageBuffers;
-    storageBuffers.reserve(framesInFlight);
-    for (int frameIndex = 0; frameIndex < framesInFlight; ++frameIndex) {
-      storageBuffers.push_back(std::make_unique<RenderGraph::Buffer>(
-          4096, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
-          allocator));
-    }
-    graph.getGraphStorage().add("Data", storageBuffers);
+    auto addMappedBuffers = [&](std::string_view name, VkDeviceSize size) {
+      std::vector<std::unique_ptr<RenderGraph::Buffer>> buffers;
+      buffers.reserve(framesInFlight);
+      for (int frameIndex = 0; frameIndex < framesInFlight; ++frameIndex) {
+        buffers.push_back(std::make_unique<RenderGraph::Buffer>(
+            size, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+            allocator));
+      }
+      graph.getGraphStorage().add(name, buffers);
+    };
+
+    addMappedBuffers("Positions", sizeof(float) * 4 * 3);
+    addMappedBuffers("Indices", sizeof(uint32_t) * 3);
+    addMappedBuffers("DrawCommands", sizeof(VkDrawIndexedIndirectCommand));
+    addMappedBuffers("DrawCounts", sizeof(uint32_t));
+
+    const auto positions = graph.getGraphStorage().getBuffer("Positions");
+    const auto indices = graph.getGraphStorage().getBuffer("Indices");
+    const auto drawCommands = graph.getGraphStorage().getBuffer("DrawCommands");
+    const auto drawCounts = graph.getGraphStorage().getBuffer("DrawCounts");
 
     std::vector<std::shared_ptr<RenderGraph::ImageView>> storageImageViews;
     storageImageViews.reserve(framesInFlight);
@@ -639,19 +653,30 @@ TEST(ValidationTest, ComputeGraphRunsWithoutSwapchain) {
         "Image", std::make_unique<RenderGraph::ImageViewHolder>(
                      storageImageViews, [&graph]() { return graph.getFrameInFlight(); }));
 
-    auto graphElement = std::make_shared<ValidationGraphElement>();
     auto& computePass = graph.createPassCompute("Compute", false);
-    computePass.addStorageBufferOutput("Data");
+    computePass.addStorageBufferOutput("Positions");
+    computePass.addStorageBufferOutput("Indices");
+    computePass.addStorageBufferOutput("DrawCommands");
+    computePass.addStorageBufferOutput("DrawCounts");
     computePass.addStorageTextureOutput("Image");
-    computePass.registerGraphElement(graphElement);
+    computePass.registerGraphElement(std::make_shared<GpuDrivenComputeElement>(
+        device, *computePass.getCommandBuffers().front(), positions, indices, drawCommands, drawCounts));
     graph.calculate();
 
     for (int frameIndex = 0; frameIndex < frameCount; ++frameIndex) {
       ASSERT_FALSE(graph.render());
     }
 
-    EXPECT_EQ(graphElement->getDrawCount(), frameCount);
     ASSERT_EQ(vkDeviceWaitIdle(device.getLogicalDevice()), VK_SUCCESS);
+    for (int frameIndex = 0; frameIndex < framesInFlight; ++frameIndex) {
+      ASSERT_EQ(vmaInvalidateAllocation(allocator.getAllocator(), drawCounts[frameIndex]->getAllocation(), 0,
+                                        VK_WHOLE_SIZE),
+                VK_SUCCESS);
+      const auto* drawCount =
+          static_cast<const uint32_t*>(drawCounts[frameIndex]->getAllocationInfo().pMappedData);
+      ASSERT_NE(drawCount, nullptr);
+      EXPECT_EQ(*drawCount, 1u);
+    }
     for (const auto& imageView : storageImageViews) {
       EXPECT_EQ(imageView->getImage().getImageLayout(), VK_IMAGE_LAYOUT_GENERAL);
     }
