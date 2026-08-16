@@ -53,7 +53,8 @@ TEST(ScenarioTest, GraphOneQueue) {
   RenderGraph::Window window(resolution);
   window.initialize();
   RenderGraph::Surface surface(window, instance);
-  RenderGraph::Device device(surface, instance);
+  RenderGraph::Device device(instance);
+  device.setSurface(surface);
   device.initialize();
   RenderGraph::MemoryAllocator allocator(device, instance);
   RenderGraph::Swapchain swapchain(
@@ -270,7 +271,8 @@ TEST(ScenarioTest, GraphSeparateQueues) {
   RenderGraph::Window window(resolution);
   window.initialize();
   RenderGraph::Surface surface(window, instance);
-  RenderGraph::Device device(surface, instance);
+  RenderGraph::Device device(instance);
+  device.setSurface(surface);
   device.initialize();
   RenderGraph::MemoryAllocator allocator(device, instance);
   RenderGraph::Swapchain swapchain(
@@ -468,7 +470,8 @@ TEST(ScenarioTest, BufferOwnershipTransferUsesLastResourceOwner) {
 
   RenderGraph::Surface surface(window, instance);
 
-  RenderGraph::Device device(surface, instance);
+  RenderGraph::Device device(instance);
+  device.setSurface(surface);
   device.initialize();
 
   RenderGraph::MemoryAllocator allocator(device, instance);
@@ -558,7 +561,8 @@ TEST(ScenarioTest, GraphicsPassBufferInputs) {
   RenderGraph::Window window(resolution);
   window.initialize();
   RenderGraph::Surface surface(window, instance);
-  RenderGraph::Device device(surface, instance);
+  RenderGraph::Device device(instance);
+  device.setSurface(surface);
   device.initialize();
   RenderGraph::MemoryAllocator allocator(device, instance);
   RenderGraph::Swapchain swapchain(resolution, allocator, device);
@@ -670,7 +674,8 @@ TEST(ScenarioTest, ComputePassIndirectBufferInput) {
   RenderGraph::Window window(resolution);
   window.initialize();
   RenderGraph::Surface surface(window, instance);
-  RenderGraph::Device device(surface, instance);
+  RenderGraph::Device device(instance);
+  device.setSurface(surface);
   device.initialize();
   RenderGraph::MemoryAllocator allocator(device, instance);
   RenderGraph::Swapchain swapchain(resolution, allocator, device);
@@ -722,7 +727,8 @@ TEST(ScenarioTest, GraphReset) {
   RenderGraph::Window window(resolution);
   window.initialize();
   RenderGraph::Surface surface(window, instance);
-  RenderGraph::Device device(surface, instance);
+  RenderGraph::Device device(instance);
+  device.setSurface(surface);
   device.initialize();
   RenderGraph::MemoryAllocator allocator(device, instance);
   RenderGraph::Swapchain swapchain(
@@ -879,7 +885,8 @@ TEST(ScenarioTest, DepthExistance) {
   RenderGraph::Window window(resolution);
   window.initialize();
   RenderGraph::Surface surface(window, instance);
-  RenderGraph::Device device(surface, instance);
+  RenderGraph::Device device(instance);
+  device.setSurface(surface);
   device.initialize();
   RenderGraph::MemoryAllocator allocator(device, instance);
   RenderGraph::Swapchain swapchain(resolution, allocator, device);
@@ -971,7 +978,8 @@ TEST(ScenarioTest, TraversalKeepsTransitiveProducerBeforeConsumer) {
 
   RenderGraph::Surface surface(window, instance);
 
-  RenderGraph::Device device(surface, instance);
+  RenderGraph::Device device(instance);
+  device.setSurface(surface);
   device.initialize();
 
   RenderGraph::MemoryAllocator allocator(device, instance);
@@ -1076,7 +1084,8 @@ TEST(ScenarioTest, TraversalDiamondGraph) {
 
   RenderGraph::Surface surface(window, instance);
 
-  RenderGraph::Device device(surface, instance);
+  RenderGraph::Device device(instance);
+  device.setSurface(surface);
   device.initialize();
 
   RenderGraph::MemoryAllocator allocator(device, instance);

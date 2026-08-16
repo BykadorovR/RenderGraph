@@ -11,12 +11,20 @@ module Device;
 
 using namespace RenderGraph;
 
-Device::Device(const Surface& surface, const Instance& instance) {
-  _instance = &instance;
+Device::Device(const Instance& instance) : _instance(&instance) {}
+
+void Device::setSurface(const Surface& surface) {
+  if (_initialized) {
+    throw std::logic_error("Can't set a surface after device initialization");
+  }
   _surface = &surface;
 }
 
 void Device::initialize() {
+  if (_initialized) {
+    throw std::logic_error("Device is already initialized");
+  }
+
   // Vulkan 1.0 features
   VkPhysicalDeviceFeatures deviceFeatures{
       .geometryShader = true,
@@ -55,8 +63,12 @@ void Device::initialize() {
   if (std::find(_optionalExtensions.begin(), _optionalExtensions.end(), "VK_EXT_descriptor_buffer") !=
       _optionalExtensions.end())
     deviceSelector.add_desired_extension("VK_EXT_descriptor_buffer");
-  // VK_KHR_SWAPCHAIN_EXTENSION_NAME is added by default
-  deviceSelector.set_surface(_surface->getSurface());
+  // vk-bootstrap enables VK_KHR_swapchain when a surface is provided.
+  if (_surface != nullptr) {
+    deviceSelector.set_surface(_surface->getSurface());
+  } else {
+    deviceSelector.require_present(false);
+  }
   auto deviceSelectorResult = deviceSelector.select();
   if (!deviceSelectorResult) {
     throw std::runtime_error(deviceSelectorResult.error().message());
@@ -74,6 +86,7 @@ void Device::initialize() {
     throw std::runtime_error(builderResult.error().message());
   }
   _device = builderResult.value();
+  _initialized = true;
   volkLoadDevice(_device.device);
 
   uint32_t queueFamilyCount = 0;
@@ -171,4 +184,8 @@ int Device::getQueueIndex(QueueType type) const {
   return queueResult.value();
 }
 
-Device::~Device() { vkb::destroy_device(_device); }
+Device::~Device() {
+  if (_initialized) {
+    vkb::destroy_device(_device);
+  }
+}

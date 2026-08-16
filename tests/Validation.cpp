@@ -346,7 +346,8 @@ TEST_P(ValidationScenarioTest, FullGraphPipelineHasNoValidationErrorsAcrossReset
     RenderGraph::Window window(resolution);
     window.initialize();
     RenderGraph::Surface surface(window, instance);
-    RenderGraph::Device device(surface, instance);
+    RenderGraph::Device device(instance);
+    device.setSurface(surface);
     device.initialize();
     RenderGraph::MemoryAllocator allocator(device, instance);
     RenderGraph::Swapchain swapchain(
@@ -509,7 +510,8 @@ TEST_P(ValidationScenarioTest, GpuDrivenIndexedIndirectCountDrawsTriangle) {
     RenderGraph::Window window(resolution);
     window.initialize();
     RenderGraph::Surface surface(window, instance);
-    RenderGraph::Device device(surface, instance);
+    RenderGraph::Device device(instance);
+    device.setSurface(surface);
     // The test intentionally exercises ordinary descriptor sets. Descriptor-buffer
     // behavior is covered independently by DescriptorBufferTest.
     device.setOptionalExtensions({});
@@ -606,7 +608,8 @@ TEST(ValidationTest, OffscreenComputeGraphPresentsWithoutWritingSwapchain) {
     RenderGraph::Window window(resolution);
     window.initialize();
     RenderGraph::Surface surface(window, instance);
-    RenderGraph::Device device(surface, instance);
+    RenderGraph::Device device(instance);
+    device.setSurface(surface);
     device.initialize();
     RenderGraph::MemoryAllocator allocator(device, instance);
     RenderGraph::Swapchain swapchain(resolution, allocator, device);
