@@ -25,7 +25,7 @@ class Timestamps {
 
   const Device* _device;
   double _timestampPeriod;
-  int _queryMaxNumber = 30;
+  int _queryMaxNumber = 256;
   std::vector<FrameData> _frames;
   uint32_t _currentFrame = 0;
   std::unordered_map<std::string, glm::dvec2> _timestampResults;
