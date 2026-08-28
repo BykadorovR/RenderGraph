@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <filesystem>
 #include <fstream>
 #include <memory>
 #include <stdexcept>
@@ -893,9 +894,9 @@ TEST(ImageCPUTest, WithDeleter) {
 }
 
 TEST(ShaderTest, Reflection) {
-  auto readFileDesktop = [&](const std::string& filename) {
+  auto readFileDesktop = [](const std::filesystem::path& filename) {
     std::ifstream file(filename, std::ios::ate | std::ios::binary);
-    if (!file.is_open()) throw std::runtime_error("failed to open file " + filename);
+    if (!file.is_open()) throw std::runtime_error("failed to open file " + filename.string());
     size_t fileSize = (size_t)file.tellg();
     std::vector<char> buffer(fileSize);
     file.seekg(0);
@@ -903,8 +904,9 @@ TEST(ShaderTest, Reflection) {
     file.close();
     return buffer;
   };
-  auto vertexSpirv = readFileDesktop("../resources/vertex.spv");
-  auto fragmentSpirv = readFileDesktop("../resources/fragment.spv");
+  const std::filesystem::path resourceDir(renderGraphResourceDir);
+  auto vertexSpirv = readFileDesktop(resourceDir / "vertex.spv");
+  auto fragmentSpirv = readFileDesktop(resourceDir / "fragment.spv");
 
   RenderGraph::Instance instance("TestApp", false);
   RenderGraph::Window window({1920, 1080});

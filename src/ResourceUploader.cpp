@@ -79,7 +79,8 @@ void ResourceUploader::upload(Buffer& destination, std::span<const std::byte> da
   VkMemoryPropertyFlags memoryPropertyFlags = 0;
   vmaGetAllocationMemoryProperties(_memoryAllocator->getAllocator(), destination.getAllocation(), &memoryPropertyFlags);
 
-  if ((memoryPropertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0) {
+  const bool persistentlyMapped = destination.getAllocationInfo().pMappedData != nullptr;
+  if ((memoryPropertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0 && persistentlyMapped) {
     const VkResult result = vmaCopyMemoryToAllocation(_memoryAllocator->getAllocator(), data.data(),
                                                       destination.getAllocation(), offset, data.size());
     if (result != VK_SUCCESS) {

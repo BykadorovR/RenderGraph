@@ -198,6 +198,7 @@ if (RENDER_GRAPH_BUILD_TESTS)
   add_dependencies(${PROJECT_NAME}Tests RenderGraphTestShaders)
   target_link_libraries(${PROJECT_NAME}Tests PRIVATE gtest_main ${PROJECT_NAME})
   target_compile_definitions(${PROJECT_NAME}Tests PRIVATE
+    renderGraphResourceDir="${CMAKE_CURRENT_SOURCE_DIR}/resources"
     renderGraphTestShaderDir="${testShaderBinaryDir}"
     $<$<PLATFORM_ID:Windows>:NOMINMAX>
   )
