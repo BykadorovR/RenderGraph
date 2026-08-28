@@ -149,7 +149,7 @@ const VkQueue Device::getQueue(QueueType type) const {
     queueResult = _device.get_queue(bootstrapType);
     // use default queue that should support everything
     if (!queueResult) {
-      queueResult = _device.get_queue(vkb::QueueType::present);
+      queueResult = _device.get_queue(vkb::QueueType::graphics);
     }
   }
 
@@ -177,7 +177,7 @@ int Device::getQueueIndex(QueueType type) const {
     queueResult = _device.get_queue_index(bootstrapType);
     // use default queue that should support everything
     if (!queueResult) {
-      queueResult = _device.get_queue_index(vkb::QueueType::present);
+      queueResult = _device.get_queue_index(vkb::QueueType::graphics);
     }
   }
 
