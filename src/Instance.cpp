@@ -11,10 +11,10 @@ module Instance;
 
 using namespace RenderGraph;
 
-VkBool32 debugCallbackUtils(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
-                            VkDebugUtilsMessageTypeFlagsEXT messageType,
-                            const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
-                            void* pUserData) {
+VKAPI_ATTR VkBool32 VKAPI_CALL debugCallbackUtils(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
+                                                  VkDebugUtilsMessageTypeFlagsEXT messageType,
+                                                  const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
+                                                  void* pUserData) {
   if (messageType & VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT)
     printf("\033[32m[Validation layer] %s\033[0m\n", pCallbackData->pMessage);
   else if (messageType & VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT)
