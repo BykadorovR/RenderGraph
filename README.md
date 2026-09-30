@@ -176,7 +176,7 @@ int main() {
 }
 ```
 
-[`GraphElement`](include/Graph.ixx#L64-L70) supplies application-defined work to a graph pass. `Scene` and `UI` remain empty until implementations are attached at the [commented registration points](README.md?plain=1#L127-L131). See the [complete registration example](tests/Scenarios.cpp#L110-L150).
+[`GraphElement`](include/Graph.ixx#L64-L70) supplies application-defined work to a graph pass. See the [`GraphOneQueue` test](tests/Scenarios.cpp#L50) for a complete example.
 
 ## Used By
 
