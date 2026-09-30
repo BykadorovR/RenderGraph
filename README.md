@@ -56,6 +56,17 @@ import Device;
 import Graph;
 import Instance;
 
+void buildGraph(RenderGraph::Graph& graph) {
+  graph.initialize();
+  // Adds a compute pass to the graphics queue instead of a separate queue.
+  graph.createPassCompute("Compute", false);
+  graph.calculate();
+}
+
+void renderFrame(RenderGraph::Graph& graph) {
+  graph.render();
+}
+
 int main() {
   RenderGraph::Instance instance("Example", true);
 
@@ -68,13 +79,10 @@ int main() {
   constexpr int framesInFlight = 2;
 
   RenderGraph::Graph graph(workerThreadCount, framesInFlight, device);
-  graph.initialize();
+  buildGraph(graph);
 
-  // Adds a compute pass to the graphics queue instead of a separate queue.
-  graph.createPassCompute("Compute", false);
-  graph.calculate();
   // Call once per frame from a dedicated rendering thread.
-  graph.render();
+  renderFrame(graph);
 }
 ```
 
@@ -82,7 +90,7 @@ This minimal example submits only one frame. In a real application, call `render
 
 ## Window and Swapchain Example
 
-This example creates a window and runs a small three-pass rendering graph:
+This example creates a window and runs a small two-pass rendering graph:
 
 ```cpp
 #define VK_NO_PROTOTYPES
@@ -112,12 +120,9 @@ void buildGraph(RenderGraph::Graph& graph, RenderGraph::Swapchain& swapchain) {
       swapchain.getImageViews(), [&swapchain]() { return swapchain.getSwapchainIndex(); });
   graph.getGraphStorage().add("Swapchain", std::move(swapchainImages));
 
-  auto& clearPass = graph.createPassGraphic("Clear");
-  clearPass.addColorTarget("Swapchain");
-  clearPass.clearTarget("Swapchain");
-
   auto& scenePass = graph.createPassGraphic("Scene");
   scenePass.addColorTarget("Swapchain");
+  scenePass.clearTarget("Swapchain");
   // Application-provided GraphElement implementations record the actual draw commands.
   // scenePass.registerGraphElement(sceneElement);
 
@@ -171,7 +176,7 @@ int main() {
 }
 ```
 
-[`GraphElement`](include/Graph.ixx#L64-L70) is the application-provided callback interface with `update()`, `draw()`, and `reset()` methods. The two commented calls show where those implementations are attached. Without them, `Scene` and `UI` contain no draw commands, and this example only clears and presents the swapchain image. See the [render graph scenarios](tests/Scenarios.cpp) for complete registrations.
+[`GraphElement`](include/Graph.ixx#L64-L70) supplies application-defined work to a graph pass. `Scene` and `UI` remain empty until their implementations are attached; see the [registration example](tests/Scenarios.cpp#L110-L150).
 
 ## Used By
 
