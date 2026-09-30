@@ -1,19 +1,34 @@
+module;
+
+#include <VkBootstrap.h>
+#include <cstdint>
+#include <limits>
+#include <memory>
+#include <ranges>
+#include <stdexcept>
+#include <utility>
+#include <vector>
+#include <volk.h>
+
 module Swapchain;
-import <limits>;
-import <ranges>;
-import <iostream>;
+
 using namespace RenderGraph;
 
-Swapchain::Swapchain(glm::ivec2 resolution, const MemoryAllocator& allocator, const Device& device)
+Swapchain::Swapchain(glm::ivec2 resolution,
+                     const MemoryAllocator& allocator,
+                     const Device& device,
+                     VkImageUsageFlags imageUsage)
     : _allocator(&allocator),
       _device(&device) {
   vkb::SwapchainBuilder builder{device.getDevice()};
+#if defined(__ANDROID__)
+  builder.set_pre_transform_flags(VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR);
+#endif
   builder.set_desired_extent(static_cast<uint32_t>(resolution.x), static_cast<uint32_t>(resolution.y));
   builder.set_composite_alpha_flags(VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR);
   builder.set_desired_format(
       VkSurfaceFormatKHR{.format = _swapchainFormat, .colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR});
-  // because we use swapchain in compute shader
-  builder.add_image_usage_flags(VK_IMAGE_USAGE_STORAGE_BIT);
+  builder.set_image_usage_flags(imageUsage);
   if (_verticalSync) {
     builder.set_desired_present_mode(VK_PRESENT_MODE_MAILBOX_KHR);
   } else {
@@ -59,7 +74,7 @@ void Swapchain::_destroy() {
 
 Image& Swapchain::getImage(int index) const noexcept { return _imageViews[index]->getImage(); }
 
-std::vector<std::shared_ptr<ImageView>> Swapchain::getImageViews() const noexcept { return _imageViews; };
+std::vector<std::shared_ptr<ImageView>> Swapchain::getImageViews() const { return _imageViews; };
 
 int Swapchain::getImageCount() const noexcept { return _imageViews.size(); }
 
@@ -69,13 +84,15 @@ uint32_t Swapchain::getSwapchainIndex() const noexcept { return _swapchainIndex;
 
 std::vector<std::shared_ptr<ImageView>> Swapchain::reset(glm::ivec2 resolution) {
   vkb::SwapchainBuilder builder{_device->getDevice()};
+#if defined(__ANDROID__)
+  builder.set_pre_transform_flags(VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR);
+#endif
   builder.set_desired_extent(static_cast<uint32_t>(resolution.x), static_cast<uint32_t>(resolution.y));
   builder.set_old_swapchain(_swapchain);
   builder.set_composite_alpha_flags(VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR);
   builder.set_desired_format(
       VkSurfaceFormatKHR{.format = _swapchainFormat, .colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR});
-  // because we use swapchain in compute shader
-  builder.add_image_usage_flags(VK_IMAGE_USAGE_STORAGE_BIT);
+  builder.set_image_usage_flags(_swapchain.image_usage_flags);
   auto swapchainResult = builder.build();
   if (!swapchainResult) {
     // If it failed to create a swapchain, the old swapchain handle is invalid.

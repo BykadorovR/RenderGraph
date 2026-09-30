@@ -1,13 +1,16 @@
+module;
+
+#include <volk.h>
+
 export module Surface;
+
 import Window;
 import Instance;
-import <volk.h>;
-import <GLFW/glfw3.h>;
 
 export namespace RenderGraph {
 class Surface final {
  private:
-  VkSurfaceKHR _surface;
+  VkSurfaceKHR _surface = VK_NULL_HANDLE;
   const Instance* _instance;
 
  public:

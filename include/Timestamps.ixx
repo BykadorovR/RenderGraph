@@ -1,32 +1,48 @@
+module;
+
+#include <mutex>
+#include <string>
+#include <unordered_map>
+#include <vector>
+#include <volk.h>
+
 export module Timestamps;
+
 import Device;
 import Command;
 import glm;
-import <volk.h>;
-import <map>;
-import <string>;
-import <mutex>;
 
 export namespace RenderGraph {
+
 class Timestamps {
  private:
+  struct FrameData {
+    VkQueryPool queryPool = nullptr;
+    std::unordered_map<std::string, glm::ivec2> timestampRanges;
+    int timestampIndex = 0;
+    bool submitted = false;
+  };
+
   const Device* _device;
   double _timestampPeriod;
-  int _queryMaxNumber = 30;
-  VkQueryPool _queryPool;
-  std::map<std::string, glm::ivec2> _timestampRanges;
-  std::map<std::string, glm::dvec2> _timestampResults;
-  int _timestampIndex = 0;
-  std::mutex _mutexPush, _mutexRequest;
+  int _queryMaxNumber = 256;
+  std::vector<FrameData> _frames;
+  uint32_t _currentFrame = 0;
+  std::unordered_map<std::string, glm::dvec2> _timestampResults;
+  std::mutex _mutexPush;
+  std::mutex _mutexRequest;
 
  public:
-  Timestamps(const Device& device);
-  void resetQueryPool() noexcept;
+  Timestamps(const Device& device, uint32_t maxFramesInFlight);
+  void resetQueryPool();
   void pushTimestamp(std::string_view name, const CommandBuffer& commandBuffer);
   void popTimestamp(std::string_view name, const CommandBuffer& commandBuffer);
-  void fetchTimestamps();
-  // return copy, otherwise race condition between calling code and fetchTimestamps
-  std::map<std::string, glm::dvec2> getTimestamps();
+  void finishFrame();
+  // Return copy, otherwise race condition between calling code
+  // and resetQueryPool().
+  std::unordered_map<std::string, glm::dvec2> getTimestamps();
+
   ~Timestamps();
 };
+
 }  // namespace RenderGraph

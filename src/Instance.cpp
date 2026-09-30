@@ -1,10 +1,20 @@
+module;
+
+#include <VkBootstrap.h>
+#include <cstdio>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <volk.h>
+
 module Instance;
+
 using namespace RenderGraph;
 
-VkBool32 debugCallbackUtils(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
-                            VkDebugUtilsMessageTypeFlagsEXT messageType,
-                            const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
-                            void* pUserData) {
+VKAPI_ATTR VkBool32 VKAPI_CALL debugCallbackUtils(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
+                                                  VkDebugUtilsMessageTypeFlagsEXT messageType,
+                                                  const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
+                                                  void* pUserData) {
   if (messageType & VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT)
     printf("\033[32m[Validation layer] %s\033[0m\n", pCallbackData->pMessage);
   else if (messageType & VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT)
@@ -28,7 +38,7 @@ Instance::Instance(std::string_view name, bool validation) {
   if (validation && systemInfo.validation_layers_available) {
     builder.enable_validation_layers();
     builder.add_validation_feature_enable(VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT);
-    builder.add_validation_feature_enable(VK_VALIDATION_FEATURE_ENABLE_BEST_PRACTICES_EXT);    
+    builder.add_validation_feature_enable(VK_VALIDATION_FEATURE_ENABLE_BEST_PRACTICES_EXT);
     if (systemInfo.debug_utils_available) {
       builder.set_debug_messenger_type(VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
                                        VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |

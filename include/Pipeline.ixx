@@ -1,13 +1,16 @@
+module;
+
+#include <optional>
+#include <string>
+#include <unordered_map>
+#include <vector>
+#include <volk.h>
+
 export module Pipeline;
+
 import Buffer;
 import DescriptorBuffer;
 import Device;
-import <volk.h>;
-import <vector>;
-import <map>;
-import <string>;
-import <optional>;
-import <ranges>;
 
 export namespace RenderGraph {
 class PipelineGraphic final {
@@ -26,7 +29,7 @@ class PipelineGraphic final {
   std::optional<VkFormat> _depthAttachment;
 
  public:
-  PipelineGraphic() noexcept;
+  PipelineGraphic();
   PipelineGraphic(const PipelineGraphic&) = delete;
   PipelineGraphic& operator=(const PipelineGraphic&) = delete;
   PipelineGraphic(PipelineGraphic&&) = delete;
@@ -39,10 +42,10 @@ class PipelineGraphic final {
   void setDepthBias(bool depthBias) noexcept;
   void setDepthTest(bool depthTest) noexcept;
   void setDepthWrite(bool depthWrite) noexcept;
-  void setDepthCompateOp(VkCompareOp depthCompareOp) noexcept;
+  void setDepthCompareOp(VkCompareOp depthCompareOp) noexcept;
   void setColorBlendOp(VkBlendOp colorBlendOp) noexcept;
   void setTesselation(int patchControlPoints) noexcept;
-  void setColorAttachments(const std::vector<VkFormat>& colorAttachments) noexcept;
+  void setColorAttachments(const std::vector<VkFormat>& colorAttachments);
   void setDepthAttachment(std::optional<VkFormat> depthAttachment) noexcept;
 
   const VkPipelineDynamicStateCreateInfo& getDynamicState() const noexcept;
@@ -61,10 +64,10 @@ class PipelineGraphic final {
 class Pipeline final {
  protected:
   const Device* _device;
-  std::vector<std::pair<std::string, DescriptorSetLayout*>> _descriptorSetLayout;
-  std::map<std::string, VkPushConstantRange> _pushConstants;
-  VkPipeline _pipeline;
-  VkPipelineLayout _pipelineLayout;
+  std::vector<DescriptorSetLayout*> _descriptorSetLayout;
+  std::unordered_map<std::string, VkPushConstantRange> _pushConstants;
+  VkPipeline _pipeline{};
+  VkPipelineLayout _pipelineLayout{};
 
  public:
   Pipeline(const Device& device) noexcept;
@@ -74,16 +77,16 @@ class Pipeline final {
   Pipeline& operator=(Pipeline&&) = delete;
 
   void createCompute(const VkPipelineShaderStageCreateInfo& shaderStage,
-                     std::vector < std::pair<std::string, DescriptorSetLayout*>> & descriptorSetLayout,
-                     const std::map<std::string, VkPushConstantRange>& pushConstants);
+                     std::vector<DescriptorSetLayout*>& descriptorSetLayout,
+                     const std::unordered_map<std::string, VkPushConstantRange>& pushConstants);
   void createGraphic(const PipelineGraphic& pipelineGraphic,
                      const std::vector<VkPipelineShaderStageCreateInfo>& shaderStages,
-                     std::vector<std::pair<std::string, DescriptorSetLayout*>>& descriptorSetLayout,
-                     const std::map<std::string, VkPushConstantRange>& pushConstants,
+                     std::vector<DescriptorSetLayout*>& descriptorSetLayout,
+                     const std::unordered_map<std::string, VkPushConstantRange>& pushConstants,
                      const VkPipelineVertexInputStateCreateInfo& vertexInputInfo);
 
-  const std::vector<std::pair<std::string, DescriptorSetLayout*>>& getDescriptorSetLayout() const noexcept;
-  const std::map<std::string, VkPushConstantRange>& getPushConstants() const noexcept;
+  const std::vector<DescriptorSetLayout*>& getDescriptorSetLayout() const noexcept;
+  const std::unordered_map<std::string, VkPushConstantRange>& getPushConstants() const noexcept;
   const VkPipeline& getPipeline() const noexcept;
   const VkPipelineLayout& getPipelineLayout() const noexcept;
   ~Pipeline();

@@ -1,19 +1,16 @@
 module;
+
 #define VMA_STATIC_VULKAN_FUNCTIONS 0
 #define VMA_DYNAMIC_VULKAN_FUNCTIONS 0
+
+#include <vk_mem_alloc.h>
+
 export module Buffer;
-import <vk_mem_alloc.h>;
+
 import Allocator;
-import Command;
 import Device;
-import <span>;
-import <memory>;
-import <stdexcept>;
-import <volk.h>;
 
 export namespace RenderGraph {
-export VmaAllocationCreateFlagBits;
-
 class Buffer final {
  private:
   const MemoryAllocator* _memoryAllocator;
@@ -21,11 +18,7 @@ class Buffer final {
   VmaAllocation _allocation;
   VmaAllocationInfo _allocationInfo;
   VkDeviceSize _size;
-  std::unique_ptr<Buffer> _bufferStaging;
-  static constexpr VkPipelineStageFlags VK_PIPELINE_STAGE_ALL_SHADER_BITS =
-      VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
-      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_GEOMETRY_SHADER_BIT |
-      VK_PIPELINE_STAGE_TESSELLATION_CONTROL_SHADER_BIT | VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT;
+
  public:
   Buffer(VkDeviceSize size,
          VkBufferUsageFlags usage,
@@ -36,7 +29,6 @@ class Buffer final {
   Buffer(Buffer&&) = delete;
   Buffer& operator=(Buffer&&) = delete;
 
-  void setData(std::span<const std::byte> data, const CommandBuffer& commandBufferTransfer);
   VkBuffer getBuffer() const noexcept;
   VkDeviceSize getSize() const noexcept;
   const VmaAllocationInfo& getAllocationInfo() const noexcept;

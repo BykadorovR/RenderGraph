@@ -1,15 +1,20 @@
+module;
+
+#include <VkBootstrap.h>
+#include <memory>
+#include <vector>
+
 export module Swapchain;
+
 import Allocator;
 import Device;
 import Texture;
 import Command;
 import Sync;
 import glm;
-import <volk.h>;
-import <VkBootstrap.h>;
-import <memory>;
 
-export namespace RenderGraph{class Swapchain {
+export namespace RenderGraph {
+class Swapchain {
  private:
   const MemoryAllocator* _allocator;
   const Device* _device;
@@ -21,7 +26,10 @@ export namespace RenderGraph{class Swapchain {
   void _destroy();
 
  public:
-  Swapchain(glm::ivec2 resolution, const MemoryAllocator& allocator, const Device& device);
+  Swapchain(glm::ivec2 resolution,
+            const MemoryAllocator& allocator,
+            const Device& device,
+            VkImageUsageFlags imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
   Swapchain(const Swapchain&) = delete;
   Swapchain& operator=(const Swapchain&) = delete;
   Swapchain(Swapchain&&) = delete;
@@ -33,7 +41,7 @@ export namespace RenderGraph{class Swapchain {
 
   // to be able change layout
   Image& getImage(int index) const noexcept;
-  std::vector<std::shared_ptr<ImageView>> getImageViews() const noexcept;
+  std::vector<std::shared_ptr<ImageView>> getImageViews() const;
   int getImageCount() const noexcept;
   const vkb::Swapchain& getSwapchain() const noexcept;
   uint32_t getSwapchainIndex() const noexcept;

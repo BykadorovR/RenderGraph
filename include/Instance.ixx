@@ -1,8 +1,9 @@
+module;
+
+#include <VkBootstrap.h>
+#include <string_view>
+
 export module Instance;
-import <volk.h>;
-import <VkBootstrap.h>;
-import <iostream>;
-import <string>;
 
 export namespace RenderGraph {
 class Instance final {

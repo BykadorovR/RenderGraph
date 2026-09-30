@@ -1,18 +1,21 @@
 module;
+
 #define VMA_STATIC_VULKAN_FUNCTIONS 0
 #define VMA_DYNAMIC_VULKAN_FUNCTIONS 0
+
+#include <concepts>
+#include <functional>
+#include <memory>
+#include <utility>
+#include <vector>
+#include <vk_mem_alloc.h>
+
 export module Texture;
-import <vk_mem_alloc.h>;
-import Buffer;
+
 import Allocator;
 import Command;
 import Device;
 import glm;
-import <volk.h>;
-import <memory>;
-import <vector>;
-import <functional>;
-import <stdexcept>;
 
 export namespace RenderGraph {
 template <class T>
@@ -21,15 +24,20 @@ concept Arithmetic = std::integral<T> || std::floating_point<T>;
 template <Arithmetic T>
 class ImageCPU final {
  private:
-  T* _data;
+  T* _data = nullptr;
   std::function<void(T*)> _deleter;
-  glm::ivec2 _resolution;
-  int _channels;
+  glm::ivec2 _resolution{};
+ int _channels = 0;
 
  public:
+  ImageCPU() = default;
+  ImageCPU(const ImageCPU&) = delete;
+  ImageCPU& operator=(const ImageCPU&) = delete;
+
   void setData(T* data, std::function<void(T*)> deleter) {
+    if (_data != data && _deleter) _deleter(_data);
     _data = data;
-    _deleter = deleter;
+    _deleter = std::move(deleter);
   }
   void setResolution(glm::ivec2 resolution) { _resolution = resolution; }
   void setChannels(int channels) { _channels = channels; }
@@ -37,15 +45,16 @@ class ImageCPU final {
   const T* getData() const noexcept { return _data; }
   glm::ivec2 getResolution() const noexcept { return _resolution; }
   int getChannels() const noexcept { return _channels; }
-  ~ImageCPU() { _deleter(_data); }
+  ~ImageCPU() {
+    if (_deleter) _deleter(_data);
+  }
 };
 
 class Image final {
  private:
   const MemoryAllocator* _memoryAllocator;
-  VkImage _image;
+  VkImage _image{};
   VmaAllocation _imageMemory = nullptr;
-  std::unique_ptr<Buffer> _stagingBuffer;
   // image mandatory options
   VkFormat _format;
   glm::ivec2 _resolution;
@@ -76,18 +85,13 @@ class Image final {
                  VkImageAspectFlags aspectMask,
                  VkImageUsageFlags usage);
 
-  // bufferOffsets contains offsets for part of buffer that should be copied to corresponding layers of image
-  void copyFrom(std::unique_ptr<Buffer> buffer,
-                const std::vector<int>& bufferOffsets,
-                const CommandBuffer& commandBuffer);
   void changeLayout(VkImageLayout oldLayout,
                     VkImageLayout newLayout,
-                    VkAccessFlags srcAccessMask,
-                    VkAccessFlags dstAccessMask,
+                    VkPipelineStageFlags2 srcStageMask,
+                    VkAccessFlags2 srcAccessMask,
+                    VkPipelineStageFlags2 dstStageMask,
+                    VkAccessFlags2 dstAccessMask,
                     const CommandBuffer& commandBuffer);
-  void overrideLayout(VkImageLayout layout);
-  void generateMipmaps(const CommandBuffer& commandBuffer);
-
   glm::ivec2 getResolution() const noexcept;
   VkImage getImage() const noexcept;
   VkFormat getFormat() const noexcept;
@@ -105,7 +109,7 @@ class ImageView final {
  private:
   const Device* _device;
   std::unique_ptr<Image> _image;
-  VkImageView _imageView;
+  VkImageView _imageView{};
   VkImageViewType _type;
   int _baseMipMap, _baseArrayLayer;
 
@@ -119,9 +123,7 @@ class ImageView final {
   // componentMapping to pass BGRA texture to shader that accepts only RGBA
   // baseArrayLayer - which layer/face is used
   // baseMipMapLevel - which mip map level is used
-  void createImageView(VkImageViewType type,
-                       int baseMipMap,
-                       int baseArrayLayer);
+  void createImageView(VkImageViewType type, int baseMipMap, int baseArrayLayer);
   void wrapImageView(const VkImageView& imageView);
   VkImageView getImageView() const noexcept;
   Image& getImage() const noexcept;
@@ -136,6 +138,7 @@ class ImageViewHolder final {
  protected:
   std::vector<std::shared_ptr<ImageView>> _imageViews;
   std::function<int()> _index;
+
  public:
   ImageViewHolder(std::vector<std::shared_ptr<ImageView>> imageViews, std::function<int()> index) noexcept;
   ImageViewHolder(const ImageViewHolder&) = delete;
@@ -144,17 +147,17 @@ class ImageViewHolder final {
   ImageViewHolder& operator=(ImageViewHolder&&) = delete;
 
   void setImageViews(std::vector<std::shared_ptr<ImageView>> imageViews);
-  const ImageView& getImageView() const noexcept;
-  std::function<int()> getIndexFunction() const noexcept;
-  int getIndex() const noexcept;
-  std::vector<ImageView*> getImageViews() const noexcept;
+  const ImageView& getImageView() const;
+  std::function<int()> getIndexFunction() const;
+  int getIndex() const;
+  std::vector<ImageView*> getImageViews() const;
   bool contains(const std::vector<std::shared_ptr<ImageView>>& imageViews) const noexcept;
 };
 
 class Sampler final {
  private:
   const Device* _device;
-  VkSampler _sampler;
+  VkSampler _sampler{};
 
  public:
   Sampler(const Device& device) noexcept;
@@ -181,6 +184,6 @@ class Texture final {
   Texture& operator=(Texture&&) = delete;
 
   const ImageView& getImageView() const noexcept;
-  const Sampler& getSampler() const noexcept;
+  const Sampler* getSampler() const noexcept;
 };
 }  // namespace RenderGraph
