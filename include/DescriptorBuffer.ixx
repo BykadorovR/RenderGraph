@@ -47,6 +47,7 @@ class DescriptorSetLayout final {
 
 class DescriptorHandler {
  private:
+  friend class ::DescriptorBufferTest_Update_Test;
   friend class ::DescriptorSetTest_Create_Test;
   friend class ::DescriptorSetTest_Update_Test;
 
@@ -64,6 +65,15 @@ class DescriptorHandler {
   void add(std::vector<Texture*> textures);
   void add(std::vector<Buffer*> buffers);
   virtual void initialize(const CommandBuffer& commandBuffer) = 0;
+  virtual void update(std::uint32_t binding,
+                      std::vector<Texture*> textures,
+                      const CommandBuffer& commandBuffer,
+                      std::uint32_t frame = 0,
+                      std::uint32_t set = 0) = 0;
+  virtual void update(std::uint32_t binding,
+                      std::vector<Buffer*> buffers,
+                      std::uint32_t frame = 0,
+                      std::uint32_t set = 0) = 0;
   virtual void bind(VkPipelineBindPoint bindPoint,
                     const VkPipelineLayout& pipelineLayout,
                     const CommandBuffer& commandBuffer) = 0;
@@ -87,9 +97,10 @@ class DescriptorBuffer final : public DescriptorHandler {
   std::vector<std::vector<VkDeviceSize>> _offsets;
   std::vector<VkDeviceSize> _layoutSize;
   std::vector<uint8_t> _descriptors;
+  VkPhysicalDeviceDescriptorBufferPropertiesEXT _descriptorBufferProperties{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_PROPERTIES_EXT};
   // binding and iterator inside it
   std::pair<int, int> _binding = {0, 0};
-  int _bindingOffset = 0;
   int _set = 0;
   int _frame = 0;
   int _currentBind = 0;
@@ -98,6 +109,11 @@ class DescriptorBuffer final : public DescriptorHandler {
                               VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT |
                               VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
   void _add(VkDescriptorGetInfoEXT info);
+  void _writeDescriptor(VkDescriptorGetInfoEXT info,
+                        std::uint32_t frame,
+                        std::uint32_t set,
+                        std::size_t bindingIndex,
+                        std::size_t arrayIndex);
 
  public:
   DescriptorBuffer(const std::vector<DescriptorSetLayout*>& layouts,
@@ -105,6 +121,15 @@ class DescriptorBuffer final : public DescriptorHandler {
                    const Device& device,
                    std::uint32_t firstSet = 0);
   void initialize(const CommandBuffer& commandBuffer) override;
+  void update(std::uint32_t binding,
+              std::vector<Texture*> textures,
+              const CommandBuffer& commandBuffer,
+              std::uint32_t frame = 0,
+              std::uint32_t set = 0) override;
+  void update(std::uint32_t binding,
+              std::vector<Buffer*> buffers,
+              std::uint32_t frame = 0,
+              std::uint32_t set = 0) override;
   void bind(VkPipelineBindPoint bindPoint,
             const VkPipelineLayout& pipelineLayout,
             const CommandBuffer& commandBuffer) override;
@@ -174,6 +199,15 @@ class DescriptorSet final : public DescriptorHandler {
   DescriptorSet& operator=(DescriptorSet&& other) = delete;
 
   void initialize(const CommandBuffer& commandBuffer) override;
+  void update(std::uint32_t binding,
+              std::vector<Texture*> textures,
+              const CommandBuffer& commandBuffer,
+              std::uint32_t frame = 0,
+              std::uint32_t set = 0) override;
+  void update(std::uint32_t binding,
+              std::vector<Buffer*> buffers,
+              std::uint32_t frame = 0,
+              std::uint32_t set = 0) override;
   void bind(VkPipelineBindPoint bindPoint,
             const VkPipelineLayout& pipelineLayout,
             const CommandBuffer& commandBuffer) override;

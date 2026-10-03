@@ -74,11 +74,9 @@ DescriptorBuffer::DescriptorBuffer(const std::vector<DescriptorSetLayout*>& layo
   _descriptorLayouts = layouts;
   _firstSet = firstSet;
 
-  auto descriptorBufferProperties = VkPhysicalDeviceDescriptorBufferPropertiesEXT{
-      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_PROPERTIES_EXT};
-  device.getFeatureProperties(descriptorBufferProperties);
+  device.getFeatureProperties(_descriptorBufferProperties);
 
-  const VkDeviceSize alignment = descriptorBufferProperties.descriptorBufferOffsetAlignment;
+  const VkDeviceSize alignment = _descriptorBufferProperties.descriptorBufferOffsetAlignment;
   const auto alignUp = [](VkDeviceSize value, VkDeviceSize alignment) {
     return (value + alignment - 1) / alignment * alignment;
   };
@@ -89,11 +87,17 @@ DescriptorBuffer::DescriptorBuffer(const std::vector<DescriptorSetLayout*>& layo
   for (int id = 0; id < layouts.size(); id++) {
     auto&& layout = layouts[id];
     for (int i = 0; i < layout->getLayoutInfo().size(); i++) {
+      const auto& bindingInfo = layout->getLayoutInfo()[i];
+      VkDeviceSize offset;
+      vkGetDescriptorSetLayoutBindingOffsetEXT(device.getLogicalDevice(), layout->getDescriptorSetLayout(),
+                                               bindingInfo.binding, &offset);
+      const auto descriptorStride =
+          bindingInfo.descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER &&
+                  !_descriptorBufferProperties.combinedImageSamplerDescriptorSingleArray
+              ? _descriptorBufferProperties.sampledImageDescriptorSize
+              : _getDescriptorSize(bindingInfo.descriptorType);
       for (int j = 0; j < layout->getLayoutInfo()[i].descriptorCount; j++) {
-        VkDeviceSize offset;
-        vkGetDescriptorSetLayoutBindingOffsetEXT(device.getLogicalDevice(), layout->getDescriptorSetLayout(),
-                                                 layout->getLayoutInfo()[i].binding, &offset);
-        _offsets[id].push_back(offset + _getDescriptorSize(layout->getLayoutInfo()[i].descriptorType) * j);
+        _offsets[id].push_back(offset + descriptorStride * j);
       }
     }
 
@@ -104,23 +108,66 @@ DescriptorBuffer::DescriptorBuffer(const std::vector<DescriptorSetLayout*>& layo
 }
 
 int DescriptorBuffer::_getDescriptorSize(VkDescriptorType descriptorType) {
-  auto bufferProperties = VkPhysicalDeviceDescriptorBufferPropertiesEXT{
-      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_PROPERTIES_EXT};
-  _device->getFeatureProperties(bufferProperties);
   switch (descriptorType) {
     case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
-      return bufferProperties.combinedImageSamplerDescriptorSize;
+      return _descriptorBufferProperties.combinedImageSamplerDescriptorSize;
     case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
-      return bufferProperties.sampledImageDescriptorSize;
+      return _descriptorBufferProperties.sampledImageDescriptorSize;
     case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
-      return bufferProperties.storageImageDescriptorSize;
+      return _descriptorBufferProperties.storageImageDescriptorSize;
     case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
-      return bufferProperties.uniformBufferDescriptorSize;
+      return _descriptorBufferProperties.uniformBufferDescriptorSize;
     case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
-      return bufferProperties.storageBufferDescriptorSize;
+      return _descriptorBufferProperties.storageBufferDescriptorSize;
     default:
       throw std::runtime_error("Unsupported descriptor type for descriptor buffer");
   }
+}
+
+void DescriptorBuffer::_writeDescriptor(VkDescriptorGetInfoEXT info,
+                                        std::uint32_t frame,
+                                        std::uint32_t set,
+                                        std::size_t bindingIndex,
+                                        std::size_t arrayIndex) {
+  const auto& layoutInfo = _descriptorLayouts[set]->getLayoutInfo();
+  std::size_t descriptorOffsetIndex = 0;
+  for (std::size_t currentBinding = 0; currentBinding < bindingIndex; ++currentBinding)
+    descriptorOffsetIndex += layoutInfo[currentBinding].descriptorCount;
+
+  const auto descriptorSize = static_cast<std::size_t>(_getDescriptorSize(info.type));
+  std::vector<uint8_t> encodedDescriptor(descriptorSize);
+  vkGetDescriptorEXT(_device->getLogicalDevice(), &info, descriptorSize, encodedDescriptor.data());
+
+  const VkDeviceSize frameSize = std::reduce(_layoutSize.begin(), _layoutSize.end(), VkDeviceSize{0});
+  std::vector<VkDeviceSize> setOffsets(_layoutSize.size());
+  std::exclusive_scan(_layoutSize.begin(), _layoutSize.end(), setOffsets.begin(), VkDeviceSize{0});
+  const VkDeviceSize descriptorBase = frameSize * frame + setOffsets[set];
+
+  const auto writeRange = [&](std::size_t sourceOffset, std::size_t size, VkDeviceSize destinationOffset) {
+    if (sourceOffset + size > encodedDescriptor.size() || destinationOffset + size > _descriptors.size())
+      throw std::out_of_range("Descriptor data range is out of bounds");
+    std::copy_n(encodedDescriptor.begin() + sourceOffset, size, _descriptors.begin() + destinationOffset);
+    if (_descriptorBuffer == nullptr) return;
+    const auto result = vmaCopyMemoryToAllocation(_memoryAllocator->getAllocator(),
+                                                  encodedDescriptor.data() + sourceOffset,
+                                                  _descriptorBuffer->getAllocation(), destinationOffset, size);
+    if (result != VK_SUCCESS)
+      throw std::runtime_error("Can't update descriptor buffer data: " + std::to_string(result));
+  };
+
+  if (info.type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER &&
+      !_descriptorBufferProperties.combinedImageSamplerDescriptorSingleArray) {
+    const auto imageSize = static_cast<std::size_t>(_descriptorBufferProperties.sampledImageDescriptorSize);
+    const auto samplerSize = static_cast<std::size_t>(_descriptorBufferProperties.samplerDescriptorSize);
+    const VkDeviceSize bindingOffset = _offsets[set][descriptorOffsetIndex];
+    writeRange(0, imageSize, descriptorBase + bindingOffset + imageSize * arrayIndex);
+    writeRange(imageSize, samplerSize,
+               descriptorBase + bindingOffset + imageSize * layoutInfo[bindingIndex].descriptorCount +
+                   samplerSize * arrayIndex);
+    return;
+  }
+
+  writeRange(0, descriptorSize, descriptorBase + _offsets[set][descriptorOffsetIndex + arrayIndex]);
 }
 
 void DescriptorBuffer::_add(VkDescriptorGetInfoEXT info) {
@@ -130,15 +177,7 @@ void DescriptorBuffer::_add(VkDescriptorGetInfoEXT info) {
     _descriptors.resize(setSize * (_frame + 1));
   }
 
-  auto descSize = _getDescriptorSize(info.type);
-  std::vector<uint8_t> descriptorCPU(descSize);
-  vkGetDescriptorEXT(_device->getLogicalDevice(), &info, descSize, descriptorCPU.data());
-
-  std::vector<VkDeviceSize> offsetSet(_layoutSize.size());
-  std::exclusive_scan(_layoutSize.begin(), _layoutSize.end(), offsetSet.begin(), VkDeviceSize{0});
-  std::copy(descriptorCPU.begin(), descriptorCPU.end(),
-            // offset between frames, between sets, inside set
-            _descriptors.begin() + setSize * _frame + offsetSet[_set] + _offsets[_set][_bindingOffset]);
+  _writeDescriptor(info, _frame, _set, _binding.first, _binding.second);
 
   // calculate next frame, set, binning
   if (_binding.second < _descriptorLayouts[_set]->getLayoutInfo()[_binding.first].descriptorCount) _binding.second++;
@@ -147,11 +186,8 @@ void DescriptorBuffer::_add(VkDescriptorGetInfoEXT info) {
     _binding.second = 0;
   }
 
-  _bindingOffset++;
-
   if (_descriptorLayouts[_set]->getLayoutInfo().size() == _binding.first) {
     _binding.first = 0;
-    _bindingOffset = 0;
     _set++;
     if (_descriptorLayouts.size() == _set) {
       _set = 0;
@@ -267,6 +303,143 @@ void DescriptorBuffer::initialize(const CommandBuffer& commandBuffer) {
       .pBufferMemoryBarriers = &descriptorBarrier,
   };
   vkCmdPipelineBarrier2(commandBuffer.getCommandBuffer(), &dependencyInfo);
+}
+
+void DescriptorBuffer::update(std::uint32_t binding,
+                              std::vector<Texture*> textures,
+                              const CommandBuffer& commandBuffer,
+                              std::uint32_t frame,
+                              std::uint32_t set) {
+  if (_descriptorBuffer == nullptr) throw std::runtime_error("Descriptor buffer is not initialized");
+  if (frame >= static_cast<std::uint32_t>(_frame)) throw std::out_of_range("Descriptor frame is out of range");
+  if (set >= _descriptorLayouts.size()) throw std::out_of_range("Descriptor set is out of range");
+
+  const auto& layoutInfo = _descriptorLayouts[set]->getLayoutInfo();
+  const auto bindingInfo = std::find_if(layoutInfo.begin(), layoutInfo.end(),
+                                        [binding](const auto& info) { return info.binding == binding; });
+  if (bindingInfo == layoutInfo.end()) throw std::out_of_range("Descriptor binding is out of range");
+  if (textures.size() != bindingInfo->descriptorCount)
+    throw std::invalid_argument("Texture count does not match descriptor count");
+  if (bindingInfo->descriptorType != VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE &&
+      bindingInfo->descriptorType != VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER &&
+      bindingInfo->descriptorType != VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+    throw std::invalid_argument("Descriptor binding is not a texture");
+
+  const auto bindingIndex = static_cast<std::size_t>(std::distance(layoutInfo.begin(), bindingInfo));
+
+  for (std::size_t index = 0; index < textures.size(); ++index) {
+    auto* texture = textures[index];
+    if (texture == nullptr) throw std::invalid_argument("Texture is null");
+
+    auto& image = texture->getImageView().getImage();
+    if (image.getImageLayout() != VK_IMAGE_LAYOUT_GENERAL) {
+      auto dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT |
+                           VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT;
+      VkPipelineStageFlags2 dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT |
+                                           VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+                                           VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
+                                           VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+      if (image.getAspectMask() & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) {
+        dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
+                        VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_SHADER_READ_BIT |
+                        VK_ACCESS_2_SHADER_WRITE_BIT;
+        dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
+                       VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+      }
+      image.changeLayout(image.getImageLayout(), VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0,
+                         dstStageMask, dstAccessMask, commandBuffer);
+    }
+
+    VkDescriptorImageInfo imageInfo{
+        .imageView = texture->getImageView().getImageView(),
+        .imageLayout = texture->getImageView().getImage().getImageLayout(),
+    };
+    if (const auto& sampler = texture->getSampler()) imageInfo.sampler = sampler->getSampler();
+
+    VkDescriptorGetInfoEXT descriptorInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT};
+    descriptorInfo.type = bindingInfo->descriptorType;
+    switch (descriptorInfo.type) {
+      case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
+        descriptorInfo.data.pSampledImage = &imageInfo;
+        break;
+      case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+        descriptorInfo.data.pCombinedImageSampler = &imageInfo;
+        break;
+      case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+        descriptorInfo.data.pStorageImage = &imageInfo;
+        break;
+      default:
+        throw std::invalid_argument("Descriptor binding is not a texture");
+    }
+
+    _writeDescriptor(descriptorInfo, frame, set, bindingIndex, index);
+  }
+
+  std::size_t bindingsPerFrame = 0;
+  for (const auto* layout : _descriptorLayouts) bindingsPerFrame += layout->getLayoutInfo().size();
+  std::size_t resourceIndex = frame * bindingsPerFrame + bindingIndex;
+  for (std::uint32_t currentSet = 0; currentSet < set; ++currentSet)
+    resourceIndex += _descriptorLayouts[currentSet]->getLayoutInfo().size();
+  if (resourceIndex < _resources.size())
+    _resources[resourceIndex] = Resource{.type = Resource::Type::TEXTURE, .textures = std::move(textures)};
+
+}
+
+void DescriptorBuffer::update(std::uint32_t binding,
+                              std::vector<Buffer*> buffers,
+                              std::uint32_t frame,
+                              std::uint32_t set) {
+  if (_descriptorBuffer == nullptr) throw std::runtime_error("Descriptor buffer is not initialized");
+  if (frame >= static_cast<std::uint32_t>(_frame)) throw std::out_of_range("Descriptor frame is out of range");
+  if (set >= _descriptorLayouts.size()) throw std::out_of_range("Descriptor set is out of range");
+
+  const auto& layoutInfo = _descriptorLayouts[set]->getLayoutInfo();
+  const auto bindingInfo = std::find_if(layoutInfo.begin(), layoutInfo.end(),
+                                        [binding](const auto& info) { return info.binding == binding; });
+  if (bindingInfo == layoutInfo.end()) throw std::out_of_range("Descriptor binding is out of range");
+  if (buffers.size() != bindingInfo->descriptorCount)
+    throw std::invalid_argument("Buffer count does not match descriptor count");
+  if (bindingInfo->descriptorType != VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER &&
+      bindingInfo->descriptorType != VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)
+    throw std::invalid_argument("Descriptor binding is not a buffer");
+
+  const auto bindingIndex = static_cast<std::size_t>(std::distance(layoutInfo.begin(), bindingInfo));
+
+  for (std::size_t index = 0; index < buffers.size(); ++index) {
+    auto* buffer = buffers[index];
+    if (buffer == nullptr) throw std::invalid_argument("Buffer is null");
+
+    const VkDescriptorAddressInfoEXT addressInfo{
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_ADDRESS_INFO_EXT,
+        .address = buffer->getDeviceAddress(*_device),
+        .range = buffer->getSize(),
+        .format = VK_FORMAT_UNDEFINED,
+    };
+    VkDescriptorGetInfoEXT descriptorInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT};
+    descriptorInfo.type = bindingInfo->descriptorType;
+    switch (descriptorInfo.type) {
+      case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
+        descriptorInfo.data.pUniformBuffer = &addressInfo;
+        break;
+      case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
+        descriptorInfo.data.pStorageBuffer = &addressInfo;
+        break;
+      default:
+        throw std::invalid_argument("Descriptor binding is not a buffer");
+    }
+
+    _writeDescriptor(descriptorInfo, frame, set, bindingIndex, index);
+  }
+
+  std::size_t bindingsPerFrame = 0;
+  for (const auto* layout : _descriptorLayouts) bindingsPerFrame += layout->getLayoutInfo().size();
+  std::size_t resourceIndex = frame * bindingsPerFrame + bindingIndex;
+  for (std::uint32_t currentSet = 0; currentSet < set; ++currentSet)
+    resourceIndex += _descriptorLayouts[currentSet]->getLayoutInfo().size();
+  if (resourceIndex < _resources.size())
+    _resources[resourceIndex] = Resource{.type = Resource::Type::BUFFER, .buffers = std::move(buffers)};
+
 }
 
 void DescriptorBuffer::bind(VkPipelineBindPoint bindPoint,
@@ -459,6 +632,119 @@ void DescriptorSet::initialize(const CommandBuffer& commandBuffer) {
   }
   vkUpdateDescriptorSets(_device->getLogicalDevice(), descriptorWritesAcc.size(), descriptorWritesAcc.data(), 0,
                          nullptr);
+}
+
+void DescriptorSet::update(std::uint32_t binding,
+                           std::vector<Texture*> textures,
+                           const CommandBuffer& commandBuffer,
+                           std::uint32_t frame,
+                           std::uint32_t set) {
+  if (frame >= _descriptorSet.size()) throw std::out_of_range("Descriptor frame is out of range");
+  if (set >= _descriptorLayouts.size()) throw std::out_of_range("Descriptor set is out of range");
+
+  const auto& layoutInfo = _descriptorLayouts[set]->getLayoutInfo();
+  const auto bindingInfo = std::find_if(layoutInfo.begin(), layoutInfo.end(),
+                                        [binding](const auto& info) { return info.binding == binding; });
+  if (bindingInfo == layoutInfo.end()) throw std::out_of_range("Descriptor binding is out of range");
+  if (textures.size() != bindingInfo->descriptorCount)
+    throw std::invalid_argument("Texture count does not match descriptor count");
+  if (bindingInfo->descriptorType != VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE &&
+      bindingInfo->descriptorType != VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER &&
+      bindingInfo->descriptorType != VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+    throw std::invalid_argument("Descriptor binding is not a texture");
+
+  std::vector<VkDescriptorImageInfo> imageInfos;
+  imageInfos.reserve(textures.size());
+  for (auto* texture : textures) {
+    if (texture == nullptr) throw std::invalid_argument("Texture is null");
+    auto& image = texture->getImageView().getImage();
+    if (image.getImageLayout() != VK_IMAGE_LAYOUT_GENERAL) {
+      auto dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT |
+                           VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT;
+      VkPipelineStageFlags2 dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT |
+                                           VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+                                           VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
+                                           VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+      if (image.getAspectMask() & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) {
+        dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
+                        VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_SHADER_READ_BIT |
+                        VK_ACCESS_2_SHADER_WRITE_BIT;
+        dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
+                       VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+      }
+      image.changeLayout(image.getImageLayout(), VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0,
+                         dstStageMask, dstAccessMask, commandBuffer);
+    }
+
+    VkDescriptorImageInfo imageInfo{
+        .imageView = texture->getImageView().getImageView(),
+        .imageLayout = texture->getImageView().getImage().getImageLayout(),
+    };
+    if (const auto& sampler = texture->getSampler()) imageInfo.sampler = sampler->getSampler();
+    imageInfos.push_back(imageInfo);
+  }
+
+  const VkWriteDescriptorSet descriptorWrite{
+      .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+      .dstSet = _descriptorSet[frame][set],
+      .dstBinding = binding,
+      .dstArrayElement = 0,
+      .descriptorCount = static_cast<std::uint32_t>(imageInfos.size()),
+      .descriptorType = bindingInfo->descriptorType,
+      .pImageInfo = imageInfos.data(),
+  };
+  vkUpdateDescriptorSets(_device->getLogicalDevice(), 1, &descriptorWrite, 0, nullptr);
+
+  const auto bindingIndex = static_cast<std::size_t>(std::distance(layoutInfo.begin(), bindingInfo));
+  std::size_t resourceIndex = frame * _bindingNumber + bindingIndex;
+  for (std::uint32_t currentSet = 0; currentSet < set; ++currentSet)
+    resourceIndex += _descriptorLayouts[currentSet]->getLayoutInfo().size();
+  if (resourceIndex < _resources.size())
+    _resources[resourceIndex] = Resource{.type = Resource::Type::TEXTURE, .textures = std::move(textures)};
+}
+
+void DescriptorSet::update(std::uint32_t binding,
+                           std::vector<Buffer*> buffers,
+                           std::uint32_t frame,
+                           std::uint32_t set) {
+  if (frame >= _descriptorSet.size()) throw std::out_of_range("Descriptor frame is out of range");
+  if (set >= _descriptorLayouts.size()) throw std::out_of_range("Descriptor set is out of range");
+
+  const auto& layoutInfo = _descriptorLayouts[set]->getLayoutInfo();
+  const auto bindingInfo = std::find_if(layoutInfo.begin(), layoutInfo.end(),
+                                        [binding](const auto& info) { return info.binding == binding; });
+  if (bindingInfo == layoutInfo.end()) throw std::out_of_range("Descriptor binding is out of range");
+  if (buffers.size() != bindingInfo->descriptorCount)
+    throw std::invalid_argument("Buffer count does not match descriptor count");
+  if (bindingInfo->descriptorType != VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER &&
+      bindingInfo->descriptorType != VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)
+    throw std::invalid_argument("Descriptor binding is not a buffer");
+
+  std::vector<VkDescriptorBufferInfo> bufferInfos;
+  bufferInfos.reserve(buffers.size());
+  for (auto* buffer : buffers) {
+    if (buffer == nullptr) throw std::invalid_argument("Buffer is null");
+    bufferInfos.push_back({.buffer = buffer->getBuffer(), .offset = 0, .range = buffer->getSize()});
+  }
+
+  const VkWriteDescriptorSet descriptorWrite{
+      .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+      .dstSet = _descriptorSet[frame][set],
+      .dstBinding = binding,
+      .dstArrayElement = 0,
+      .descriptorCount = static_cast<std::uint32_t>(bufferInfos.size()),
+      .descriptorType = bindingInfo->descriptorType,
+      .pBufferInfo = bufferInfos.data(),
+  };
+  vkUpdateDescriptorSets(_device->getLogicalDevice(), 1, &descriptorWrite, 0, nullptr);
+
+  const auto bindingIndex = static_cast<std::size_t>(std::distance(layoutInfo.begin(), bindingInfo));
+  std::size_t resourceIndex = frame * _bindingNumber + bindingIndex;
+  for (std::uint32_t currentSet = 0; currentSet < set; ++currentSet)
+    resourceIndex += _descriptorLayouts[currentSet]->getLayoutInfo().size();
+  if (resourceIndex < _resources.size())
+    _resources[resourceIndex] = Resource{.type = Resource::Type::BUFFER, .buffers = std::move(buffers)};
 }
 
 void DescriptorSet::bind(VkPipelineBindPoint bindPoint,
