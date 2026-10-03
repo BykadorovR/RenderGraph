@@ -369,6 +369,34 @@ TEST(DescriptorSetTest, Create) {
   RenderGraph::DescriptorSet descriptorSet({&layout}, descriptorPool, device);
   EXPECT_EQ(descriptorSet._descriptorSet.size(), 1);
   EXPECT_EQ(descriptorSet._bindingNumber, 1);
+  EXPECT_EQ(descriptorPool.getDescriptorSetsNumber(), 1);
+  EXPECT_EQ(descriptorPool.getDescriptorsNumber().at(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER), 1);
+}
+
+TEST(DescriptorSetTest, Release) {
+  RenderGraph::Instance instance("TestApp", false);
+  RenderGraph::Window window({1920, 1080});
+  window.initialize();
+  RenderGraph::Surface surface(window, instance);
+  RenderGraph::Device device(instance);
+  device.setSurface(surface);
+  device.initialize();
+  RenderGraph::DescriptorPool descriptorPool({}, device);
+  RenderGraph::DescriptorSetLayout layout(device);
+  layout.createCustom({{.binding = 0,
+                        .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                        .descriptorCount = 4,
+                        .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+                        .pImmutableSamplers = nullptr}});
+
+  {
+    RenderGraph::DescriptorSet descriptorSet({&layout}, descriptorPool, device);
+    EXPECT_EQ(descriptorPool.getDescriptorSetsNumber(), 1);
+    EXPECT_EQ(descriptorPool.getDescriptorsNumber().at(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER), 4);
+  }
+
+  EXPECT_EQ(descriptorPool.getDescriptorSetsNumber(), 0);
+  EXPECT_EQ(descriptorPool.getDescriptorsNumber().at(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER), 0);
 }
 
 TEST(DescriptorSetTest, Update) {

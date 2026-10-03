@@ -19,6 +19,8 @@
 
 import Allocator;
 import Buffer;
+import Command;
+import CommandPool;
 import DescriptorBuffer;
 import Device;
 import Graph;
@@ -326,6 +328,128 @@ std::string joinErrors(const std::vector<std::string>& errors) {
 
 class ValidationScenarioTest : public testing::TestWithParam<bool> {};
 }  // namespace
+
+TEST(ValidationTest, DescriptorSetBindsAtNonZeroSet) {
+  ValidationErrorCollector validationErrors;
+  RenderGraph::Instance instance("DescriptorSetOffsetValidationTest", true);
+  if (!instance.isDebug()) {
+    GTEST_SKIP() << "Vulkan validation layers or VK_EXT_debug_utils are unavailable";
+  }
+
+  ValidationMessenger validationMessenger(instance.getInstance().instance, validationErrors);
+  RenderGraph::Window window({64, 64});
+  window.initialize();
+  RenderGraph::Surface surface(window, instance);
+  RenderGraph::Device device(instance);
+  device.setSurface(surface);
+  device.setOptionalExtensions({"VK_KHR_dynamic_rendering"});
+  device.initialize();
+  RenderGraph::MemoryAllocator allocator(device, instance);
+  RenderGraph::Buffer buffer(256, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                             VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                                 VMA_ALLOCATION_CREATE_MAPPED_BIT,
+                             allocator);
+  RenderGraph::DescriptorPool descriptorPool({}, device);
+
+  std::vector<RenderGraph::DescriptorSetLayout> layouts;
+  layouts.reserve(3);
+  for (int i = 0; i < 3; ++i) {
+    layouts.emplace_back(device);
+    layouts.back().createCustom({{.binding = 0,
+                                  .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                  .descriptorCount = 1,
+                                  .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+                                  .pImmutableSamplers = nullptr}});
+  }
+
+  const std::vector<VkDescriptorSetLayout> nativeLayouts{
+      layouts[0].getDescriptorSetLayout(), layouts[1].getDescriptorSetLayout(), layouts[2].getDescriptorSetLayout()};
+  const VkPipelineLayoutCreateInfo pipelineLayoutInfo{
+      .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+      .setLayoutCount = static_cast<std::uint32_t>(nativeLayouts.size()),
+      .pSetLayouts = nativeLayouts.data(),
+  };
+  VkPipelineLayout pipelineLayout = nullptr;
+  ASSERT_EQ(vkCreatePipelineLayout(device.getLogicalDevice(), &pipelineLayoutInfo, nullptr, &pipelineLayout),
+            VK_SUCCESS);
+
+  {
+    RenderGraph::CommandPool commandPool(RenderGraph::QueueType::GRAPHICS, device);
+    RenderGraph::CommandBuffer commandBuffer(commandPool, device);
+    RenderGraph::DescriptorSet descriptorSet({&layouts[2]}, descriptorPool, device, 2);
+    descriptorSet.add({&buffer});
+    commandBuffer.beginCommands();
+    descriptorSet.initialize(commandBuffer);
+    descriptorSet.bind(VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, commandBuffer);
+    commandBuffer.endCommands();
+  }
+
+  vkDestroyPipelineLayout(device.getLogicalDevice(), pipelineLayout, nullptr);
+  const std::vector<std::string> errors = validationErrors.getErrors();
+  EXPECT_TRUE(errors.empty()) << joinErrors(errors);
+}
+
+TEST(ValidationTest, DescriptorBufferBindsAtNonZeroSet) {
+  ValidationErrorCollector validationErrors;
+  RenderGraph::Instance instance("DescriptorBufferOffsetValidationTest", true);
+  if (!instance.isDebug()) {
+    GTEST_SKIP() << "Vulkan validation layers or VK_EXT_debug_utils are unavailable";
+  }
+
+  ValidationMessenger validationMessenger(instance.getInstance().instance, validationErrors);
+  RenderGraph::Window window({64, 64});
+  window.initialize();
+  RenderGraph::Surface surface(window, instance);
+  RenderGraph::Device device(instance);
+  device.setSurface(surface);
+  device.initialize();
+  if (!device.isExtensionSupported("VK_EXT_descriptor_buffer")) {
+    GTEST_SKIP() << "VK_EXT_descriptor_buffer is unavailable";
+  }
+
+  RenderGraph::MemoryAllocator allocator(device, instance);
+  RenderGraph::Buffer buffer(256,
+                             VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                             VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                                 VMA_ALLOCATION_CREATE_MAPPED_BIT,
+                             allocator);
+  std::vector<RenderGraph::DescriptorSetLayout> layouts;
+  layouts.reserve(3);
+  for (int i = 0; i < 3; ++i) {
+    layouts.emplace_back(device);
+    layouts.back().createCustom({{.binding = 0,
+                                  .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                  .descriptorCount = 1,
+                                  .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+                                  .pImmutableSamplers = nullptr}});
+  }
+
+  const std::vector<VkDescriptorSetLayout> nativeLayouts{
+      layouts[0].getDescriptorSetLayout(), layouts[1].getDescriptorSetLayout(), layouts[2].getDescriptorSetLayout()};
+  const VkPipelineLayoutCreateInfo pipelineLayoutInfo{
+      .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+      .setLayoutCount = static_cast<std::uint32_t>(nativeLayouts.size()),
+      .pSetLayouts = nativeLayouts.data(),
+  };
+  VkPipelineLayout pipelineLayout = nullptr;
+  ASSERT_EQ(vkCreatePipelineLayout(device.getLogicalDevice(), &pipelineLayoutInfo, nullptr, &pipelineLayout),
+            VK_SUCCESS);
+
+  {
+    RenderGraph::CommandPool commandPool(RenderGraph::QueueType::GRAPHICS, device);
+    RenderGraph::CommandBuffer commandBuffer(commandPool, device);
+    RenderGraph::DescriptorBuffer descriptorBuffer({&layouts[2]}, allocator, device, 2);
+    descriptorBuffer.add({&buffer});
+    commandBuffer.beginCommands();
+    descriptorBuffer.initialize(commandBuffer);
+    descriptorBuffer.bind(VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, commandBuffer);
+    commandBuffer.endCommands();
+  }
+
+  vkDestroyPipelineLayout(device.getLogicalDevice(), pipelineLayout, nullptr);
+  const std::vector<std::string> errors = validationErrors.getErrors();
+  EXPECT_TRUE(errors.empty()) << joinErrors(errors);
+}
 
 TEST_P(ValidationScenarioTest, FullGraphPipelineHasNoValidationErrorsAcrossResets) {
   const bool separateComputeQueue = GetParam();

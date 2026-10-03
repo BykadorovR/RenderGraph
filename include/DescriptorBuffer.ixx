@@ -1,5 +1,6 @@
 module;
 
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <utility>
@@ -50,6 +51,8 @@ class DescriptorHandler {
   friend class ::DescriptorSetTest_Update_Test;
 
  protected:
+  std::uint32_t _firstSet = 0;
+
   struct Resource {
     enum class Type { BUFFER, TEXTURE } type;
     std::vector<Buffer*> buffers;
@@ -99,7 +102,8 @@ class DescriptorBuffer final : public DescriptorHandler {
  public:
   DescriptorBuffer(const std::vector<DescriptorSetLayout*>& layouts,
                    const MemoryAllocator& memoryAllocator,
-                   const Device& device);
+                   const Device& device,
+                   std::uint32_t firstSet = 0);
   void initialize(const CommandBuffer& commandBuffer) override;
   void bind(VkPipelineBindPoint bindPoint,
             const VkPipelineLayout& pipelineLayout,
@@ -160,7 +164,10 @@ class DescriptorSet final : public DescriptorHandler {
   void _allocateDescriptorSetsForNextFrame();
 
  public:
-  DescriptorSet(const std::vector<DescriptorSetLayout*>& layouts, DescriptorPool& descriptorPool, const Device& device);
+  DescriptorSet(const std::vector<DescriptorSetLayout*>& layouts,
+                DescriptorPool& descriptorPool,
+                const Device& device,
+                std::uint32_t firstSet = 0);
   DescriptorSet(const DescriptorSet&) = delete;
   DescriptorSet& operator=(const DescriptorSet&) = delete;
   DescriptorSet(DescriptorSet&& other) = delete;

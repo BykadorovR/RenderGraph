@@ -67,10 +67,12 @@ void DescriptorHandler::add(std::vector<Buffer*> buffers) {
 
 DescriptorBuffer::DescriptorBuffer(const std::vector<DescriptorSetLayout*>& layouts,
                                    const MemoryAllocator& memoryAllocator,
-                                   const Device& device) {
+                                   const Device& device,
+                                   std::uint32_t firstSet) {
   _memoryAllocator = &memoryAllocator;
   _device = &device;
   _descriptorLayouts = layouts;
+  _firstSet = firstSet;
 
   auto descriptorBufferProperties = VkPhysicalDeviceDescriptorBufferPropertiesEXT{
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_PROPERTIES_EXT};
@@ -282,7 +284,7 @@ void DescriptorBuffer::bind(VkPipelineBindPoint bindPoint,
   // we use 1 buffer for the whole shader
   vkCmdBindDescriptorBuffersEXT(commandBuffer.getCommandBuffer(), 1, &bufferBinding);
   // but specify offsets for every set
-  vkCmdSetDescriptorBufferOffsetsEXT(commandBuffer.getCommandBuffer(), bindPoint, pipelineLayout, 0,
+  vkCmdSetDescriptorBufferOffsetsEXT(commandBuffer.getCommandBuffer(), bindPoint, pipelineLayout, _firstSet,
                                      _descriptorLayouts.size(), bufIndex.data(), offsets.data());
 }
 
@@ -296,6 +298,7 @@ DescriptorPool::DescriptorPool(DescriptorPoolSize poolSize, const Device& device
       {.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = static_cast<uint32_t>(poolSize.ssbo)}};
 
   VkDescriptorPoolCreateInfo poolInfo{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+                                      .flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
                                       .maxSets = static_cast<uint32_t>(poolSize.descriptorSets),
                                       .poolSizeCount = static_cast<uint32_t>(poolSizes.size()),
                                       .pPoolSizes = poolSizes.data()};
@@ -307,7 +310,7 @@ DescriptorPool::DescriptorPool(DescriptorPoolSize poolSize, const Device& device
 
 void DescriptorPool::notify(const std::vector<VkDescriptorSetLayoutBinding>& layoutInfo, int number) {
   for (auto&& info : layoutInfo) {
-    _descriptorTypes[info.descriptorType] += number;
+    _descriptorTypes[info.descriptorType] += info.descriptorCount * number;
   }
 
   _descriptorSetsNumber += number;
@@ -325,10 +328,12 @@ DescriptorPool::~DescriptorPool() { vkDestroyDescriptorPool(_device->getLogicalD
 
 DescriptorSet::DescriptorSet(const std::vector<DescriptorSetLayout*>& layouts,
                              DescriptorPool& descriptorPool,
-                             const Device& device) {
+                             const Device& device,
+                             std::uint32_t firstSet) {
   _descriptorLayouts = layouts;
   _descriptorPool = &descriptorPool;
   _device = &device;
+  _firstSet = firstSet;
 
   // pre-allocate for the first frame only
   _allocateDescriptorSetsForNextFrame();
@@ -337,27 +342,29 @@ DescriptorSet::DescriptorSet(const std::vector<DescriptorSetLayout*>& layouts,
 }
 
 void DescriptorSet::_allocateDescriptorSetsForNextFrame() {
-  std::vector<VkDescriptorSet> setFrame;
-  for (auto&& layout : _descriptorLayouts) {
-    VkDescriptorSet descriptorSet;
-    auto descriptorLayout = layout->getDescriptorSetLayout();
-    VkDescriptorSetAllocateInfo allocInfo{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-                                          .descriptorPool = _descriptorPool->getDescriptorPool(),
-                                          .descriptorSetCount = 1,
-                                          .pSetLayouts = &descriptorLayout};
-    auto sts = vkAllocateDescriptorSets(_device->getLogicalDevice(), &allocInfo, &descriptorSet);
-    if (sts != VK_SUCCESS) {
-      std::ostringstream descriptors;
-      descriptors << "failed to allocate descriptor sets: allocated sets: "
-                  << _descriptorPool->getDescriptorSetsNumber() << ", descriptors: ";
-      for (auto&& [key, value] : _descriptorPool->getDescriptorsNumber()) {
-        descriptors << key << ":" << value << " ";
-      }
-      throw std::runtime_error(descriptors.str());
-    }
+  std::vector<VkDescriptorSetLayout> layouts;
+  layouts.reserve(_descriptorLayouts.size());
+  for (const auto* layout : _descriptorLayouts) layouts.push_back(layout->getDescriptorSetLayout());
 
-    setFrame.push_back(descriptorSet);
+  std::vector<VkDescriptorSet> setFrame(layouts.size());
+  const VkDescriptorSetAllocateInfo allocInfo{
+      .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+      .descriptorPool = _descriptorPool->getDescriptorPool(),
+      .descriptorSetCount = static_cast<std::uint32_t>(layouts.size()),
+      .pSetLayouts = layouts.data(),
+  };
+  const auto status = vkAllocateDescriptorSets(_device->getLogicalDevice(), &allocInfo, setFrame.data());
+  if (status != VK_SUCCESS) {
+    std::ostringstream descriptors;
+    descriptors << "failed to allocate descriptor sets: allocated sets: "
+                << _descriptorPool->getDescriptorSetsNumber() << ", descriptors: ";
+    for (auto&& [key, value] : _descriptorPool->getDescriptorsNumber()) {
+      descriptors << key << ":" << value << " ";
+    }
+    throw std::runtime_error(descriptors.str());
   }
+
+  for (const auto* layout : _descriptorLayouts) _descriptorPool->notify(layout->getLayoutInfo(), 1);
   _descriptorSet.push_back(std::move(setFrame));
 }
 
@@ -458,11 +465,15 @@ void DescriptorSet::bind(VkPipelineBindPoint bindPoint,
                          const VkPipelineLayout& pipelineLayout,
                          const CommandBuffer& commandBuffer) {
   auto&& descriptorSet = _descriptorSet[_currentBind % (_frame + 1)];
-  vkCmdBindDescriptorSets(commandBuffer.getCommandBuffer(), bindPoint, pipelineLayout, 0, descriptorSet.size(),
+  vkCmdBindDescriptorSets(commandBuffer.getCommandBuffer(), bindPoint, pipelineLayout, _firstSet, descriptorSet.size(),
                           descriptorSet.data(), 0, nullptr);
   _currentBind++;
 }
 
 DescriptorSet::~DescriptorSet() {
-  for (auto&& layout : _descriptorLayouts) _descriptorPool->notify(layout->getLayoutInfo(), -1);
+  for (const auto& setFrame : _descriptorSet) {
+    vkFreeDescriptorSets(_device->getLogicalDevice(), _descriptorPool->getDescriptorPool(),
+                         static_cast<std::uint32_t>(setFrame.size()), setFrame.data());
+    for (const auto* layout : _descriptorLayouts) _descriptorPool->notify(layout->getLayoutInfo(), -1);
+  }
 }
