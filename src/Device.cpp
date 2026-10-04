@@ -20,22 +20,21 @@ void Device::setSurface(const Surface& surface) {
   _surface = &surface;
 }
 
-void Device::initialize() {
+void Device::initialize(const DeviceRequirements& requirements) {
   if (_initialized) {
     throw std::logic_error("Device is already initialized");
   }
 
-  // Vulkan 1.0 features
-  VkPhysicalDeviceFeatures deviceFeatures{
-      .geometryShader = true,
-      .tessellationShader = true,
-      .samplerAnisotropy = true,
-  };
+  const auto descriptorBufferRequired =
+      std::find(requirements.requiredExtensions.begin(), requirements.requiredExtensions.end(),
+                VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME) != requirements.requiredExtensions.end();
+  const auto descriptorBufferOptional =
+      std::find(requirements.optionalExtensions.begin(), requirements.optionalExtensions.end(),
+                VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME) != requirements.optionalExtensions.end();
 
   // Vulkan 1.2 features
   VkPhysicalDeviceVulkan12Features features12{};
   features12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
-  features12.drawIndirectCount = true;
   features12.hostQueryReset = true;
   features12.timelineSemaphore = true;
   features12.bufferDeviceAddress = true;
@@ -46,23 +45,30 @@ void Device::initialize() {
   features13.synchronization2 = true;
   features13.dynamicRendering = true;
 
-  // Not part of Vulkan 1.3 core
-  VkPhysicalDeviceDescriptorBufferFeaturesEXT descriptorBufferFeatures{
-      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT,
-      .descriptorBuffer = true};
-
   vkb::PhysicalDeviceSelector deviceSelector(_instance->getInstance());
   // vk-bootstrap propagates features used as physical-device selection
   // criteria into logical-device creation, so builder.add_pNext is not
   // needed for these core features.
-  deviceSelector.set_required_features(deviceFeatures);
   deviceSelector.set_required_features_12(features12);
   deviceSelector.set_required_features_13(features13);
+  deviceSelector.set_required_features(requirements.features);
+  deviceSelector.set_required_features_12(requirements.features12);
+  deviceSelector.set_required_features_13(requirements.features13);
+
+  for (const auto& extension : requirements.requiredExtensions) {
+    deviceSelector.add_required_extension(extension.c_str());
+  }
+  for (const auto& extension : requirements.optionalExtensions) {
+    if (extension != VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME) {
+      deviceSelector.add_desired_extension(extension.c_str());
+    }
+  }
+  if (descriptorBufferRequired && requirements.descriptorBufferFeatures.descriptorBuffer) {
+    auto descriptorBufferFeatures = requirements.descriptorBufferFeatures;
+    descriptorBufferFeatures.pNext = nullptr;
+    deviceSelector.add_required_extension_features(descriptorBufferFeatures);
+  }
   deviceSelector.allow_any_gpu_device_type(false);
-  // not part of Vulkan 1.3 core
-  if (std::find(_optionalExtensions.begin(), _optionalExtensions.end(), "VK_EXT_descriptor_buffer") !=
-      _optionalExtensions.end())
-    deviceSelector.add_desired_extension("VK_EXT_descriptor_buffer");
   // vk-bootstrap enables VK_KHR_swapchain when a surface is provided.
   if (_surface != nullptr) {
     deviceSelector.set_surface(_surface->getSurface());
@@ -74,13 +80,23 @@ void Device::initialize() {
     throw std::runtime_error(deviceSelectorResult.error().message());
   }
   auto devicePhysical = deviceSelectorResult.value();
+  const auto enableOptionalDescriptorBuffer =
+      !descriptorBufferRequired && descriptorBufferOptional && requirements.descriptorBufferFeatures.descriptorBuffer &&
+      devicePhysical.is_extension_present(VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME);
+  if (enableOptionalDescriptorBuffer) {
+    auto descriptorBufferFeatures = requirements.descriptorBufferFeatures;
+    descriptorBufferFeatures.pNext = nullptr;
+    if (devicePhysical.enable_extension_features_if_present(descriptorBufferFeatures)) {
+      devicePhysical.enable_extension_if_present(VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME);
+    }
+  }
+  _enabledExtensions = devicePhysical.get_extensions();
 
   vkb::DeviceBuilder builder{devicePhysical};
-  if (devicePhysical.is_extension_present("VK_EXT_descriptor_buffer") &&
-      std::find(_optionalExtensions.begin(), _optionalExtensions.end(), "VK_EXT_descriptor_buffer") !=
-          _optionalExtensions.end())
-    builder.add_pNext(&descriptorBufferFeatures);
-
+  for (auto* extensionFeatures = requirements.extensionFeatures; extensionFeatures != nullptr;
+       extensionFeatures = extensionFeatures->pNext) {
+    builder.add_pNext(extensionFeatures);
+  }
   auto builderResult = builder.build();
   if (!builderResult) {
     throw std::runtime_error(builderResult.error().message());
@@ -95,8 +111,6 @@ void Device::initialize() {
   vkGetPhysicalDeviceQueueFamilyProperties(getPhysicalDevice(), &queueFamilyCount, _queueFamilyProperties.data());
 }
 
-void Device::setOptionalExtensions(const std::vector<std::string>& extensions) { _optionalExtensions = extensions; }
-
 const VkQueueFamilyProperties& Device::getQueueFamilyProperties(QueueType type) const {
   return _queueFamilyProperties[getQueueIndex(type)];
 }
@@ -105,7 +119,9 @@ bool Device::isExtensionSupported(std::string name) const {
   return _device.physical_device.is_extension_present(name.c_str());
 }
 
-std::vector<std::string> Device::getOptionalExtensions() const { return _optionalExtensions; }
+bool Device::isExtensionEnabled(std::string name) const {
+  return std::find(_enabledExtensions.begin(), _enabledExtensions.end(), name) != _enabledExtensions.end();
+}
 
 bool Device::isFormatFeatureSupported(VkFormat format,
                                       VkImageTiling tiling,

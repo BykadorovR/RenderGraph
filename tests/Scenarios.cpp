@@ -631,10 +631,6 @@ TEST(ScenarioTest, GraphicsPassBufferInputs) {
   const VkBuffer indirectCommandsBuffer = graph.getGraphStorage().getBuffer("IndirectCommands")[0]->getBuffer();
   const VkBuffer vertexBuffer = graph.getGraphStorage().getBuffer("Vertices")[0]->getBuffer();
   const VkBuffer indexBuffer = graph.getGraphStorage().getBuffer("Indices")[0]->getBuffer();
-  const VkPipelineStageFlags2 graphicsShaderStages =
-      VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_CONTROL_SHADER_BIT |
-      VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT |
-      VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
 
   bool foundStorageBarrier = false;
   bool foundIndirectBarrier = false;
@@ -648,7 +644,7 @@ TEST(ScenarioTest, GraphicsPassBufferInputs) {
 
     if (bufferBarrier.buffer == visibleObjectsBuffer) {
       foundStorageBarrier = true;
-      EXPECT_EQ(bufferBarrier.dstStageMask, graphicsShaderStages);
+      EXPECT_EQ(bufferBarrier.dstStageMask, VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT);
       EXPECT_EQ(bufferBarrier.dstAccessMask, VK_ACCESS_2_SHADER_READ_BIT);
     } else if (bufferBarrier.buffer == indirectCommandsBuffer) {
       foundIndirectBarrier = true;

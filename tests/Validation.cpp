@@ -342,8 +342,9 @@ TEST(ValidationTest, DescriptorSetBindsAtNonZeroSet) {
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(instance);
   device.setSurface(surface);
-  device.setOptionalExtensions({"VK_KHR_dynamic_rendering"});
-  device.initialize();
+  RenderGraph::DeviceRequirements deviceRequirements;
+  deviceRequirements.optionalExtensions = {"VK_KHR_dynamic_rendering"};
+  device.initialize(deviceRequirements);
   RenderGraph::MemoryAllocator allocator(device, instance);
   RenderGraph::Buffer buffer(256, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                              VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
@@ -402,9 +403,11 @@ TEST(ValidationTest, DescriptorBufferBindsAtNonZeroSet) {
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(instance);
   device.setSurface(surface);
-  device.initialize();
-  if (!device.isExtensionSupported("VK_EXT_descriptor_buffer")) {
-    GTEST_SKIP() << "VK_EXT_descriptor_buffer is unavailable";
+  RenderGraph::DeviceRequirements deviceRequirements;
+  deviceRequirements.optionalExtensions = {VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME};
+  device.initialize(deviceRequirements);
+  if (!device.isExtensionEnabled(VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME)) {
+    GTEST_SKIP() << "VK_EXT_descriptor_buffer or its required features are unavailable";
   }
 
   RenderGraph::MemoryAllocator allocator(device, instance);
@@ -639,8 +642,9 @@ TEST_P(ValidationScenarioTest, GpuDrivenIndexedIndirectCountDrawsTriangle) {
     device.setSurface(surface);
     // The test intentionally exercises ordinary descriptor sets. Descriptor-buffer
     // behavior is covered independently by DescriptorBufferTest.
-    device.setOptionalExtensions({});
-    device.initialize();
+    RenderGraph::DeviceRequirements deviceRequirements;
+    deviceRequirements.features12.drawIndirectCount = true;
+    device.initialize(deviceRequirements);
     RenderGraph::MemoryAllocator allocator(device, instance);
     RenderGraph::Swapchain swapchain(resolution, allocator, device);
     swapchain.initialize();
@@ -731,7 +735,6 @@ TEST(ValidationTest, ComputeGraphRunsWithoutSwapchain) {
     const glm::ivec2 resolution(64, 64);
 
     RenderGraph::Device device(instance);
-    device.setOptionalExtensions({});
     device.initialize();
     if (!device.isFormatFeatureSupported(VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_TILING_OPTIMAL,
                                          VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)) {
