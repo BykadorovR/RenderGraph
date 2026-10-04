@@ -475,7 +475,10 @@ TEST_P(ValidationScenarioTest, FullGraphPipelineHasNoValidationErrorsAcrossReset
     RenderGraph::Surface surface(window, instance);
     RenderGraph::Device device(instance);
     device.setSurface(surface);
-    device.initialize();
+    RenderGraph::DeviceRequirements deviceRequirements;
+    deviceRequirements.features.geometryShader = true;
+    deviceRequirements.features.tessellationShader = true;
+    device.initialize(deviceRequirements);
     RenderGraph::MemoryAllocator allocator(device, instance);
     RenderGraph::Swapchain swapchain(
         resolution, allocator, device, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT);
@@ -643,6 +646,8 @@ TEST_P(ValidationScenarioTest, GpuDrivenIndexedIndirectCountDrawsTriangle) {
     // The test intentionally exercises ordinary descriptor sets. Descriptor-buffer
     // behavior is covered independently by DescriptorBufferTest.
     RenderGraph::DeviceRequirements deviceRequirements;
+    deviceRequirements.features.geometryShader = true;
+    deviceRequirements.features.tessellationShader = true;
     deviceRequirements.features12.drawIndirectCount = true;
     device.initialize(deviceRequirements);
     RenderGraph::MemoryAllocator allocator(device, instance);
