@@ -62,6 +62,7 @@ class Image final {
   int _layerNumber = 1;
   VkImageAspectFlags _aspectMask;
   VkImageUsageFlags _usageFlags;
+  VkImageCreateFlags _createFlags = 0;
   VkImageLayout _imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
  public:
@@ -76,7 +77,8 @@ class Image final {
                    int mipMapNumber,
                    int layerNumber,
                    VkImageAspectFlags aspectMask,
-                   VkImageUsageFlags usage);
+                   VkImageUsageFlags usage,
+                   VkImageCreateFlags createFlags = 0);
   void wrapImage(const VkImage& existingImage,
                  VkFormat format,
                  glm::ivec2 resolution,
@@ -100,6 +102,7 @@ class Image final {
   int getLayerNumber() const noexcept;
   VkImageAspectFlags getAspectMask() const noexcept;
   VkImageUsageFlags getUsageFlags() const noexcept;
+  VkImageCreateFlags getCreateFlags() const noexcept;
   void destroy();
 
   ~Image();

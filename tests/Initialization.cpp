@@ -941,6 +941,27 @@ TEST(ImageTest, Create) {
   EXPECT_EQ(image.getImageLayout(), VK_IMAGE_LAYOUT_UNDEFINED);
 }
 
+TEST(ImageTest, CreateCubemapCompatible) {
+  RenderGraph::Instance instance("TestApp", false);
+  RenderGraph::Window window({1920, 1080});
+  window.initialize();
+  RenderGraph::Surface surface(window, instance);
+  RenderGraph::Device device(instance);
+  device.setSurface(surface);
+  device.initialize();
+  RenderGraph::MemoryAllocator allocator(device, instance);
+
+  auto image = std::make_unique<RenderGraph::Image>(allocator);
+  image->createImage(VK_FORMAT_R8G8B8A8_UNORM, {64, 64}, 1, 6, VK_IMAGE_ASPECT_COLOR_BIT,
+                     VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                     VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT);
+  EXPECT_EQ(image->getCreateFlags(), VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT);
+
+  RenderGraph::ImageView imageView(std::move(image), device);
+  EXPECT_NO_THROW(imageView.createImageView(VK_IMAGE_VIEW_TYPE_CUBE, 0, 0));
+  EXPECT_NE(imageView.getImageView(), nullptr);
+}
+
 TEST(ResourceUploaderTest, UploadsImage) {
   RenderGraph::Instance instance("TestApp", false);
   RenderGraph::Window window({1920, 1080});

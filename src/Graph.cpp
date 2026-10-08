@@ -53,7 +53,7 @@ void GraphStorage::reset(std::vector<std::shared_ptr<ImageView>> oldSwapchain,
           imageViews[i]->destroy();
           image.destroy();
           image.createImage(image.getFormat(), resolution, image.getMipMapNumber(), image.getLayerNumber(),
-                            image.getAspectMask(), image.getUsageFlags());
+                            image.getAspectMask(), image.getUsageFlags(), image.getCreateFlags());
           imageViews[i]->createImageView(imageViews[i]->getType(), imageViews[i]->getBaseMipMap(),
                                          imageViews[i]->getBaseArrayLayer());
         }

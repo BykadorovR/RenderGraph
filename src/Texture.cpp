@@ -25,16 +25,19 @@ void Image::createImage(VkFormat format,
                         int mipMapNumber,
                         int layerNumber,
                         VkImageAspectFlags aspectMask,
-                        VkImageUsageFlags usage) {
+                        VkImageUsageFlags usage,
+                        VkImageCreateFlags createFlags) {
   _format = format;
   _resolution = resolution;
   _mipMapNumber = mipMapNumber;
   _layerNumber = layerNumber;
   _aspectMask = aspectMask;
   _usageFlags = usage;
+  _createFlags = createFlags;
   _imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
   VkImageCreateInfo imageInfo{.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                              .flags = createFlags,
                               .imageType = VK_IMAGE_TYPE_2D,
                               .format = format,
                               .extent = {.width = static_cast<uint32_t>(resolution.x),
@@ -70,11 +73,14 @@ void Image::wrapImage(const VkImage& existingImage,
   _layerNumber = layerNumber;
   _aspectMask = aspectMask;
   _usageFlags = usage;
+  _createFlags = 0;
 }
 
 VkImageAspectFlags Image::getAspectMask() const noexcept { return _aspectMask; }
 
 VkImageUsageFlags Image::getUsageFlags() const noexcept { return _usageFlags; }
+
+VkImageCreateFlags Image::getCreateFlags() const noexcept { return _createFlags; }
 
 void Image::changeLayout(VkImageLayout oldLayout,
                          VkImageLayout newLayout,
