@@ -796,6 +796,10 @@ void Graph::calculate() {
 
   for (auto&& pass : _passes) traverse(pass.get());
 
+  if (_swapchain != nullptr && _usesSeparateQueue(_passesOrdered.back())) {
+    throw std::logic_error("A graph with a swapchain can't end on a separate compute queue");
+  }
+
   // set semaphores between passes + fill barriers
   struct LastUsage {
     GraphPass* pass;

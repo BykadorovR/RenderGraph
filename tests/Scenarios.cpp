@@ -485,12 +485,8 @@ TEST(ScenarioTest, BufferOwnershipTransferUsesLastResourceOwner) {
 
   RenderGraph::MemoryAllocator allocator(device, instance);
 
-  RenderGraph::Swapchain swapchain(resolution, allocator, device);
-  swapchain.initialize();
-
   constexpr int framesInFlight = 2;
   RenderGraph::Graph graph(4, framesInFlight, device);
-  graph.setSwapchain(swapchain);
   graph.initialize();
 
   auto addStorageBuffers = [&](std::string_view name) {
@@ -560,9 +556,40 @@ TEST(ScenarioTest, BufferOwnershipTransferUsesLastResourceOwner) {
   const auto middleSignalSemaphores = graph._sync.at(&middlePass).getSignalSemaphores();
   const auto lastWaitSemaphores = graph._sync.at(&lastPass).getWaitSemaphores();
   ASSERT_EQ(middleSignalSemaphores.size(), 1);
-  ASSERT_EQ(lastWaitSemaphores.size(), 2);
+  ASSERT_EQ(lastWaitSemaphores.size(), 1);
   EXPECT_TRUE(std::ranges::contains(lastWaitSemaphores, middleSignalSemaphores.front()));
-  EXPECT_TRUE(std::ranges::contains(lastWaitSemaphores, graph._semaphoreImageAvailable.front().get()));
+}
+
+TEST(ScenarioTest, SwapchainGraphRejectsSeparateComputeLastPass) {
+  const glm::ivec2 resolution(1920, 1080);
+  RenderGraph::Instance instance("TestApp", false);
+  RenderGraph::Window window(resolution);
+  window.initialize();
+  RenderGraph::Surface surface(window, instance);
+  RenderGraph::Device device(instance);
+  device.setSurface(surface);
+  device.initialize();
+  RenderGraph::MemoryAllocator allocator(device, instance);
+  RenderGraph::Swapchain swapchain(resolution, allocator, device);
+  swapchain.initialize();
+
+  constexpr int framesInFlight = 2;
+  RenderGraph::Graph graph(1, framesInFlight, device);
+  graph.setSwapchain(swapchain);
+  graph.initialize();
+
+  std::vector<std::unique_ptr<RenderGraph::Buffer>> buffers;
+  buffers.reserve(framesInFlight);
+  for (int frameIndex = 0; frameIndex < framesInFlight; ++frameIndex) {
+    buffers.push_back(std::make_unique<RenderGraph::Buffer>(
+        1024, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT, allocator));
+  }
+  graph.getGraphStorage().add("Data", buffers);
+
+  auto& computePass = graph.createPassCompute("Compute", true);
+  computePass.addStorageBufferOutput("Data");
+
+  EXPECT_THROW(graph.calculate(), std::logic_error);
 }
 
 TEST(ScenarioTest, GraphicsPassBufferInputs) {
