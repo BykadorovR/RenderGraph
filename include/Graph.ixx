@@ -71,6 +71,8 @@ class GraphElement {
 
 enum class GraphPassType { GRAPHIC, COMPUTE };
 
+enum class RenderTargetLoadAction { CLEAR, KEEP, DONT_CARE };
+
 class GraphPass {
  protected:
   std::string _name;
@@ -102,8 +104,8 @@ class GraphPassGraphic final : public GraphPass {
   std::vector<std::string> _colorTargets, _textureInputs, _vertexBufferInputs, _indexBufferInputs;
   std::vector<std::string> _storageBufferInputs, _indirectBufferInputs;
   std::optional<std::string> _depthTarget;
+  std::unordered_map<std::string, RenderTargetLoadAction> _targetLoadActions;
 
-  std::unordered_map<std::string, bool> _clearTarget;
   std::unique_ptr<PipelineGraphic> _pipelineGraphic;
   const Device* _device;
 
@@ -118,8 +120,8 @@ class GraphPassGraphic final : public GraphPass {
   GraphPassGraphic& operator=(GraphPassGraphic&&) = delete;
 
   // handle attachments
-  void addColorTarget(std::string_view name);
-  void setDepthTarget(std::string_view name);
+  void addColorTarget(std::string_view name, RenderTargetLoadAction loadAction);
+  void setDepthTarget(std::string_view name, RenderTargetLoadAction loadAction);
   // handle input to shaders
   void addTextureInput(std::string_view name);
   void addVertexBufferInput(std::string_view name);
@@ -128,11 +130,9 @@ class GraphPassGraphic final : public GraphPass {
   // handle input to indirect draw commands
   void addIndirectBufferInput(std::string_view name);
 
-  // clear color target before use or load
-  void clearTarget(std::string_view name);
-
   const std::vector<std::string>& getColorTargets() const noexcept;
   std::optional<std::string> getDepthTarget() const;
+  RenderTargetLoadAction getTargetLoadAction(std::string_view name) const;
   const std::vector<std::string>& getTextureInputs() const noexcept;
   const std::vector<std::string>& getVertexBufferInputs() const noexcept;
   const std::vector<std::string>& getIndexBufferInputs() const noexcept;

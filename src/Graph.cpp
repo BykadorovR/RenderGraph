@@ -120,9 +120,15 @@ GraphPassGraphic::GraphPassGraphic(std::string_view name,
   _pipelineGraphic = std::make_unique<PipelineGraphic>();
 }
 
-void GraphPassGraphic::addColorTarget(std::string_view name) { _colorTargets.emplace_back(name); }
+void GraphPassGraphic::addColorTarget(std::string_view name, RenderTargetLoadAction loadAction) {
+  _colorTargets.emplace_back(name);
+  _targetLoadActions[std::string(name)] = loadAction;
+}
 
-void GraphPassGraphic::setDepthTarget(std::string_view name) { _depthTarget = name; }
+void GraphPassGraphic::setDepthTarget(std::string_view name, RenderTargetLoadAction loadAction) {
+  _depthTarget = name;
+  _targetLoadActions[std::string(name)] = loadAction;
+}
 
 void GraphPassGraphic::addTextureInput(std::string_view name) { _textureInputs.emplace_back(name); }
 
@@ -134,11 +140,13 @@ void GraphPassGraphic::addStorageBufferInput(std::string_view name) { _storageBu
 
 void GraphPassGraphic::addIndirectBufferInput(std::string_view name) { _indirectBufferInputs.emplace_back(name); }
 
-void GraphPassGraphic::clearTarget(std::string_view name) { _clearTarget[std::string(name)] = true; }
-
 const std::vector<std::string>& GraphPassGraphic::getColorTargets() const noexcept { return _colorTargets; }
 
 std::optional<std::string> GraphPassGraphic::getDepthTarget() const { return _depthTarget; }
+
+RenderTargetLoadAction GraphPassGraphic::getTargetLoadAction(std::string_view name) const {
+  return _targetLoadActions.at(std::string(name));
+}
 
 const std::vector<std::string>& GraphPassGraphic::getTextureInputs() const noexcept { return _textureInputs; }
 
@@ -170,17 +178,27 @@ PipelineGraphic& GraphPassGraphic::getPipelineGraphic(const GraphStorage& graphS
 }
 
 void GraphPassGraphic::execute(int currentFrame, const CommandBuffer& commandBuffer) {
-  auto createColorAttachment = [this](const auto& colorTarget) {
+  auto getLoadOp = [](RenderTargetLoadAction action) {
+    switch (action) {
+      case RenderTargetLoadAction::CLEAR:
+        return VK_ATTACHMENT_LOAD_OP_CLEAR;
+      case RenderTargetLoadAction::KEEP:
+        return VK_ATTACHMENT_LOAD_OP_LOAD;
+      case RenderTargetLoadAction::DONT_CARE:
+        return VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    }
+
+    return VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+  };
+
+  auto createColorAttachment = [this, getLoadOp](const auto& colorTarget) {
     auto& imageViewHolder = _graphStorage->getImageViewHolder(colorTarget);
     VkRenderingAttachmentInfo info{.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
                                    .imageView = imageViewHolder.getImageView().getImageView(),
                                    .imageLayout = imageViewHolder.getImageView().getImage().getImageLayout(),
-                                   .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
+                                   .loadOp = getLoadOp(getTargetLoadAction(colorTarget)),
                                    .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
-    if (_clearTarget.contains(colorTarget) && _clearTarget.at(colorTarget)) {
-      info.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-      info.clearValue.color = {0.f, 0.f, 0.f, 1.f};
-    }
+    info.clearValue.color = {0.0f, 0.0f, 0.0f, 1.0f};
     return info;
   };
 
@@ -197,12 +215,9 @@ void GraphPassGraphic::execute(int currentFrame, const CommandBuffer& commandBuf
         .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
         .imageView = imageViewHolder.getImageView().getImageView(),
         .imageLayout = imageViewHolder.getImageView().getImage().getImageLayout(),
-        .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
-        .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
-    if (_clearTarget.contains(target) && _clearTarget.at(target)) {
-      depthAttachment->loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-      depthAttachment->clearValue.depthStencil = {1.f, 0};
-    }
+        .loadOp = getLoadOp(getTargetLoadAction(target)),
+        .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+        .clearValue = {.depthStencil = {1.0f, 0}}};
   }
 
   VkRenderingInfo renderingInfo = {};
@@ -722,13 +737,22 @@ void Graph::calculate() {
       addResources(pass.get(), graphic->getStorageBufferInputs(), Resource::Type::BUFFER, Resource::Operation::READ);
       addResources(pass.get(), graphic->getIndirectBufferInputs(), Resource::Type::BUFFER, Resource::Operation::READ);
       addResources(pass.get(), graphic->getTextureInputs(), Resource::Type::IMAGE, Resource::Operation::READ);
-      addResources(pass.get(), graphic->getColorTargets(), Resource::Type::IMAGE, Resource::Operation::WRITE);
+
+      auto getTargetOperation = [graphic](const auto& target) {
+        uint8_t operation = static_cast<uint8_t>(Resource::Operation::WRITE);
+        // KEEP loads the previous attachment contents, so the target is both read and written.
+        if (graphic->getTargetLoadAction(target) == RenderTargetLoadAction::KEEP) {
+          operation |= static_cast<uint8_t>(Resource::Operation::READ);
+        }
+        return static_cast<Resource::Operation>(operation);
+      };
+
+      for (const auto& colorTarget : graphic->getColorTargets()) {
+        addResources(pass.get(), std::views::single(colorTarget), Resource::Type::IMAGE,
+                     getTargetOperation(colorTarget));
+      }
       if (const auto& depth = graphic->getDepthTarget()) {
-        _resources[pass.get()].add({
-            .name = *depth,
-            .type = Resource::Type::IMAGE,
-            .operation = static_cast<uint8_t>(Resource::Operation::WRITE),
-        });
+        addResources(pass.get(), std::views::single(*depth), Resource::Type::IMAGE, getTargetOperation(*depth));
       }
     }
   }
@@ -1078,8 +1102,14 @@ bool Graph::render() {
             auto& imageView = _graphStorage->getImageViewHolder(colorTarget).getImageView();
             auto& image = imageView.getImage();
             if (image.getImageLayout() != VK_IMAGE_LAYOUT_GENERAL) {
-              const auto dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT;
-              image.changeLayout(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, 0, 0,
+              auto dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+              const auto loadAction = passGraphic->getTargetLoadAction(colorTarget);
+              if (loadAction == RenderTargetLoadAction::KEEP) {
+                dstAccessMask |= VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT;
+              }
+              const auto oldLayout =
+                  loadAction == RenderTargetLoadAction::KEEP ? image.getImageLayout() : VK_IMAGE_LAYOUT_UNDEFINED;
+              image.changeLayout(oldLayout, VK_IMAGE_LAYOUT_GENERAL, 0, 0,
                                  VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, dstAccessMask, *commandBuffer);
             }
           }
@@ -1087,10 +1117,15 @@ bool Graph::render() {
             auto& imageView = _graphStorage->getImageViewHolder(*depthTarget).getImageView();
             auto& image = imageView.getImage();
             if (image.getImageLayout() != VK_IMAGE_LAYOUT_GENERAL) {
-              const auto dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
-                                         VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+              auto dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+              const auto loadAction = passGraphic->getTargetLoadAction(*depthTarget);
+              if (loadAction == RenderTargetLoadAction::KEEP) {
+                dstAccessMask |= VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+              }
+              const auto oldLayout =
+                  loadAction == RenderTargetLoadAction::KEEP ? image.getImageLayout() : VK_IMAGE_LAYOUT_UNDEFINED;
               image.changeLayout(
-                  VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, 0, 0,
+                  oldLayout, VK_IMAGE_LAYOUT_GENERAL, 0, 0,
                   VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
                   dstAccessMask, *commandBuffer);
             }

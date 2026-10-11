@@ -121,13 +121,12 @@ void buildGraph(RenderGraph::Graph& graph, RenderGraph::Swapchain& swapchain) {
   graph.getGraphStorage().add("Swapchain", std::move(swapchainImages));
 
   auto& scenePass = graph.createPassGraphic("Scene");
-  scenePass.addColorTarget("Swapchain");
-  scenePass.clearTarget("Swapchain");
+  scenePass.addColorTarget("Swapchain", RenderGraph::RenderTargetLoadAction::CLEAR);
   // Application-provided GraphElement implementations record the actual draw commands.
   // scenePass.registerGraphElement(sceneElement);
 
   auto& uiPass = graph.createPassGraphic("UI");
-  uiPass.addColorTarget("Swapchain");
+  uiPass.addColorTarget("Swapchain", RenderGraph::RenderTargetLoadAction::KEEP);
   // uiPass.registerGraphElement(uiElement);
 
   graph.calculate();

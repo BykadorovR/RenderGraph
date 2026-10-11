@@ -550,8 +550,7 @@ TEST_P(ValidationScenarioTest, FullGraphPipelineHasNoValidationErrorsAcrossReset
     unsynchronizedPass.registerGraphElement(graphElement);
 
     auto& acquirePass = graph.createPassGraphic("Acquire");
-    acquirePass.addColorTarget("Swapchain");
-    acquirePass.clearTarget("Swapchain");
+    acquirePass.addColorTarget("Swapchain", RenderGraph::RenderTargetLoadAction::CLEAR);
     acquirePass.registerGraphElement(graphElement);
 
     auto& preparePass = graph.createPassCompute("Prepare", false);
@@ -563,10 +562,8 @@ TEST_P(ValidationScenarioTest, FullGraphPipelineHasNoValidationErrorsAcrossReset
 
     auto& geometryPass = graph.createPassGraphic("Geometry");
     geometryPass.addTextureInput("Swapchain");
-    geometryPass.addColorTarget("Color");
-    geometryPass.setDepthTarget("Depth");
-    geometryPass.clearTarget("Color");
-    geometryPass.clearTarget("Depth");
+    geometryPass.addColorTarget("Color", RenderGraph::RenderTargetLoadAction::CLEAR);
+    geometryPass.setDepthTarget("Depth", RenderGraph::RenderTargetLoadAction::CLEAR);
     geometryPass.registerGraphElement(graphElement);
 
     auto& asyncPass = graph.createPassCompute("Async", separateComputeQueue);
@@ -581,14 +578,12 @@ TEST_P(ValidationScenarioTest, FullGraphPipelineHasNoValidationErrorsAcrossReset
     compositePass.addTextureInput("Color");
     compositePass.addStorageBufferInput("Data");
     compositePass.addIndirectBufferInput("IndirectCommands");
-    compositePass.addColorTarget("Swapchain");
-    compositePass.clearTarget("Swapchain");
+    compositePass.addColorTarget("Swapchain", RenderGraph::RenderTargetLoadAction::CLEAR);
     compositePass.registerGraphElement(graphElement);
 
     auto& depthOnlyPass = graph.createPassGraphic("DepthOnly");
     depthOnlyPass.addTextureInput("Swapchain");
-    depthOnlyPass.setDepthTarget("Depth");
-    depthOnlyPass.clearTarget("Depth");
+    depthOnlyPass.setDepthTarget("Depth", RenderGraph::RenderTargetLoadAction::CLEAR);
     depthOnlyPass.registerGraphElement(graphElement);
 
     graph.calculate();
@@ -695,8 +690,7 @@ TEST_P(ValidationScenarioTest, GpuDrivenIndexedIndirectCountDrawsTriangle) {
     drawPass.addIndexBufferInput("Indices");
     drawPass.addIndirectBufferInput("DrawCommands");
     drawPass.addIndirectBufferInput("DrawCounts");
-    drawPass.addColorTarget("Swapchain");
-    drawPass.clearTarget("Swapchain");
+    drawPass.addColorTarget("Swapchain", RenderGraph::RenderTargetLoadAction::CLEAR);
 
     auto computeElement = std::make_shared<GpuDrivenComputeElement>(
         device, *generatePass.getCommandBuffers().front(), positions, indices, drawCommands, drawCounts);

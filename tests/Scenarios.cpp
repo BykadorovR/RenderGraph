@@ -102,10 +102,8 @@ TEST(ScenarioTest, GraphOneQueue) {
   EXPECT_GE(graph.getGraphStorage().getImageViewHolder("Swapchain").getImageViews().size(), 2);
 
   auto& renderPass = graph.createPassGraphic("Render");
-  renderPass.addColorTarget("Swapchain");
-  renderPass.addColorTarget("Target");
-  renderPass.clearTarget("Swapchain");
-  renderPass.clearTarget("Target");
+  renderPass.addColorTarget("Swapchain", RenderGraph::RenderTargetLoadAction::CLEAR);
+  renderPass.addColorTarget("Target", RenderGraph::RenderTargetLoadAction::CLEAR);
   auto elementMock = std::make_shared<GraphElementMock>();
   renderPass.registerGraphElement(elementMock);
 
@@ -146,7 +144,7 @@ TEST(ScenarioTest, GraphOneQueue) {
   EXPECT_EQ(postprocessingPass.getStorageBufferOutputs().size(), 0);
 
   auto& guiPass = graph.createPassGraphic("GUI");
-  guiPass.addColorTarget("Swapchain");
+  guiPass.addColorTarget("Swapchain", RenderGraph::RenderTargetLoadAction::KEEP);
   guiPass.registerGraphElement(elementMock);
 
   EXPECT_EQ(guiPass.getCommandBuffers().size(), framesInFlight);
@@ -158,14 +156,24 @@ TEST(ScenarioTest, GraphOneQueue) {
 
   graph.calculate();
 
+  EXPECT_TRUE(graph._resources.at(&renderPass)
+                  .contains("Swapchain", RenderGraph::Graph::Resource::Type::IMAGE,
+                            RenderGraph::Graph::Resource::Operation::WRITE));
+  EXPECT_FALSE(graph._resources.at(&renderPass)
+                   .contains("Swapchain", RenderGraph::Graph::Resource::Type::IMAGE,
+                             RenderGraph::Graph::Resource::Operation::READ));
+  EXPECT_TRUE(graph._resources.at(&guiPass).contains("Swapchain", RenderGraph::Graph::Resource::Type::IMAGE,
+                                                     RenderGraph::Graph::Resource::Operation::READ));
+  EXPECT_TRUE(graph._resources.at(&guiPass).contains("Swapchain", RenderGraph::Graph::Resource::Type::IMAGE,
+                                                     RenderGraph::Graph::Resource::Operation::WRITE));
+
   RenderGraph::Graph offscreenGraph(1, framesInFlight, device);
   offscreenGraph.setSwapchain(swapchain);
   offscreenGraph.initialize();
   offscreenGraph.getGraphStorage().add(
       "Offscreen", std::make_unique<RenderGraph::ImageViewHolder>(positionImageViews, []() { return 0; }));
   auto& offscreenPass = offscreenGraph.createPassGraphic("Offscreen");
-  offscreenPass.addColorTarget("Offscreen");
-  offscreenPass.clearTarget("Offscreen");
+  offscreenPass.addColorTarget("Offscreen", RenderGraph::RenderTargetLoadAction::CLEAR);
   offscreenGraph.calculate();
 
   ASSERT_TRUE(offscreenGraph._sync.contains(&offscreenPass));
@@ -323,10 +331,8 @@ TEST(ScenarioTest, GraphSeparateQueues) {
 
   auto elementMock = std::make_shared<GraphElementMock>();
   auto& renderPass = graph.createPassGraphic("Render");
-  renderPass.addColorTarget("Swapchain");
-  renderPass.addColorTarget("Target");
-  renderPass.clearTarget("Swapchain");
-  renderPass.clearTarget("Target");
+  renderPass.addColorTarget("Swapchain", RenderGraph::RenderTargetLoadAction::CLEAR);
+  renderPass.addColorTarget("Target", RenderGraph::RenderTargetLoadAction::CLEAR);
   renderPass.registerGraphElement(elementMock);
 
   EXPECT_EQ(renderPass.getCommandBuffers().size(), framesInFlight);
@@ -354,7 +360,7 @@ TEST(ScenarioTest, GraphSeparateQueues) {
   EXPECT_EQ(postprocessingPass.getStorageBufferOutputs().size(), 0);
 
   auto& guiPass = graph.createPassGraphic("GUI");
-  guiPass.addColorTarget("Swapchain");
+  guiPass.addColorTarget("Swapchain", RenderGraph::RenderTargetLoadAction::KEEP);
   guiPass.registerGraphElement(elementMock);
 
   EXPECT_EQ(guiPass.getCommandBuffers().size(), framesInFlight);
@@ -609,7 +615,7 @@ TEST(ScenarioTest, GraphicsPassBufferInputs) {
   drawPass.addIndirectBufferInput("IndirectCommands");
   drawPass.addVertexBufferInput("Vertices");
   drawPass.addIndexBufferInput("Indices");
-  drawPass.addColorTarget("Swapchain");
+  drawPass.addColorTarget("Swapchain", RenderGraph::RenderTargetLoadAction::DONT_CARE);
 
   graph.calculate();
 
@@ -621,6 +627,8 @@ TEST(ScenarioTest, GraphicsPassBufferInputs) {
   EXPECT_EQ(drawPass.getVertexBufferInputs().front(), "Vertices");
   ASSERT_EQ(drawPass.getIndexBufferInputs().size(), 1);
   EXPECT_EQ(drawPass.getIndexBufferInputs().front(), "Indices");
+  EXPECT_FALSE(graph._resources.at(&drawPass).contains("Swapchain", RenderGraph::Graph::Resource::Type::IMAGE,
+                                                       RenderGraph::Graph::Resource::Operation::READ));
 
   ASSERT_EQ(graph._passesOrdered.size(), 2);
   EXPECT_EQ(graph._passesOrdered.front(), &cullPass);
@@ -784,10 +792,8 @@ TEST(ScenarioTest, GraphReset) {
 
   auto elementMock = std::make_shared<GraphElementMock>();
   auto& renderPass = graph.createPassGraphic("Render");
-  renderPass.addColorTarget("Swapchain");
-  renderPass.addColorTarget("Target");
-  renderPass.clearTarget("Swapchain");
-  renderPass.clearTarget("Target");
+  renderPass.addColorTarget("Swapchain", RenderGraph::RenderTargetLoadAction::CLEAR);
+  renderPass.addColorTarget("Target", RenderGraph::RenderTargetLoadAction::CLEAR);
   renderPass.registerGraphElement(elementMock);
 
   // separate queue
@@ -797,7 +803,7 @@ TEST(ScenarioTest, GraphReset) {
   postprocessingPass.addStorageTextureOutput("Swapchain");
 
   auto& guiPass = graph.createPassGraphic("GUI");
-  guiPass.addColorTarget("Swapchain");
+  guiPass.addColorTarget("Swapchain", RenderGraph::RenderTargetLoadAction::KEEP);
   guiPass.registerGraphElement(elementMock);
 
   graph.calculate();
@@ -937,10 +943,8 @@ TEST(ScenarioTest, DepthExistance) {
 
   auto elementMock = std::make_shared<GraphElementMock>();
   auto& renderPass = graph.createPassGraphic("Render");
-  renderPass.addColorTarget("Swapchain");
-  renderPass.setDepthTarget("Depth");
-  renderPass.clearTarget("Swapchain");
-  renderPass.clearTarget("Depth");
+  renderPass.addColorTarget("Swapchain", RenderGraph::RenderTargetLoadAction::CLEAR);
+  renderPass.setDepthTarget("Depth", RenderGraph::RenderTargetLoadAction::CLEAR);
   renderPass.registerGraphElement(elementMock);
 
   graph.calculate();
