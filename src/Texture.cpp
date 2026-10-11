@@ -192,7 +192,7 @@ ImageViewHolder::ImageViewHolder(std::vector<std::shared_ptr<ImageView>> imageVi
 
 void ImageViewHolder::setImageViews(std::vector<std::shared_ptr<ImageView>> imageViews) { _imageViews = imageViews; }
 
-const ImageView& ImageViewHolder::getImageView() const { return *_imageViews[_index()]; }
+const ImageView& ImageViewHolder::getImageView() const { return *_imageViews.at(_index()); }
 
 std::function<int()> ImageViewHolder::getIndexFunction() const { return _index; }
 

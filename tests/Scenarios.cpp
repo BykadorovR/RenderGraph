@@ -107,6 +107,9 @@ TEST(ScenarioTest, GraphOneQueue) {
   auto elementMock = std::make_shared<GraphElementMock>();
   renderPass.registerGraphElement(elementMock);
 
+  EXPECT_EQ(graph.getPassGraphic("Render"), &renderPass);
+  EXPECT_EQ(graph.getPassCompute("Render"), nullptr);
+
   EXPECT_THROW(graph.createPassGraphic("Render"), std::logic_error);
   EXPECT_THROW(graph.createPassCompute("Render", false), std::logic_error);
 
@@ -132,6 +135,9 @@ TEST(ScenarioTest, GraphOneQueue) {
   postprocessingPass.registerGraphElement(elementMock);
   postprocessingPass.addStorageTextureInput("Swapchain");
   postprocessingPass.addStorageTextureOutput("Swapchain");
+
+  EXPECT_EQ(graph.getPassCompute("Postprocessing"), &postprocessingPass);
+  EXPECT_EQ(graph.getPassGraphic("Postprocessing"), nullptr);
 
   EXPECT_EQ(postprocessingPass.getCommandBuffers().size(), framesInFlight);
   for (int i = 1; i < framesInFlight; i++) {

@@ -351,23 +351,17 @@ GraphPassCompute& Graph::createPassCompute(std::string_view name, bool separate)
 }
 
 GraphPassGraphic* Graph::getPassGraphic(std::string_view name) const {
-  auto it = std::find_if(_passes.begin(), _passes.end(),
-                         [name](const std::unique_ptr<GraphPass>& graphPass) { return graphPass->getName() == name; });
-  if (it != _passes.end()) {
-    return static_cast<GraphPassGraphic*>((*it).get());
-  }
-
-  return nullptr;
+  const auto it = std::ranges::find_if(_passes, [name](const auto& pass) {
+    return pass->getName() == name && pass->getGraphPassType() == GraphPassType::GRAPHIC;
+  });
+  return it == _passes.end() ? nullptr : static_cast<GraphPassGraphic*>(it->get());
 }
 
 GraphPassCompute* Graph::getPassCompute(std::string_view name) const {
-  auto it = std::find_if(_passes.begin(), _passes.end(),
-                         [name](const std::unique_ptr<GraphPass>& graphPass) { return graphPass->getName() == name; });
-  if (it != _passes.end()) {
-    return static_cast<GraphPassCompute*>((*it).get());
-  }
-
-  return nullptr;
+  const auto it = std::ranges::find_if(_passes, [name](const auto& pass) {
+    return pass->getName() == name && pass->getGraphPassType() == GraphPassType::COMPUTE;
+  });
+  return it == _passes.end() ? nullptr : static_cast<GraphPassCompute*>(it->get());
 }
 
 void Graph::Resources::add(Resource resource) {
@@ -440,7 +434,7 @@ void Graph::Sync::addBarrierAfter(std::vector<Barrier>& barriers, std::function<
 std::vector<Semaphore*> Graph::Sync::getSignalSemaphores() const {
   return _signalSemaphores | std::views::transform([](auto& pair) {
            auto& [semaphores, index] = pair;
-           return semaphores[index()].get();
+           return semaphores.at(index()).get();
          }) |
          std::ranges::to<std::vector>();
 }
@@ -448,7 +442,7 @@ std::vector<Semaphore*> Graph::Sync::getSignalSemaphores() const {
 std::vector<Semaphore*> Graph::Sync::getWaitSemaphores() const {
   return _waitSemaphores | std::views::transform([](auto& pair) {
            auto& [semaphores, index] = pair;
-           return semaphores[index()].get();
+           return semaphores.at(index()).get();
          }) |
          std::ranges::to<std::vector>();
 }
@@ -456,7 +450,7 @@ std::vector<Semaphore*> Graph::Sync::getWaitSemaphores() const {
 std::vector<const Barrier*> Graph::Sync::getBarriersBefore() const {
   return _barriersBefore | std::views::transform([](const auto& pair) {
            const auto& [barriers, index] = pair;
-           return &barriers[index()];
+           return &barriers.at(index());
          }) |
          std::ranges::to<std::vector>();
 }
@@ -464,7 +458,7 @@ std::vector<const Barrier*> Graph::Sync::getBarriersBefore() const {
 std::vector<const Barrier*> Graph::Sync::getBarriersAfter() const {
   return _barriersAfter | std::views::transform([](const auto& pair) {
            const auto& [barriers, index] = pair;
-           return &barriers[index()];
+           return &barriers.at(index());
          }) |
          std::ranges::to<std::vector>();
 }
@@ -873,9 +867,7 @@ void Graph::calculate() {
           usage.accessMask |= VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
         }
       } else if (std::ranges::contains(graphic->getTextureInputs(), resource.name)) {
-        // The exact shader stage is currently unknown, so include both
-        // shader stages that may consume a graphics texture input.
-        usage.stageMask |= VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+        usage.stageMask |= VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT;
         usage.accessMask |= VK_ACCESS_2_SHADER_READ_BIT;
       }
 
