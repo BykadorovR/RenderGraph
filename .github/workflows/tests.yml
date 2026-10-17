@@ -72,3 +72,57 @@ jobs:
 
       - name: Run tests
         run: ctest --test-dir build --build-config Release --output-on-failure --timeout 120
+
+  linux:
+    name: Linux / Lavapipe
+    runs-on: ubuntu-24.04
+    env:
+      CC: clang-18
+      CXX: clang++-18
+      VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            clang-18 \
+            clang-tools-18 \
+            glslang-tools \
+            mesa-vulkan-drivers \
+            ninja-build \
+            vulkan-tools \
+            vulkan-validationlayers \
+            xorg-dev \
+            xvfb
+
+      - name: Set up Vulkan SDK
+        uses: humbletim/setup-vulkan-sdk@v1.2.1
+        with:
+          vulkan-query-version: 1.4.304.1
+          vulkan-components: Vulkan-Headers, Vulkan-Loader
+          vulkan-use-cache: true
+
+      - name: Verify Vulkan
+        run: |
+          vulkanInfo=$(xvfb-run --auto-servernum vulkaninfo --summary 2>&1)
+          if [[ $vulkanInfo != *"llvmpipe"* || $vulkanInfo != *"VK_LAYER_KHRONOS_validation"* ]]; then
+            echo "$vulkanInfo"
+            exit 1
+          fi
+
+      - name: Configure
+        run: >-
+          cmake -S . -B build
+          -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DRENDER_GRAPH_BUILD_TESTS=ON
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Run tests
+        run: xvfb-run --auto-servernum ctest --test-dir build --output-on-failure --timeout 120
