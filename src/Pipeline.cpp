@@ -222,10 +222,7 @@ void Pipeline::createGraphic(const PipelineGraphic& pipelineGraphic,
                                             .layout = _pipelineLayout,
                                             .subpass = 0,
                                             .basePipelineHandle = nullptr};
-  auto optionalExtensions = _device->getOptionalExtensions();
-  if (_device->isExtensionSupported("VK_EXT_descriptor_buffer") &&
-      std::find(optionalExtensions.begin(), optionalExtensions.end(), "VK_EXT_descriptor_buffer") !=
-          optionalExtensions.end())
+  if (_device->isExtensionEnabled(VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME))
     pipelineInfo.flags = VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
   if (pipelineGraphic.getTessellationState())
     pipelineInfo.pTessellationState = &pipelineGraphic.getTessellationState().value();
@@ -267,10 +264,7 @@ void Pipeline::createCompute(const VkPipelineShaderStageCreateInfo& shaderStage,
   VkComputePipelineCreateInfo computePipelineCreateInfo{};
   computePipelineCreateInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
   computePipelineCreateInfo.layout = _pipelineLayout;
-  auto optionalExtensions = _device->getOptionalExtensions();
-  if (_device->isExtensionSupported("VK_EXT_descriptor_buffer") &&
-      std::find(optionalExtensions.begin(), optionalExtensions.end(), "VK_EXT_descriptor_buffer") !=
-          optionalExtensions.end())
+  if (_device->isExtensionEnabled(VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME))
     computePipelineCreateInfo.flags = VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
   //
   computePipelineCreateInfo.stage = shaderStage;

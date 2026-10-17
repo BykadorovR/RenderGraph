@@ -19,14 +19,15 @@ import Pipeline;
 import Texture;
 import Swapchain;
 import Sync;
-import Timestamps;
 import Command;
 import CommandPool;
 import Buffer;
 import Device;
+import Instrumentation;
 import glm;
 
-// Forward declarations for test classes, not visible outside this module
+// Keep GoogleTest-generated classes in the global module
+extern "C++" {
 class ScenarioTest_GraphSeparateQueues_Test;
 class ScenarioTest_BufferOwnershipTransferUsesLastResourceOwner_Test;
 class ScenarioTest_ComputePassIndirectBufferInput_Test;
@@ -34,6 +35,7 @@ class ScenarioTest_GraphicsPassBufferInputs_Test;
 class ScenarioTest_GraphOneQueue_Test;
 class ScenarioTest_TraversalKeepsTransitiveProducerBeforeConsumer_Test;
 class ScenarioTest_TraversalDiamondGraph_Test;
+}
 
 export namespace RenderGraph {
 class GraphStorage final {
@@ -71,6 +73,8 @@ class GraphElement {
 
 enum class GraphPassType { GRAPHIC, COMPUTE };
 
+enum class RenderTargetLoadAction { CLEAR, KEEP, DONT_CARE };
+
 class GraphPass {
  protected:
   std::string _name;
@@ -102,8 +106,8 @@ class GraphPassGraphic final : public GraphPass {
   std::vector<std::string> _colorTargets, _textureInputs, _vertexBufferInputs, _indexBufferInputs;
   std::vector<std::string> _storageBufferInputs, _indirectBufferInputs;
   std::optional<std::string> _depthTarget;
+  std::unordered_map<std::string, RenderTargetLoadAction> _targetLoadActions;
 
-  std::unordered_map<std::string, bool> _clearTarget;
   std::unique_ptr<PipelineGraphic> _pipelineGraphic;
   const Device* _device;
 
@@ -118,8 +122,8 @@ class GraphPassGraphic final : public GraphPass {
   GraphPassGraphic& operator=(GraphPassGraphic&&) = delete;
 
   // handle attachments
-  void addColorTarget(std::string_view name);
-  void setDepthTarget(std::string_view name);
+  void addColorTarget(std::string_view name, RenderTargetLoadAction loadAction);
+  void setDepthTarget(std::string_view name, RenderTargetLoadAction loadAction);
   // handle input to shaders
   void addTextureInput(std::string_view name);
   void addVertexBufferInput(std::string_view name);
@@ -128,11 +132,9 @@ class GraphPassGraphic final : public GraphPass {
   // handle input to indirect draw commands
   void addIndirectBufferInput(std::string_view name);
 
-  // clear color target before use or load
-  void clearTarget(std::string_view name);
-
   const std::vector<std::string>& getColorTargets() const noexcept;
   std::optional<std::string> getDepthTarget() const;
+  RenderTargetLoadAction getTargetLoadAction(std::string_view name) const;
   const std::vector<std::string>& getTextureInputs() const noexcept;
   const std::vector<std::string>& getVertexBufferInputs() const noexcept;
   const std::vector<std::string>& getIndexBufferInputs() const noexcept;
@@ -190,10 +192,12 @@ class Graph final {
 
   Swapchain* _swapchain = nullptr;
   const Device* _device;
+  Tracer* _tracer;
   std::unique_ptr<BS::thread_pool> _threadPool;
   std::vector<std::unique_ptr<GraphPass>> _passes;
   std::deque<GraphPass*> _passesOrdered;
-  std::unique_ptr<Timestamps> _timestamps;
+  std::unordered_map<GraphPass*, QueueType> _passQueueTypes;
+  std::unordered_set<GraphPass*> _collectionPasses;
   std::unique_ptr<GraphStorage> _graphStorage;
   // special semaphores
   std::vector<std::shared_ptr<Semaphore>> _semaphoreRenderFinished, _semaphoreImageAvailable;
@@ -237,8 +241,7 @@ class Graph final {
 
    public:
     Sync() = default;
-    void addSignalSemaphore(std::vector<std::shared_ptr<Semaphore>>& signalSemaphore,
-                            std::function<int()> index);
+    void addSignalSemaphore(std::vector<std::shared_ptr<Semaphore>>& signalSemaphore, std::function<int()> index);
     void addWaitSemaphore(std::vector<std::shared_ptr<Semaphore>>& waitSemaphore, std::function<int()> index);
     void addBarrierBefore(std::vector<Barrier>& barriers, std::function<int()> index);
     void addBarrierAfter(std::vector<Barrier>& barriers, std::function<int()> index);
@@ -250,12 +253,11 @@ class Graph final {
   };
   std::unordered_map<GraphPass*, Sync> _sync;
 
+  void _setResourceNames();
   bool _usesSeparateQueue(GraphPass* pass);
 
  public:
-  Graph(int threadsNumber,
-        int maxFramesInFlight,
-        const Device& device);
+  Graph(int threadsNumber, int maxFramesInFlight, const Device& device, Tracer& tracer);
   Graph(const Graph&) = delete;
   Graph& operator=(const Graph&) = delete;
   Graph(Graph&&) = delete;
@@ -268,7 +270,6 @@ class Graph final {
   GraphPassGraphic* getPassGraphic(std::string_view name) const;
   GraphPassCompute* getPassCompute(std::string_view name) const;
   GraphStorage& getGraphStorage() const noexcept;
-  std::unordered_map<std::string, glm::dvec2> getTimestamps() const;
   int getFrameInFlight() const noexcept;
 
   void calculate();

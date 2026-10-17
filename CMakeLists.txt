@@ -53,6 +53,13 @@ FetchContent_Declare(
   GIT_TAG v3.2.1
 )
 
+set(TRACY_ENABLE ON CACHE BOOL "" FORCE)
+FetchContent_Declare(
+    tracy
+    GIT_REPOSITORY https://github.com/wolfpld/tracy.git
+    GIT_TAG v0.14.1
+)
+
 if (RENDER_GRAPH_BUILD_TESTS)
   FetchContent_Declare(
     googletest
@@ -76,6 +83,7 @@ set(renderGraphDependencies
   volk
   vulkan-memory-allocator
   spirv-reflect
+  tracy
 )
 if (NOT ANDROID)
   list(APPEND renderGraphDependencies glfw)
@@ -86,13 +94,15 @@ endif()
 FetchContent_MakeAvailable(${renderGraphDependencies})
 
 # need to build as module
+# Match Tracy's platform thread flags to keep Clang PCM compilation settings consistent.
+find_package(Threads REQUIRED)
 add_library(glm-module)
 target_sources(glm-module PUBLIC
     FILE_SET CXX_MODULES
     BASE_DIRS ${glm_SOURCE_DIR}/glm
     FILES ${glm_SOURCE_DIR}/glm/glm.cppm
 )
-target_link_libraries(glm-module PUBLIC glm::glm)
+target_link_libraries(glm-module PUBLIC glm::glm PRIVATE Threads::Threads)
 target_compile_features(glm-module PRIVATE cxx_std_23)
 if (MSVC)
   #enable multiple cores compilation for VS
@@ -144,7 +154,7 @@ target_include_directories(RenderGraph
         ${thread-pool_SOURCE_DIR}/include
 )
 
-target_link_libraries(${PROJECT_NAME} PUBLIC vk-bootstrap::vk-bootstrap volk::volk GPUOpen::VulkanMemoryAllocator glm-module spirv-reflect-static)
+target_link_libraries(${PROJECT_NAME} PUBLIC vk-bootstrap::vk-bootstrap volk::volk GPUOpen::VulkanMemoryAllocator glm-module spirv-reflect-static Tracy::TracyClient)
 if (ANDROID)
   find_library(androidLibrary android REQUIRED)
   target_link_libraries(${PROJECT_NAME} PUBLIC ${androidLibrary})

@@ -19,10 +19,13 @@
 
 import Allocator;
 import Buffer;
+import Command;
+import CommandPool;
 import DescriptorBuffer;
 import Device;
 import Graph;
 import Instance;
+import Instrumentation;
 import Pipeline;
 import Shader;
 import Surface;
@@ -81,8 +84,7 @@ class ValidationMessenger final {
         .pNext = nullptr,
         .flags = 0,
         .messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,
-        .messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
-                       VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
+        .messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
                        VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,
         .pfnUserCallback = validationErrorCallback,
         .pUserData = &collector,
@@ -103,6 +105,45 @@ class ValidationMessenger final {
     }
   }
 };
+
+bool supportsStorageSwapchain(const RenderGraph::Device& device, const RenderGraph::Surface& surface) {
+  VkSurfaceCapabilitiesKHR capabilities{};
+  if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(device.getPhysicalDevice(), surface.getSurface(), &capabilities) !=
+          VK_SUCCESS ||
+      (capabilities.supportedUsageFlags & VK_IMAGE_USAGE_STORAGE_BIT) == 0) {
+    return false;
+  }
+
+  uint32_t formatCount = 0;
+  if (vkGetPhysicalDeviceSurfaceFormatsKHR(device.getPhysicalDevice(), surface.getSurface(), &formatCount, nullptr) !=
+          VK_SUCCESS ||
+      formatCount == 0) {
+    return false;
+  }
+
+  std::vector<VkSurfaceFormatKHR> formats(formatCount);
+  if (vkGetPhysicalDeviceSurfaceFormatsKHR(device.getPhysicalDevice(), surface.getSurface(), &formatCount,
+                                           formats.data()) != VK_SUCCESS) {
+    return false;
+  }
+
+  constexpr VkSurfaceFormatKHR desiredFormat{
+      .format = VK_FORMAT_R8G8B8A8_UNORM,
+      .colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR,
+  };
+  VkSurfaceFormatKHR selectedFormat = formats.front();
+  for (const VkSurfaceFormatKHR format : formats) {
+    if (format.format == desiredFormat.format && format.colorSpace == desiredFormat.colorSpace) {
+      selectedFormat = format;
+      break;
+    }
+  }
+
+  VkImageFormatProperties properties{};
+  return vkGetPhysicalDeviceImageFormatProperties(
+             device.getPhysicalDevice(), selectedFormat.format, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL,
+             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT, 0, &properties) == VK_SUCCESS;
+}
 
 class ValidationGraphElement final : public RenderGraph::GraphElement {
  private:
@@ -172,8 +213,7 @@ class GpuDrivenComputeElement final : public RenderGraph::GraphElement {
     }
     _pipeline.createCompute(shaderStages.front(), descriptorSetLayouts, {});
 
-    _descriptorSet =
-        std::make_unique<RenderGraph::DescriptorSet>(descriptorSetLayouts, _descriptorPool, device);
+    _descriptorSet = std::make_unique<RenderGraph::DescriptorSet>(descriptorSetLayouts, _descriptorPool, device);
     for (std::size_t frameIndex = 0; frameIndex < positions.size(); ++frameIndex) {
       _descriptorSet->add({positions[frameIndex]});
       _descriptorSet->add({indices[frameIndex]});
@@ -246,8 +286,7 @@ class GpuDrivenGraphicElement final : public RenderGraph::GraphElement {
     _pipeline.createGraphic(pipelineGraphic, _shader.getShaderStageInfo(), descriptorSetLayouts, {},
                             *_shader.getVertexInputInfo());
 
-    _descriptorSet =
-        std::make_unique<RenderGraph::DescriptorSet>(descriptorSetLayouts, _descriptorPool, device);
+    _descriptorSet = std::make_unique<RenderGraph::DescriptorSet>(descriptorSetLayouts, _descriptorPool, device);
     for (auto* positionBuffer : positions) {
       _descriptorSet->add({positionBuffer});
     }
@@ -327,6 +366,128 @@ std::string joinErrors(const std::vector<std::string>& errors) {
 class ValidationScenarioTest : public testing::TestWithParam<bool> {};
 }  // namespace
 
+TEST(ValidationTest, DescriptorSetBindsAtNonZeroSet) {
+  ValidationErrorCollector validationErrors;
+  RenderGraph::Instance instance("DescriptorSetOffsetValidationTest", true);
+  if (!instance.isDebug()) {
+    GTEST_SKIP() << "Vulkan validation layers or VK_EXT_debug_utils are unavailable";
+  }
+
+  ValidationMessenger validationMessenger(instance.getInstance().instance, validationErrors);
+  RenderGraph::Window window({64, 64});
+  window.initialize();
+  RenderGraph::Surface surface(window, instance);
+  RenderGraph::Device device(instance);
+  device.setSurface(surface);
+  RenderGraph::DeviceRequirements deviceRequirements;
+  deviceRequirements.optionalExtensions = {"VK_KHR_dynamic_rendering"};
+  device.initialize(deviceRequirements);
+  RenderGraph::MemoryAllocator allocator(device, instance);
+  RenderGraph::Buffer buffer(256, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                             VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+                             allocator);
+  RenderGraph::DescriptorPool descriptorPool({}, device);
+
+  std::vector<RenderGraph::DescriptorSetLayout> layouts;
+  layouts.reserve(3);
+  for (int i = 0; i < 3; ++i) {
+    layouts.emplace_back(device);
+    layouts.back().createCustom({{.binding = 0,
+                                  .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                  .descriptorCount = 1,
+                                  .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+                                  .pImmutableSamplers = nullptr}});
+  }
+
+  const std::vector<VkDescriptorSetLayout> nativeLayouts{
+      layouts[0].getDescriptorSetLayout(), layouts[1].getDescriptorSetLayout(), layouts[2].getDescriptorSetLayout()};
+  const VkPipelineLayoutCreateInfo pipelineLayoutInfo{
+      .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+      .setLayoutCount = static_cast<std::uint32_t>(nativeLayouts.size()),
+      .pSetLayouts = nativeLayouts.data(),
+  };
+  VkPipelineLayout pipelineLayout = nullptr;
+  ASSERT_EQ(vkCreatePipelineLayout(device.getLogicalDevice(), &pipelineLayoutInfo, nullptr, &pipelineLayout),
+            VK_SUCCESS);
+
+  {
+    RenderGraph::CommandPool commandPool(RenderGraph::QueueType::GRAPHICS, device);
+    RenderGraph::CommandBuffer commandBuffer(commandPool, device);
+    RenderGraph::DescriptorSet descriptorSet({&layouts[2]}, descriptorPool, device, 2);
+    descriptorSet.add({&buffer});
+    commandBuffer.beginCommands();
+    descriptorSet.initialize(commandBuffer);
+    descriptorSet.bind(VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, commandBuffer);
+    commandBuffer.endCommands();
+  }
+
+  vkDestroyPipelineLayout(device.getLogicalDevice(), pipelineLayout, nullptr);
+  const std::vector<std::string> errors = validationErrors.getErrors();
+  EXPECT_TRUE(errors.empty()) << joinErrors(errors);
+}
+
+TEST(ValidationTest, DescriptorBufferBindsAtNonZeroSet) {
+  ValidationErrorCollector validationErrors;
+  RenderGraph::Instance instance("DescriptorBufferOffsetValidationTest", true);
+  if (!instance.isDebug()) {
+    GTEST_SKIP() << "Vulkan validation layers or VK_EXT_debug_utils are unavailable";
+  }
+
+  ValidationMessenger validationMessenger(instance.getInstance().instance, validationErrors);
+  RenderGraph::Window window({64, 64});
+  window.initialize();
+  RenderGraph::Surface surface(window, instance);
+  RenderGraph::Device device(instance);
+  device.setSurface(surface);
+  RenderGraph::DeviceRequirements deviceRequirements;
+  deviceRequirements.optionalExtensions = {VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME};
+  device.initialize(deviceRequirements);
+  if (!device.isExtensionEnabled(VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME)) {
+    GTEST_SKIP() << "VK_EXT_descriptor_buffer or its required features are unavailable";
+  }
+
+  RenderGraph::MemoryAllocator allocator(device, instance);
+  RenderGraph::Buffer buffer(256, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                             VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+                             allocator);
+  std::vector<RenderGraph::DescriptorSetLayout> layouts;
+  layouts.reserve(3);
+  for (int i = 0; i < 3; ++i) {
+    layouts.emplace_back(device);
+    layouts.back().createCustom({{.binding = 0,
+                                  .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                  .descriptorCount = 1,
+                                  .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+                                  .pImmutableSamplers = nullptr}});
+  }
+
+  const std::vector<VkDescriptorSetLayout> nativeLayouts{
+      layouts[0].getDescriptorSetLayout(), layouts[1].getDescriptorSetLayout(), layouts[2].getDescriptorSetLayout()};
+  const VkPipelineLayoutCreateInfo pipelineLayoutInfo{
+      .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+      .setLayoutCount = static_cast<std::uint32_t>(nativeLayouts.size()),
+      .pSetLayouts = nativeLayouts.data(),
+  };
+  VkPipelineLayout pipelineLayout = nullptr;
+  ASSERT_EQ(vkCreatePipelineLayout(device.getLogicalDevice(), &pipelineLayoutInfo, nullptr, &pipelineLayout),
+            VK_SUCCESS);
+
+  {
+    RenderGraph::CommandPool commandPool(RenderGraph::QueueType::GRAPHICS, device);
+    RenderGraph::CommandBuffer commandBuffer(commandPool, device);
+    RenderGraph::DescriptorBuffer descriptorBuffer({&layouts[2]}, allocator, device, 2);
+    descriptorBuffer.add({&buffer});
+    commandBuffer.beginCommands();
+    descriptorBuffer.initialize(commandBuffer);
+    descriptorBuffer.bind(VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, commandBuffer);
+    commandBuffer.endCommands();
+  }
+
+  vkDestroyPipelineLayout(device.getLogicalDevice(), pipelineLayout, nullptr);
+  const std::vector<std::string> errors = validationErrors.getErrors();
+  EXPECT_TRUE(errors.empty()) << joinErrors(errors);
+}
+
 TEST_P(ValidationScenarioTest, FullGraphPipelineHasNoValidationErrorsAcrossResets) {
   const bool separateComputeQueue = GetParam();
   ValidationErrorCollector validationErrors;
@@ -348,12 +509,19 @@ TEST_P(ValidationScenarioTest, FullGraphPipelineHasNoValidationErrorsAcrossReset
     RenderGraph::Surface surface(window, instance);
     RenderGraph::Device device(instance);
     device.setSurface(surface);
-    device.initialize();
+    RenderGraph::DeviceRequirements deviceRequirements;
+    deviceRequirements.features.geometryShader = true;
+    deviceRequirements.features.tessellationShader = true;
+    device.initialize(deviceRequirements);
+    if (!supportsStorageSwapchain(device, surface)) {
+      GTEST_SKIP() << "Storage swapchain images are unavailable";
+    }
     RenderGraph::MemoryAllocator allocator(device, instance);
-    RenderGraph::Swapchain swapchain(
-        resolution, allocator, device, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT);
+    RenderGraph::Swapchain swapchain(resolution, allocator, device,
+                                     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT);
     swapchain.initialize();
-    RenderGraph::Graph graph(4, framesInFlight, device);
+    RenderGraph::Tracer tracer(device);
+    RenderGraph::Graph graph(4, framesInFlight, device, tracer);
     graph.setSwapchain(swapchain);
     graph.initialize();
 
@@ -373,9 +541,9 @@ TEST_P(ValidationScenarioTest, FullGraphPipelineHasNoValidationErrorsAcrossReset
 
     for (int frameIndex = 0; frameIndex < framesInFlight; ++frameIndex) {
       auto colorImage = std::make_unique<RenderGraph::Image>(allocator);
-      colorImage->createImage(VK_FORMAT_R16G16B16A16_SFLOAT, resolution, 1, 1, VK_IMAGE_ASPECT_COLOR_BIT,
-                              VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
-                                  VK_IMAGE_USAGE_STORAGE_BIT);
+      colorImage->createImage(
+          VK_FORMAT_R16G16B16A16_SFLOAT, resolution, 1, 1, VK_IMAGE_ASPECT_COLOR_BIT,
+          VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT);
       auto colorImageView = std::make_shared<RenderGraph::ImageView>(std::move(colorImage), device);
       colorImageView->createImageView(VK_IMAGE_VIEW_TYPE_2D, 0, 0);
       colorImageViews.push_back(std::move(colorImageView));
@@ -388,19 +556,16 @@ TEST_P(ValidationScenarioTest, FullGraphPipelineHasNoValidationErrorsAcrossReset
       depthImageViews.push_back(std::move(depthImageView));
     }
 
-    graph.getGraphStorage().add(
-        "Color", std::make_unique<RenderGraph::ImageViewHolder>(
-                     colorImageViews, [&graph]() { return graph.getFrameInFlight(); }));
-    graph.getGraphStorage().add(
-        "Depth", std::make_unique<RenderGraph::ImageViewHolder>(
-                     depthImageViews, [&graph]() { return graph.getFrameInFlight(); }));
+    graph.getGraphStorage().add("Color", std::make_unique<RenderGraph::ImageViewHolder>(
+                                             colorImageViews, [&graph]() { return graph.getFrameInFlight(); }));
+    graph.getGraphStorage().add("Depth", std::make_unique<RenderGraph::ImageViewHolder>(
+                                             depthImageViews, [&graph]() { return graph.getFrameInFlight(); }));
 
     std::vector<std::unique_ptr<RenderGraph::Buffer>> storageBuffers;
     storageBuffers.reserve(framesInFlight);
     for (int frameIndex = 0; frameIndex < framesInFlight; ++frameIndex) {
       storageBuffers.push_back(std::make_unique<RenderGraph::Buffer>(
-          4096, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
-          allocator));
+          4096, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT, allocator));
     }
     graph.getGraphStorage().add("Data", storageBuffers);
 
@@ -420,8 +585,7 @@ TEST_P(ValidationScenarioTest, FullGraphPipelineHasNoValidationErrorsAcrossReset
     unsynchronizedPass.registerGraphElement(graphElement);
 
     auto& acquirePass = graph.createPassGraphic("Acquire");
-    acquirePass.addColorTarget("Swapchain");
-    acquirePass.clearTarget("Swapchain");
+    acquirePass.addColorTarget("Swapchain", RenderGraph::RenderTargetLoadAction::CLEAR);
     acquirePass.registerGraphElement(graphElement);
 
     auto& preparePass = graph.createPassCompute("Prepare", false);
@@ -433,10 +597,8 @@ TEST_P(ValidationScenarioTest, FullGraphPipelineHasNoValidationErrorsAcrossReset
 
     auto& geometryPass = graph.createPassGraphic("Geometry");
     geometryPass.addTextureInput("Swapchain");
-    geometryPass.addColorTarget("Color");
-    geometryPass.setDepthTarget("Depth");
-    geometryPass.clearTarget("Color");
-    geometryPass.clearTarget("Depth");
+    geometryPass.addColorTarget("Color", RenderGraph::RenderTargetLoadAction::CLEAR);
+    geometryPass.setDepthTarget("Depth", RenderGraph::RenderTargetLoadAction::CLEAR);
     geometryPass.registerGraphElement(graphElement);
 
     auto& asyncPass = graph.createPassCompute("Async", separateComputeQueue);
@@ -451,14 +613,12 @@ TEST_P(ValidationScenarioTest, FullGraphPipelineHasNoValidationErrorsAcrossReset
     compositePass.addTextureInput("Color");
     compositePass.addStorageBufferInput("Data");
     compositePass.addIndirectBufferInput("IndirectCommands");
-    compositePass.addColorTarget("Swapchain");
-    compositePass.clearTarget("Swapchain");
+    compositePass.addColorTarget("Swapchain", RenderGraph::RenderTargetLoadAction::CLEAR);
     compositePass.registerGraphElement(graphElement);
 
     auto& depthOnlyPass = graph.createPassGraphic("DepthOnly");
     depthOnlyPass.addTextureInput("Swapchain");
-    depthOnlyPass.setDepthTarget("Depth");
-    depthOnlyPass.clearTarget("Depth");
+    depthOnlyPass.setDepthTarget("Depth", RenderGraph::RenderTargetLoadAction::CLEAR);
     depthOnlyPass.registerGraphElement(graphElement);
 
     graph.calculate();
@@ -473,10 +633,10 @@ TEST_P(ValidationScenarioTest, FullGraphPipelineHasNoValidationErrorsAcrossReset
 
     constexpr int framesPerReset = framesInFlight + 1;
     for (int resetIndex = 0; resetIndex < resetCycleCount; ++resetIndex) {
-    ASSERT_NO_THROW(graph.reset(resolution));
+      ASSERT_NO_THROW(graph.reset(resolution));
       ++totalResetCount;
       if (resetIndex == 1) {
-    ASSERT_NO_THROW(graph.reset(resolution));
+        ASSERT_NO_THROW(graph.reset(resolution));
         ++totalResetCount;
       }
       for (int frameIndex = 0; frameIndex < framesPerReset; ++frameIndex) {
@@ -486,7 +646,6 @@ TEST_P(ValidationScenarioTest, FullGraphPipelineHasNoValidationErrorsAcrossReset
 
     EXPECT_EQ(graphElement->getDrawCount(), passCount * (initialFrameCount + resetCycleCount * framesPerReset));
     EXPECT_EQ(graphElement->getResetCount(), passCount * totalResetCount);
-    EXPECT_EQ(graph.getTimestamps().size(), passCount);
     ASSERT_EQ(vkDeviceWaitIdle(device.getLogicalDevice()), VK_SUCCESS);
   }
 
@@ -515,12 +674,16 @@ TEST_P(ValidationScenarioTest, GpuDrivenIndexedIndirectCountDrawsTriangle) {
     device.setSurface(surface);
     // The test intentionally exercises ordinary descriptor sets. Descriptor-buffer
     // behavior is covered independently by DescriptorBufferTest.
-    device.setOptionalExtensions({});
-    device.initialize();
+    RenderGraph::DeviceRequirements deviceRequirements;
+    deviceRequirements.features.geometryShader = true;
+    deviceRequirements.features.tessellationShader = true;
+    deviceRequirements.features12.drawIndirectCount = true;
+    device.initialize(deviceRequirements);
     RenderGraph::MemoryAllocator allocator(device, instance);
     RenderGraph::Swapchain swapchain(resolution, allocator, device);
     swapchain.initialize();
-    RenderGraph::Graph graph(2, framesInFlight, device);
+    RenderGraph::Tracer tracer(device);
+    RenderGraph::Graph graph(2, framesInFlight, device, tracer);
     graph.setSwapchain(swapchain);
     graph.initialize();
 
@@ -539,8 +702,7 @@ TEST_P(ValidationScenarioTest, GpuDrivenIndexedIndirectCountDrawsTriangle) {
     };
 
     addBuffers("Positions", sizeof(float) * 4 * 3, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-    addBuffers("Indices", sizeof(uint32_t) * 3,
-               VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+    addBuffers("Indices", sizeof(uint32_t) * 3, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
     addBuffers("DrawCommands", sizeof(VkDrawIndexedIndirectCommand),
                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT);
     addBuffers("DrawCounts", sizeof(uint32_t),
@@ -562,11 +724,10 @@ TEST_P(ValidationScenarioTest, GpuDrivenIndexedIndirectCountDrawsTriangle) {
     drawPass.addIndexBufferInput("Indices");
     drawPass.addIndirectBufferInput("DrawCommands");
     drawPass.addIndirectBufferInput("DrawCounts");
-    drawPass.addColorTarget("Swapchain");
-    drawPass.clearTarget("Swapchain");
+    drawPass.addColorTarget("Swapchain", RenderGraph::RenderTargetLoadAction::CLEAR);
 
-    auto computeElement = std::make_shared<GpuDrivenComputeElement>(
-        device, *generatePass.getCommandBuffers().front(), positions, indices, drawCommands, drawCounts);
+    auto computeElement = std::make_shared<GpuDrivenComputeElement>(device, *generatePass.getCommandBuffers().front(),
+                                                                    positions, indices, drawCommands, drawCounts);
     auto graphicElement = std::make_shared<GpuDrivenGraphicElement>(
         device, *drawPass.getCommandBuffers().front(), drawPass.getPipelineGraphic(graph.getGraphStorage()),
         VkExtent2D{static_cast<uint32_t>(resolution.x), static_cast<uint32_t>(resolution.y)}, positions, indices,
@@ -607,14 +768,14 @@ TEST(ValidationTest, ComputeGraphRunsWithoutSwapchain) {
     const glm::ivec2 resolution(64, 64);
 
     RenderGraph::Device device(instance);
-    device.setOptionalExtensions({});
     device.initialize();
     if (!device.isFormatFeatureSupported(VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_TILING_OPTIMAL,
                                          VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)) {
       GTEST_SKIP() << "VK_FORMAT_R8G8B8A8_UNORM storage images are unavailable";
     }
     RenderGraph::MemoryAllocator allocator(device, instance);
-    RenderGraph::Graph graph(2, framesInFlight, device);
+    RenderGraph::Tracer tracer(device);
+    RenderGraph::Graph graph(2, framesInFlight, device, tracer);
     graph.initialize();
 
     auto addMappedBuffers = [&](std::string_view name, VkDeviceSize size) {
@@ -623,8 +784,7 @@ TEST(ValidationTest, ComputeGraphRunsWithoutSwapchain) {
       for (int frameIndex = 0; frameIndex < framesInFlight; ++frameIndex) {
         buffers.push_back(std::make_unique<RenderGraph::Buffer>(
             size, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-            VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
-            allocator));
+            VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT, allocator));
       }
       graph.getGraphStorage().add(name, buffers);
     };
@@ -649,9 +809,8 @@ TEST(ValidationTest, ComputeGraphRunsWithoutSwapchain) {
       storageImageView->createImageView(VK_IMAGE_VIEW_TYPE_2D, 0, 0);
       storageImageViews.push_back(std::move(storageImageView));
     }
-    graph.getGraphStorage().add(
-        "Image", std::make_unique<RenderGraph::ImageViewHolder>(
-                     storageImageViews, [&graph]() { return graph.getFrameInFlight(); }));
+    graph.getGraphStorage().add("Image", std::make_unique<RenderGraph::ImageViewHolder>(
+                                             storageImageViews, [&graph]() { return graph.getFrameInFlight(); }));
 
     auto& computePass = graph.createPassCompute("Compute", false);
     computePass.addStorageBufferOutput("Positions");
@@ -669,11 +828,10 @@ TEST(ValidationTest, ComputeGraphRunsWithoutSwapchain) {
 
     ASSERT_EQ(vkDeviceWaitIdle(device.getLogicalDevice()), VK_SUCCESS);
     for (int frameIndex = 0; frameIndex < framesInFlight; ++frameIndex) {
-      ASSERT_EQ(vmaInvalidateAllocation(allocator.getAllocator(), drawCounts[frameIndex]->getAllocation(), 0,
-                                        VK_WHOLE_SIZE),
-                VK_SUCCESS);
-      const auto* drawCount =
-          static_cast<const uint32_t*>(drawCounts[frameIndex]->getAllocationInfo().pMappedData);
+      ASSERT_EQ(
+          vmaInvalidateAllocation(allocator.getAllocator(), drawCounts[frameIndex]->getAllocation(), 0, VK_WHOLE_SIZE),
+          VK_SUCCESS);
+      const auto* drawCount = static_cast<const uint32_t*>(drawCounts[frameIndex]->getAllocationInfo().pMappedData);
       ASSERT_NE(drawCount, nullptr);
       EXPECT_EQ(*drawCount, 1u);
     }
@@ -710,7 +868,8 @@ TEST(ValidationTest, OffscreenComputeGraphPresentsWithoutWritingSwapchain) {
     RenderGraph::MemoryAllocator allocator(device, instance);
     RenderGraph::Swapchain swapchain(resolution, allocator, device);
     swapchain.initialize();
-    RenderGraph::Graph graph(2, framesInFlight, device);
+    RenderGraph::Tracer tracer(device);
+    RenderGraph::Graph graph(2, framesInFlight, device, tracer);
     graph.setSwapchain(swapchain);
     graph.initialize();
 
@@ -718,8 +877,7 @@ TEST(ValidationTest, OffscreenComputeGraphPresentsWithoutWritingSwapchain) {
     storageBuffers.reserve(framesInFlight);
     for (int frameIndex = 0; frameIndex < framesInFlight; ++frameIndex) {
       storageBuffers.push_back(std::make_unique<RenderGraph::Buffer>(
-          4096, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
-          allocator));
+          4096, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT, allocator));
     }
     graph.getGraphStorage().add("Data", storageBuffers);
 
@@ -748,8 +906,9 @@ TEST(ValidationTest, OffscreenComputeGraphPresentsWithoutWritingSwapchain) {
   EXPECT_TRUE(errors.empty()) << joinErrors(errors);
 }
 
-INSTANTIATE_TEST_SUITE_P(
-    QueueModes, ValidationScenarioTest, testing::Values(false, true),
-    [](const testing::TestParamInfo<ValidationScenarioTest::ParamType>& info) {
-      return info.param ? "SeparateComputeQueue" : "SingleQueue";
-    });
+INSTANTIATE_TEST_SUITE_P(QueueModes,
+                         ValidationScenarioTest,
+                         testing::Values(false, true),
+                         [](const testing::TestParamInfo<ValidationScenarioTest::ParamType>& info) {
+                           return info.param ? "SeparateComputeQueue" : "SingleQueue";
+                         });

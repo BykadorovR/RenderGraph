@@ -1,0 +1,143 @@
+name: Tests
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    name: Windows / Lavapipe
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Vulkan SDK and Lavapipe
+        uses: jakoch/install-vulkan-sdk-action@v1
+        with:
+          vulkan_version: 1.4.309.0
+          install_runtime: true
+          install_lavapipe: true
+          cache: true
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure Vulkan
+        shell: pwsh
+        run: |
+          $runtimePath = Join-Path $env:VULKAN_SDK "runtime\x64"
+          if (-not (Test-Path (Join-Path $runtimePath "vulkan-1.dll"))) {
+            throw "Vulkan loader was not installed at $runtimePath"
+          }
+          $layerPath = Join-Path $env:VULKAN_SDK "Bin"
+          $validationLayer = Join-Path $layerPath "VkLayer_khronos_validation.json"
+          if (-not (Test-Path $validationLayer)) {
+            throw "Vulkan validation layer was not installed at $layerPath"
+          }
+          $layerRegistry = "HKLM:\SOFTWARE\Khronos\Vulkan\ExplicitLayers"
+          New-Item -Path $layerRegistry -Force | Out-Null
+          New-ItemProperty -Path $layerRegistry -Name $validationLayer -PropertyType DWord -Value 0 -Force |
+            Out-Null
+          $runtimePath |
+            Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "VK_DRIVER_FILES=C:\lavapipe\share\vulkan\icd.d\lvp_icd.x86_64.json" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Verify Vulkan
+        shell: pwsh
+        run: |
+          $vulkanInfo = & (Join-Path $env:VULKAN_SDK "Bin\vulkaninfoSDK.exe") --summary 2>&1 | Out-String
+          if ($LASTEXITCODE -ne 0 -or $vulkanInfo -notmatch "VK_LAYER_KHRONOS_validation") {
+            Write-Output $vulkanInfo
+            throw "Vulkan validation layer is unavailable"
+          }
+
+      - name: Configure
+        run: >-
+          cmake -S . -B build
+          -G "Visual Studio 17 2022"
+          -A x64
+          -DRENDER_GRAPH_BUILD_TESTS=ON
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Run tests
+        run: ctest --test-dir build --build-config Release --output-on-failure --timeout 120
+
+  linux:
+    name: Linux / Lavapipe
+    runs-on: ubuntu-24.04
+    env:
+      CC: clang-18
+      CXX: clang++-18
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            clang-18 \
+            clang-tools-18 \
+            glslang-tools \
+            mesa-vulkan-drivers \
+            ninja-build \
+            vulkan-tools \
+            vulkan-validationlayers \
+            xauth \
+            xorg-dev \
+            xvfb
+
+      - name: Set up Vulkan SDK
+        uses: humbletim/setup-vulkan-sdk@v1.2.1
+        with:
+          vulkan-query-version: 1.4.304.1
+          vulkan-components: Vulkan-Headers, Vulkan-Loader
+          vulkan-use-cache: true
+
+      - name: Select Lavapipe
+        run: |
+          mapfile -t lavapipeManifests < <(
+            find /usr/share/vulkan/icd.d -maxdepth 1 -type f -name 'lvp_icd*.json' ! -name '*i686*'
+          )
+          if (( ${#lavapipeManifests[@]} == 0 )); then
+            dpkg --listfiles mesa-vulkan-drivers
+            exit 1
+          fi
+          echo "Using ${lavapipeManifests[0]}"
+          echo "VK_DRIVER_FILES=${lavapipeManifests[0]}" >> "$GITHUB_ENV"
+
+      - name: Verify Vulkan
+        run: |
+          vulkanInfo=$(xvfb-run --auto-servernum vulkaninfo --summary 2>&1 || true)
+          echo "$vulkanInfo"
+          if [[ $vulkanInfo != *"llvmpipe"* || $vulkanInfo != *"VK_LAYER_KHRONOS_validation"* ]]; then
+            exit 1
+          fi
+
+      - name: Configure
+        run: >-
+          cmake -S . -B build
+          -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DRENDER_GRAPH_BUILD_TESTS=ON
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Run tests
+        run: xvfb-run --auto-servernum ctest --test-dir build --output-on-failure --timeout 120

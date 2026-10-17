@@ -1,3 +1,7 @@
+[![Build](https://github.com/BykadorovR/RenderGraph/actions/workflows/build.yml/badge.svg)](https://github.com/BykadorovR/RenderGraph/actions/workflows/build.yml)
+[![Tests](https://github.com/BykadorovR/RenderGraph/actions/workflows/tests.yml/badge.svg)](https://github.com/BykadorovR/RenderGraph/actions/workflows/tests.yml)
+[![Clang Format](https://github.com/BykadorovR/RenderGraph/actions/workflows/clang-format.yml/badge.svg)](https://github.com/BykadorovR/RenderGraph/actions/workflows/clang-format.yml)
+
 # RenderGraph
 
 RenderGraph is a lightweight C++ library for organizing rendering and compute workloads with Vulkan. It helps describe passes and resources while handling execution order and synchronization behind the scenes.
@@ -13,7 +17,7 @@ The project is designed for applications that need a compact rendering foundatio
 - Headless compute workloads
 - Descriptor buffers and descriptor sets
 - Asynchronous CPU-to-GPU resource uploads
-- GPU timestamp collection
+- Tracy CPU/GPU tracing and Vulkan debug object names
 - Desktop and Android support
 
 ## Requirements
@@ -55,6 +59,7 @@ The following example creates a headless Vulkan device and an empty compute grap
 import Device;
 import Graph;
 import Instance;
+import Instrumentation;
 
 void buildGraph(RenderGraph::Graph& graph) {
   graph.initialize();
@@ -78,7 +83,9 @@ int main() {
   // Frames that may be processed concurrently.
   constexpr int framesInFlight = 2;
 
-  RenderGraph::Graph graph(workerThreadCount, framesInFlight, device);
+  // Tracer must outlive every graph that references it.
+  RenderGraph::Tracer tracer(device);
+  RenderGraph::Graph graph(workerThreadCount, framesInFlight, device, tracer);
   buildGraph(graph);
 
   // Call once per frame from a dedicated rendering thread.
@@ -105,6 +112,7 @@ import Allocator;
 import Device;
 import Graph;
 import Instance;
+import Instrumentation;
 import Surface;
 import Swapchain;
 import Texture;
@@ -121,13 +129,12 @@ void buildGraph(RenderGraph::Graph& graph, RenderGraph::Swapchain& swapchain) {
   graph.getGraphStorage().add("Swapchain", std::move(swapchainImages));
 
   auto& scenePass = graph.createPassGraphic("Scene");
-  scenePass.addColorTarget("Swapchain");
-  scenePass.clearTarget("Swapchain");
+  scenePass.addColorTarget("Swapchain", RenderGraph::RenderTargetLoadAction::CLEAR);
   // Application-provided GraphElement implementations record the actual draw commands.
   // scenePass.registerGraphElement(sceneElement);
 
   auto& uiPass = graph.createPassGraphic("UI");
-  uiPass.addColorTarget("Swapchain");
+  uiPass.addColorTarget("Swapchain", RenderGraph::RenderTargetLoadAction::KEEP);
   // uiPass.registerGraphElement(uiElement);
 
   graph.calculate();
@@ -166,7 +173,8 @@ int main() {
   constexpr int workerThreadCount = 2;
   // Frames that may be processed concurrently.
   constexpr int framesInFlight = 2;
-  RenderGraph::Graph graph(workerThreadCount, framesInFlight, device);
+  RenderGraph::Tracer tracer(device);
+  RenderGraph::Graph graph(workerThreadCount, framesInFlight, device, tracer);
 
   buildGraph(graph, swapchain);
   runRenderLoop(graph, window);

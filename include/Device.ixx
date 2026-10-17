@@ -2,6 +2,7 @@ module;
 
 #include <VkBootstrap.h>
 #include <string>
+#include <utility>
 #include <vector>
 #include <volk.h>
 
@@ -13,14 +14,32 @@ import Surface;
 export namespace RenderGraph {
 enum class QueueType { PRESENT, GRAPHICS, COMPUTE, TRANSFER };
 
+struct DeviceRequirements {
+  VkPhysicalDeviceFeatures features{};
+  VkPhysicalDeviceVulkan12Features features12{
+      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
+  };
+  VkPhysicalDeviceVulkan13Features features13{
+      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
+  };
+  VkPhysicalDeviceDescriptorBufferFeaturesEXT descriptorBufferFeatures{
+      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT,
+      .descriptorBuffer = true,
+  };
+  VkBaseOutStructure* extensionFeatures = nullptr;
+  std::vector<std::string> requiredExtensions;
+  std::vector<std::string> optionalExtensions;
+};
+
 class Device final {
  private:
   vkb::Device _device;
   const Surface* _surface = nullptr;
   const Instance* _instance;
+  VkPhysicalDevice _selectedPhysicalDevice = VK_NULL_HANDLE;
   bool _initialized = false;
   std::vector<VkQueueFamilyProperties> _queueFamilyProperties;
-  std::vector<std::string> _optionalExtensions = {"VK_EXT_descriptor_buffer"};
+  std::vector<std::string> _enabledExtensions;
 
  public:
   explicit Device(const Instance& instance);
@@ -29,9 +48,10 @@ class Device final {
   Device(Device&&) = delete;
   Device& operator=(Device&&) = delete;
   void setSurface(const Surface& surface);
-  void initialize();
+  void setPhysicalDevice(VkPhysicalDevice physicalDevice);
+  std::vector<std::pair<VkPhysicalDevice, std::string>> getAvailablePhysicalDevices() const;
+  void initialize(const DeviceRequirements& requirements = {});
 
-  void setOptionalExtensions(const std::vector<std::string>& extensions);
   bool isFormatFeatureSupported(VkFormat format, VkImageTiling tiling, VkFormatFeatureFlagBits featureFlagBit) const;
   const VkDevice getLogicalDevice() const noexcept;
   const VkPhysicalDevice getPhysicalDevice() const noexcept;
@@ -40,7 +60,7 @@ class Device final {
 
   const vkb::Device& getDevice() const noexcept;
   bool isExtensionSupported(std::string name) const;
-  std::vector<std::string> getOptionalExtensions() const;
+  bool isExtensionEnabled(std::string name) const;
   void getFeatureProperties(auto& property) const noexcept {
     VkPhysicalDeviceProperties2 properties2{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
                                             .pNext = &property};

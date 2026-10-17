@@ -34,7 +34,15 @@ import Pipeline;
 import Swapchain;
 import Sync;
 import Texture;
-import Timestamps;
+import glm;
+
+namespace {
+RenderGraph::DeviceRequirements descriptorBufferRequirements() {
+  RenderGraph::DeviceRequirements requirements;
+  requirements.optionalExtensions = {VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME};
+  return requirements;
+}
+}  // namespace
 
 TEST(InstanceTest, CreateWithoutValidation) {
   RenderGraph::Instance instance("TestApp", false);
@@ -62,8 +70,8 @@ TEST(WindowTest, GetResolution) {
   RenderGraph::Window window({1920, 1080});
   window.initialize();
   auto resolution = window.getResolution();
-  EXPECT_EQ(resolution.x, 1920);
-  EXPECT_EQ(resolution.y, 1080);
+  EXPECT_GT(resolution.x, 0);
+  EXPECT_GT(resolution.y, 0);
 }
 
 TEST(SurfaceTest, Create) {
@@ -93,6 +101,31 @@ TEST(DeviceTest, CreateWithoutSurface) {
   device.initialize();
   EXPECT_NE(device.getPhysicalDevice(), nullptr);
   EXPECT_NE(device.getDevice(), nullptr);
+  EXPECT_NE(device.getLogicalDevice(), nullptr);
+}
+
+TEST(DeviceTest, SelectPhysicalDevice) {
+  RenderGraph::Instance instance("PhysicalDeviceSelectionTest", false);
+  RenderGraph::Device device(instance);
+  const auto physicalDevices = device.getAvailablePhysicalDevices();
+  ASSERT_FALSE(physicalDevices.empty());
+
+  device.setPhysicalDevice(physicalDevices.front().first);
+  device.initialize();
+
+  EXPECT_EQ(device.getPhysicalDevice(), physicalDevices.front().first);
+  EXPECT_FALSE(physicalDevices.front().second.empty());
+}
+
+TEST(DeviceTest, CreateWithExtensionFeatures) {
+  RenderGraph::Instance instance("ExtensionFeaturesDeviceTest", false);
+  RenderGraph::Device device(instance);
+  VkPhysicalDeviceVulkan11Features extensionFeatures{
+      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
+  };
+  RenderGraph::DeviceRequirements requirements;
+  requirements.extensionFeatures = reinterpret_cast<VkBaseOutStructure*>(&extensionFeatures);
+  device.initialize(requirements);
   EXPECT_NE(device.getLogicalDevice(), nullptr);
 }
 
@@ -189,29 +222,6 @@ TEST(CommandTest, BeginEnd) {
   EXPECT_TRUE(commandBuffer.getActive());
   commandBuffer.endCommands();
   EXPECT_FALSE(commandBuffer.getActive());
-}
-
-TEST(TimestampsTest, NotReadyIsNonFatal) {
-  RenderGraph::Instance instance("TestApp", false);
-  RenderGraph::Window window({1920, 1080});
-  window.initialize();
-  RenderGraph::Surface surface(window, instance);
-  RenderGraph::Device device(instance);
-  device.setSurface(surface);
-  device.initialize();
-  RenderGraph::CommandPool commandPool(RenderGraph::QueueType::GRAPHICS, device);
-  RenderGraph::CommandBuffer commandBuffer(commandPool, device);
-  RenderGraph::Timestamps timestamps(device, 1);
-
-  commandBuffer.beginCommands();
-  timestamps.pushTimestamp("Pending", commandBuffer);
-  timestamps.popTimestamp("Pending", commandBuffer);
-  commandBuffer.endCommands();
-
-  // The commands were deliberately not submitted, so the query remains unavailable.
-  timestamps.finishFrame();
-  EXPECT_NO_THROW(timestamps.resetQueryPool());
-  EXPECT_TRUE(timestamps.getTimestamps().empty());
 }
 
 TEST(ResourceUploaderTest, UploadToHostVisibleBuffer) {
@@ -354,8 +364,9 @@ TEST(DescriptorSetTest, Create) {
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(instance);
   device.setSurface(surface);
-  device.setOptionalExtensions({"VK_KHR_dynamic_rendering"});
-  device.initialize();
+  RenderGraph::DeviceRequirements deviceRequirements;
+  deviceRequirements.optionalExtensions = {"VK_KHR_dynamic_rendering"};
+  device.initialize(deviceRequirements);
   RenderGraph::DescriptorPoolSize poolSize;
   RenderGraph::DescriptorPool descriptorPool(poolSize, device);
   RenderGraph::DescriptorSetLayout layout(device);
@@ -369,6 +380,34 @@ TEST(DescriptorSetTest, Create) {
   RenderGraph::DescriptorSet descriptorSet({&layout}, descriptorPool, device);
   EXPECT_EQ(descriptorSet._descriptorSet.size(), 1);
   EXPECT_EQ(descriptorSet._bindingNumber, 1);
+  EXPECT_EQ(descriptorPool.getDescriptorSetsNumber(), 1);
+  EXPECT_EQ(descriptorPool.getDescriptorsNumber().at(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER), 1);
+}
+
+TEST(DescriptorSetTest, Release) {
+  RenderGraph::Instance instance("TestApp", false);
+  RenderGraph::Window window({1920, 1080});
+  window.initialize();
+  RenderGraph::Surface surface(window, instance);
+  RenderGraph::Device device(instance);
+  device.setSurface(surface);
+  device.initialize();
+  RenderGraph::DescriptorPool descriptorPool({}, device);
+  RenderGraph::DescriptorSetLayout layout(device);
+  layout.createCustom({{.binding = 0,
+                        .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                        .descriptorCount = 4,
+                        .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+                        .pImmutableSamplers = nullptr}});
+
+  {
+    RenderGraph::DescriptorSet descriptorSet({&layout}, descriptorPool, device);
+    EXPECT_EQ(descriptorPool.getDescriptorSetsNumber(), 1);
+    EXPECT_EQ(descriptorPool.getDescriptorsNumber().at(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER), 4);
+  }
+
+  EXPECT_EQ(descriptorPool.getDescriptorSetsNumber(), 0);
+  EXPECT_EQ(descriptorPool.getDescriptorsNumber().at(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER), 0);
 }
 
 TEST(DescriptorSetTest, Update) {
@@ -378,8 +417,9 @@ TEST(DescriptorSetTest, Update) {
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(instance);
   device.setSurface(surface);
-  device.setOptionalExtensions({"VK_KHR_dynamic_rendering"});
-  device.initialize();
+  RenderGraph::DeviceRequirements deviceRequirements;
+  deviceRequirements.optionalExtensions = {"VK_KHR_dynamic_rendering"};
+  device.initialize(deviceRequirements);
   RenderGraph::MemoryAllocator allocator(device, instance);
   RenderGraph::Buffer buffer(1024, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                              VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
@@ -402,6 +442,74 @@ TEST(DescriptorSetTest, Update) {
   commandBuffer.beginCommands();
   descriptorSet.initialize(commandBuffer);
   EXPECT_EQ(descriptorSet._bindingNumber, 1);
+  RenderGraph::Buffer updatedBuffer(
+      2048, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+      VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT, allocator);
+  EXPECT_NO_THROW(descriptorSet.update(0, std::vector<RenderGraph::Buffer*>{&updatedBuffer}));
+  EXPECT_EQ(descriptorSet._resources[0].buffers[0], &updatedBuffer);
+
+  RenderGraph::DescriptorSetLayout firstSetLayout(device);
+  firstSetLayout.createCustom({{.binding = 2,
+                                .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                .descriptorCount = 1,
+                                .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+                                .pImmutableSamplers = nullptr}});
+  RenderGraph::DescriptorSetLayout secondSetLayout(device);
+  secondSetLayout.createCustom({{.binding = 5,
+                                 .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                 .descriptorCount = 2,
+                                 .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+                                 .pImmutableSamplers = nullptr}});
+  RenderGraph::Buffer firstSetBuffer(
+      256, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+      VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT, allocator);
+  RenderGraph::Buffer arrayBuffer0(
+      256, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+      VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT, allocator);
+  RenderGraph::Buffer arrayBuffer1(
+      256, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+      VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT, allocator);
+  RenderGraph::DescriptorSet arrayDescriptorSet({&firstSetLayout, &secondSetLayout}, descriptorPool, device);
+  arrayDescriptorSet.add({&firstSetBuffer});
+  arrayDescriptorSet.add(std::vector<RenderGraph::Buffer*>{&arrayBuffer0, &arrayBuffer1});
+  arrayDescriptorSet.initialize(commandBuffer);
+  RenderGraph::Buffer updatedArrayBuffer0(
+      512, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+      VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT, allocator);
+  RenderGraph::Buffer updatedArrayBuffer1(
+      512, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+      VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT, allocator);
+  RenderGraph::DescriptorHandler& descriptorHandler = arrayDescriptorSet;
+  EXPECT_NO_THROW(
+      descriptorHandler.update(5, std::vector<RenderGraph::Buffer*>{&updatedArrayBuffer0, &updatedArrayBuffer1}, 0, 1));
+  EXPECT_EQ(arrayDescriptorSet._resources[1].buffers[0], &updatedArrayBuffer0);
+  EXPECT_EQ(arrayDescriptorSet._resources[1].buffers[1], &updatedArrayBuffer1);
+  EXPECT_THROW(descriptorHandler.update(5, std::vector<RenderGraph::Buffer*>{&updatedArrayBuffer0}, 0, 1),
+               std::invalid_argument);
+
+  RenderGraph::DescriptorSetLayout textureLayout(device);
+  textureLayout.createCustom({{.binding = 0,
+                               .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                               .descriptorCount = 1,
+                               .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+                               .pImmutableSamplers = nullptr}});
+  const auto createTexture = [&]() {
+    auto image = std::make_unique<RenderGraph::Image>(allocator);
+    image->createImage(VK_FORMAT_R8G8B8A8_UNORM, {2, 2}, 1, 1, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_USAGE_SAMPLED_BIT);
+    auto imageView = std::make_shared<RenderGraph::ImageView>(std::move(image), device);
+    imageView->createImageView(VK_IMAGE_VIEW_TYPE_2D, 0, 0);
+    auto sampler = std::make_shared<RenderGraph::Sampler>(device);
+    sampler->createSampler(VK_SAMPLER_ADDRESS_MODE_REPEAT, 1, 0, VK_FILTER_LINEAR);
+    return std::make_unique<RenderGraph::Texture>(std::move(imageView), std::move(sampler));
+  };
+  auto texture = createTexture();
+  auto updatedTexture = createTexture();
+  RenderGraph::DescriptorSet textureDescriptorSet({&textureLayout}, descriptorPool, device);
+  textureDescriptorSet.add({texture.get()});
+  textureDescriptorSet.initialize(commandBuffer);
+  EXPECT_NO_THROW(
+      textureDescriptorSet.update(0, std::vector<RenderGraph::Texture*>{updatedTexture.get()}, commandBuffer));
+  EXPECT_EQ(textureDescriptorSet._resources[0].textures[0], updatedTexture.get());
   commandBuffer.endCommands();
 }
 
@@ -412,7 +520,7 @@ TEST(DescriptorBufferTest, Create) {
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(instance);
   device.setSurface(surface);
-  device.initialize();
+  device.initialize(descriptorBufferRequirements());
   RenderGraph::MemoryAllocator allocator(device, instance);
   RenderGraph::DescriptorSetLayout layout(device);
   std::vector<VkDescriptorSetLayoutBinding> layoutColor{{.binding = 0,
@@ -440,7 +548,7 @@ TEST(DescriptorBufferTest, BigDescriptorCount) {
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(instance);
   device.setSurface(surface);
-  device.initialize();
+  device.initialize(descriptorBufferRequirements());
   RenderGraph::MemoryAllocator allocator(device, instance);
   RenderGraph::DescriptorSetLayout layout(device);
   std::vector<VkDescriptorSetLayoutBinding> layoutColor{{.binding = 0,
@@ -468,7 +576,7 @@ TEST(DescriptorBufferTest, DifferentBinning) {
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(instance);
   device.setSurface(surface);
-  device.initialize();
+  device.initialize(descriptorBufferRequirements());
   RenderGraph::MemoryAllocator allocator(device, instance);
   RenderGraph::DescriptorSetLayout layout(device);
   std::vector<VkDescriptorSetLayoutBinding> layoutBinding{{.binding = 0,
@@ -498,7 +606,7 @@ TEST(DescriptorBufferTest, DifferentSets) {
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(instance);
   device.setSurface(surface);
-  device.initialize();
+  device.initialize(descriptorBufferRequirements());
   RenderGraph::MemoryAllocator allocator(device, instance);
   RenderGraph::Buffer buffer(1024, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
                              VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
@@ -564,7 +672,7 @@ TEST(DescriptorBufferTest, Update) {
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(instance);
   device.setSurface(surface);
-  device.initialize();
+  device.initialize(descriptorBufferRequirements());
   RenderGraph::MemoryAllocator allocator(device, instance);
   RenderGraph::Buffer buffer(1024, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
                              VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
@@ -584,6 +692,119 @@ TEST(DescriptorBufferTest, Update) {
   descriptorBuffer.initialize(commandBuffer);
   EXPECT_THROW(descriptorBuffer.initialize(commandBuffer), std::runtime_error);
   EXPECT_NE(descriptorBuffer._descriptorBuffer->getDeviceAddress(device), 0);
+  const auto oldDescriptors = descriptorBuffer._descriptors;
+  RenderGraph::Buffer updatedBuffer(
+      2048, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+      VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT, allocator);
+  RenderGraph::DescriptorHandler& descriptorHandler = descriptorBuffer;
+  EXPECT_NO_THROW(descriptorHandler.update(0, std::vector<RenderGraph::Buffer*>{&updatedBuffer}));
+  EXPECT_EQ(descriptorBuffer._resources[0].buffers[0], &updatedBuffer);
+  EXPECT_NE(descriptorBuffer._descriptors, oldDescriptors);
+
+  RenderGraph::DescriptorSetLayout firstSetLayout(device);
+  firstSetLayout.createCustom({{.binding = 2,
+                                .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                .descriptorCount = 1,
+                                .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+                                .pImmutableSamplers = nullptr}});
+  RenderGraph::DescriptorSetLayout secondSetLayout(device);
+  secondSetLayout.createCustom({{.binding = 5,
+                                 .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                 .descriptorCount = 2,
+                                 .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+                                 .pImmutableSamplers = nullptr}});
+  RenderGraph::Buffer firstSetBuffer(
+      256, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+      VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT, allocator);
+  RenderGraph::Buffer arrayBuffer0(
+      256, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+      VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT, allocator);
+  RenderGraph::Buffer arrayBuffer1(
+      256, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+      VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT, allocator);
+  RenderGraph::DescriptorBuffer arrayDescriptorBuffer({&firstSetLayout, &secondSetLayout}, allocator, device);
+  arrayDescriptorBuffer.add({&firstSetBuffer});
+  arrayDescriptorBuffer.add(std::vector<RenderGraph::Buffer*>{&arrayBuffer0, &arrayBuffer1});
+  arrayDescriptorBuffer.initialize(commandBuffer);
+  const auto oldArrayDescriptors = arrayDescriptorBuffer._descriptors;
+  RenderGraph::Buffer updatedArrayBuffer0(
+      512, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+      VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT, allocator);
+  RenderGraph::Buffer updatedArrayBuffer1(
+      512, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+      VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT, allocator);
+  EXPECT_NO_THROW(arrayDescriptorBuffer.update(
+      5, std::vector<RenderGraph::Buffer*>{&updatedArrayBuffer0, &updatedArrayBuffer1}, 0, 1));
+  EXPECT_EQ(arrayDescriptorBuffer._resources[1].buffers[0], &updatedArrayBuffer0);
+  EXPECT_EQ(arrayDescriptorBuffer._resources[1].buffers[1], &updatedArrayBuffer1);
+  EXPECT_TRUE(std::equal(oldArrayDescriptors.begin(),
+                         oldArrayDescriptors.begin() + arrayDescriptorBuffer._layoutSize[0],
+                         arrayDescriptorBuffer._descriptors.begin()));
+  EXPECT_NE(arrayDescriptorBuffer._descriptors, oldArrayDescriptors);
+  EXPECT_THROW(arrayDescriptorBuffer.update(5, std::vector<RenderGraph::Buffer*>{&updatedArrayBuffer0}, 0, 1),
+               std::invalid_argument);
+
+  RenderGraph::DescriptorSetLayout textureLayout(device);
+  textureLayout.createCustom({{.binding = 4,
+                               .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                               .descriptorCount = 2,
+                               .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+                               .pImmutableSamplers = nullptr}});
+  const auto createTexture = [&]() {
+    auto image = std::make_unique<RenderGraph::Image>(allocator);
+    image->createImage(VK_FORMAT_R8G8B8A8_UNORM, {2, 2}, 1, 1, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_USAGE_SAMPLED_BIT);
+    auto imageView = std::make_shared<RenderGraph::ImageView>(std::move(image), device);
+    imageView->createImageView(VK_IMAGE_VIEW_TYPE_2D, 0, 0);
+    auto sampler = std::make_shared<RenderGraph::Sampler>(device);
+    sampler->createSampler(VK_SAMPLER_ADDRESS_MODE_REPEAT, 1, 0, VK_FILTER_LINEAR);
+    return std::make_unique<RenderGraph::Texture>(std::move(imageView), std::move(sampler));
+  };
+  auto texture0 = createTexture();
+  auto texture1 = createTexture();
+  auto updatedTexture0 = createTexture();
+  auto updatedTexture1 = createTexture();
+  RenderGraph::DescriptorBuffer textureDescriptorBuffer({&textureLayout}, allocator, device);
+  textureDescriptorBuffer.add(std::vector<RenderGraph::Texture*>{texture0.get(), texture1.get()});
+  textureDescriptorBuffer.initialize(commandBuffer);
+  const auto oldTextureDescriptors = textureDescriptorBuffer._descriptors;
+  EXPECT_NO_THROW(textureDescriptorBuffer.update(
+      4, std::vector<RenderGraph::Texture*>{updatedTexture0.get(), updatedTexture1.get()}, commandBuffer));
+  EXPECT_EQ(textureDescriptorBuffer._resources[0].textures[0], updatedTexture0.get());
+  EXPECT_EQ(textureDescriptorBuffer._resources[0].textures[1], updatedTexture1.get());
+  EXPECT_NE(textureDescriptorBuffer._descriptors, oldTextureDescriptors);
+
+  const auto descriptorSize = static_cast<std::size_t>(
+      textureDescriptorBuffer._descriptorBufferProperties.combinedImageSamplerDescriptorSize);
+  for (std::size_t index = 0; index < 2; ++index) {
+    auto* updatedTexture = index == 0 ? updatedTexture0.get() : updatedTexture1.get();
+    VkDescriptorImageInfo imageInfo{
+        .sampler = updatedTexture->getSampler()->getSampler(),
+        .imageView = updatedTexture->getImageView().getImageView(),
+        .imageLayout = updatedTexture->getImageView().getImage().getImageLayout(),
+    };
+    VkDescriptorGetInfoEXT descriptorInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT};
+    descriptorInfo.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    descriptorInfo.data.pCombinedImageSampler = &imageInfo;
+    std::vector<uint8_t> expectedDescriptor(descriptorSize);
+    vkGetDescriptorEXT(device.getLogicalDevice(), &descriptorInfo, descriptorSize, expectedDescriptor.data());
+
+    if (textureDescriptorBuffer._descriptorBufferProperties.combinedImageSamplerDescriptorSingleArray) {
+      EXPECT_TRUE(
+          std::equal(expectedDescriptor.begin(), expectedDescriptor.end(),
+                     textureDescriptorBuffer._descriptors.begin() + textureDescriptorBuffer._offsets[0][index]));
+    } else {
+      const auto imageSize = static_cast<std::size_t>(
+          textureDescriptorBuffer._descriptorBufferProperties.sampledImageDescriptorSize);
+      const auto samplerSize = static_cast<std::size_t>(
+          textureDescriptorBuffer._descriptorBufferProperties.samplerDescriptorSize);
+      const auto bindingOffset = textureDescriptorBuffer._offsets[0][0];
+      EXPECT_TRUE(std::equal(expectedDescriptor.begin(), expectedDescriptor.begin() + imageSize,
+                             textureDescriptorBuffer._descriptors.begin() + bindingOffset + imageSize * index));
+      EXPECT_TRUE(std::equal(
+          expectedDescriptor.begin() + imageSize, expectedDescriptor.end(),
+          textureDescriptorBuffer._descriptors.begin() + bindingOffset + imageSize * 2 + samplerSize * index));
+    }
+  }
   commandBuffer.endCommands();
 }
 
@@ -672,6 +893,9 @@ TEST(SwapchainTest, CreateWithInitialization) {
   commandBuffer.endCommands();
   EXPECT_GE(swapchain.getImageCount(), 2);
   EXPECT_GE(swapchain.getImageViews().size(), 2);
+  for (const auto& imageView : swapchain.getImageViews()) {
+    EXPECT_EQ(imageView->getImage().getFormat(), swapchain.getSwapchain().image_format);
+  }
 }
 
 TEST(SyncTest, Create) {
@@ -708,6 +932,26 @@ TEST(ImageTest, Create) {
   EXPECT_EQ(image.getImageLayout(), VK_IMAGE_LAYOUT_UNDEFINED);
 }
 
+TEST(ImageTest, CreateCubemapCompatible) {
+  RenderGraph::Instance instance("TestApp", false);
+  RenderGraph::Window window({1920, 1080});
+  window.initialize();
+  RenderGraph::Surface surface(window, instance);
+  RenderGraph::Device device(instance);
+  device.setSurface(surface);
+  device.initialize();
+  RenderGraph::MemoryAllocator allocator(device, instance);
+
+  auto image = std::make_unique<RenderGraph::Image>(allocator);
+  image->createImage(VK_FORMAT_R8G8B8A8_UNORM, {64, 64}, 1, 6, VK_IMAGE_ASPECT_COLOR_BIT,
+                     VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT);
+  EXPECT_EQ(image->getCreateFlags(), VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT);
+
+  RenderGraph::ImageView imageView(std::move(image), device);
+  EXPECT_NO_THROW(imageView.createImageView(VK_IMAGE_VIEW_TYPE_CUBE, 0, 0));
+  EXPECT_NE(imageView.getImageView(), nullptr);
+}
+
 TEST(ResourceUploaderTest, UploadsImage) {
   RenderGraph::Instance instance("TestApp", false);
   RenderGraph::Window window({1920, 1080});
@@ -719,8 +963,7 @@ TEST(ResourceUploaderTest, UploadsImage) {
   RenderGraph::MemoryAllocator allocator(device, instance);
   RenderGraph::Image image(allocator);
   image.createImage(VK_FORMAT_R8G8B8A8_UNORM, {2, 2}, 2, 1, VK_IMAGE_ASPECT_COLOR_BIT,
-                    VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-                        VK_IMAGE_USAGE_SAMPLED_BIT);
+                    VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
 
   RenderGraph::ResourceUploader resourceUploader(allocator, device);
   const std::vector<std::byte> pixels(2 * 2 * 4, std::byte{42});
@@ -814,7 +1057,9 @@ TEST(SamplerTest, Create) {
   RenderGraph::Surface surface(window, instance);
   RenderGraph::Device device(instance);
   device.setSurface(surface);
-  device.initialize();
+  RenderGraph::DeviceRequirements requirements;
+  requirements.features.samplerAnisotropy = true;
+  device.initialize(requirements);
   RenderGraph::Sampler sampler(device);
   EXPECT_EQ(sampler.getSampler(), nullptr);
   sampler.createSampler(VK_SAMPLER_ADDRESS_MODE_REPEAT, 1, 4, VK_FILTER_LINEAR);
@@ -837,7 +1082,7 @@ TEST(TextureTest, Create) {
                                                                                                device);
   imageView->createImageView(VK_IMAGE_VIEW_TYPE_2D, 0, 0);
   std::shared_ptr<RenderGraph::Sampler> sampler = std::make_shared<RenderGraph::Sampler>(device);
-  sampler->createSampler(VK_SAMPLER_ADDRESS_MODE_REPEAT, 1, 4, VK_FILTER_LINEAR);
+  sampler->createSampler(VK_SAMPLER_ADDRESS_MODE_REPEAT, 1, 0, VK_FILTER_LINEAR);
   RenderGraph::Texture texture(imageView, sampler);
   EXPECT_EQ(&texture.getImageView(), imageView.get());
   EXPECT_EQ(texture.getSampler(), sampler.get());

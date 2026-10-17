@@ -209,9 +209,8 @@ void ResourceUploader::upload(Image& destination,
       (destination.getUsageFlags() & VK_IMAGE_USAGE_TRANSFER_DST_BIT) == 0) {
     throw std::invalid_argument("Invalid image upload");
   }
-  if (destination.getMipMapNumber() > 1 &&
-      (destination.getAspectMask() != VK_IMAGE_ASPECT_COLOR_BIT ||
-       (destination.getUsageFlags() & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) == 0)) {
+  if (destination.getMipMapNumber() > 1 && (destination.getAspectMask() != VK_IMAGE_ASPECT_COLOR_BIT ||
+                                            (destination.getUsageFlags() & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) == 0)) {
     throw std::invalid_argument("Image does not support mipmap generation");
   }
 
