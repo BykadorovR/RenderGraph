@@ -26,6 +26,7 @@ import Buffer;
 import Swapchain;
 import Device;
 import Graph;
+import Instrumentation;
 import Texture;
 import CommandPool;
 import Command;
@@ -60,7 +61,8 @@ TEST(ScenarioTest, GraphOneQueue) {
   RenderGraph::Swapchain swapchain(
       resolution, allocator, device, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT);
   int framesInFlight = 2;
-  RenderGraph::Graph graph(4, framesInFlight, device);
+  RenderGraph::Tracer tracer(device);
+  RenderGraph::Graph graph(4, framesInFlight, device, tracer);
 
   auto commandPool = std::make_shared<RenderGraph::CommandPool>(RenderGraph::QueueType::GRAPHICS, device);
   std::vector<RenderGraph::CommandBuffer> commandBuffer;
@@ -173,7 +175,7 @@ TEST(ScenarioTest, GraphOneQueue) {
   EXPECT_TRUE(graph._resources.at(&guiPass).contains("Swapchain", RenderGraph::Graph::Resource::Type::IMAGE,
                                                      RenderGraph::Graph::Resource::Operation::WRITE));
 
-  RenderGraph::Graph offscreenGraph(1, framesInFlight, device);
+  RenderGraph::Graph offscreenGraph(1, framesInFlight, device, tracer);
   offscreenGraph.setSwapchain(swapchain);
   offscreenGraph.initialize();
   offscreenGraph.getGraphStorage().add(
@@ -229,43 +231,21 @@ TEST(ScenarioTest, GraphOneQueue) {
   vkWaitSemaphores(device.getLogicalDevice(), &waitInfo, UINT64_MAX);
 
   graph.render();
-  EXPECT_TRUE(graph.getTimestamps().empty());
   EXPECT_EQ(graph.getFrameInFlight(), 1);
   EXPECT_EQ(elementMock->getDrawCount(), 3);
   EXPECT_EQ(elementMock->getUpdateCount(), elementMock->getDrawCount());
 
   graph.render();
-  EXPECT_TRUE(graph.getTimestamps().empty());
   EXPECT_EQ(graph.getFrameInFlight(), (2 % framesInFlight));
   EXPECT_EQ(elementMock->getDrawCount(), 6);
   EXPECT_EQ(elementMock->getUpdateCount(), elementMock->getDrawCount());
 
   graph.render();
-  auto timestamps1 = graph.getTimestamps();
-  EXPECT_EQ(timestamps1.size(), 3);
-  EXPECT_TRUE(timestamps1.find("Render") != timestamps1.end());
-  EXPECT_TRUE(timestamps1.find("Postprocessing") != timestamps1.end());
-  EXPECT_TRUE(timestamps1.find("GUI") != timestamps1.end());
-  EXPECT_GE(timestamps1["Render"].y, timestamps1["Render"].x);
-  EXPECT_GE(timestamps1["Postprocessing"].x, timestamps1["Render"].y);
-  EXPECT_GE(timestamps1["Postprocessing"].y, timestamps1["Postprocessing"].x);
-  EXPECT_GE(timestamps1["GUI"].x, timestamps1["Postprocessing"].y);
-  EXPECT_GE(timestamps1["GUI"].y, timestamps1["GUI"].x);
   EXPECT_EQ(graph.getFrameInFlight(), 1);
   EXPECT_EQ(elementMock->getDrawCount(), 9);
   EXPECT_EQ(elementMock->getUpdateCount(), elementMock->getDrawCount());
 
   graph.render();
-  auto timestamps2 = graph.getTimestamps();
-  EXPECT_EQ(timestamps2.size(), 3);
-  EXPECT_TRUE(timestamps2.find("Render") != timestamps2.end());
-  EXPECT_TRUE(timestamps2.find("Postprocessing") != timestamps2.end());
-  EXPECT_TRUE(timestamps2.find("GUI") != timestamps2.end());
-  EXPECT_GE(timestamps2["Render"].y, timestamps2["Render"].x);
-  EXPECT_GE(timestamps2["Postprocessing"].x, timestamps2["Render"].y);
-  EXPECT_GE(timestamps2["Postprocessing"].y, timestamps2["Postprocessing"].x);
-  EXPECT_GE(timestamps2["GUI"].x, timestamps2["Postprocessing"].y);
-  EXPECT_GE(timestamps2["GUI"].y, timestamps2["GUI"].x);
   EXPECT_EQ(graph.getFrameInFlight(), (4 % framesInFlight));
   EXPECT_EQ(elementMock->getDrawCount(), 12);
   EXPECT_EQ(elementMock->getUpdateCount(), elementMock->getDrawCount());
@@ -294,7 +274,8 @@ TEST(ScenarioTest, GraphSeparateQueues) {
   RenderGraph::Swapchain swapchain(
       resolution, allocator, device, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT);
   int framesInFlight = 2;
-  RenderGraph::Graph graph(4, framesInFlight, device);
+  RenderGraph::Tracer tracer(device);
+  RenderGraph::Graph graph(4, framesInFlight, device, tracer);
 
   auto commandPool = std::make_shared<RenderGraph::CommandPool>(RenderGraph::QueueType::GRAPHICS, device);
   std::vector<RenderGraph::CommandBuffer> commandBuffer;
@@ -428,40 +409,18 @@ TEST(ScenarioTest, GraphSeparateQueues) {
   vkWaitSemaphores(device.getLogicalDevice(), &waitInfo, UINT64_MAX);
 
   graph.render();
-  EXPECT_TRUE(graph.getTimestamps().empty());
   EXPECT_EQ(graph.getFrameInFlight(), 1);
   EXPECT_EQ(elementMock->getDrawCount(), 3);
 
   graph.render();
-  EXPECT_TRUE(graph.getTimestamps().empty());
   EXPECT_EQ(graph.getFrameInFlight(), (2 % framesInFlight));
   EXPECT_EQ(elementMock->getDrawCount(), 6);
 
   graph.render();
-  auto timestamps1 = graph.getTimestamps();
-  EXPECT_EQ(timestamps1.size(), 3);
-  EXPECT_TRUE(timestamps1.find("Render") != timestamps1.end());
-  EXPECT_TRUE(timestamps1.find("Postprocessing") != timestamps1.end());
-  EXPECT_TRUE(timestamps1.find("GUI") != timestamps1.end());
-  EXPECT_GE(timestamps1["Render"].y, timestamps1["Render"].x);
-  EXPECT_GE(timestamps1["Postprocessing"].x, timestamps1["Render"].y);
-  EXPECT_GE(timestamps1["Postprocessing"].y, timestamps1["Postprocessing"].x);
-  EXPECT_GE(timestamps1["GUI"].x, timestamps1["Postprocessing"].y);
-  EXPECT_GE(timestamps1["GUI"].y, timestamps1["GUI"].x);
   EXPECT_EQ(graph.getFrameInFlight(), 1);
   EXPECT_EQ(elementMock->getDrawCount(), 9);
 
   graph.render();
-  auto timestamps2 = graph.getTimestamps();
-  EXPECT_EQ(timestamps2.size(), 3);
-  EXPECT_TRUE(timestamps2.find("Render") != timestamps2.end());
-  EXPECT_TRUE(timestamps2.find("Postprocessing") != timestamps2.end());
-  EXPECT_TRUE(timestamps2.find("GUI") != timestamps2.end());
-  EXPECT_GE(timestamps2["Render"].y, timestamps2["Render"].x);
-  EXPECT_GE(timestamps2["Postprocessing"].x, timestamps2["Render"].y);
-  EXPECT_GE(timestamps2["Postprocessing"].y, timestamps2["Postprocessing"].x);
-  EXPECT_GE(timestamps2["GUI"].x, timestamps2["Postprocessing"].y);
-  EXPECT_GE(timestamps2["GUI"].y, timestamps2["GUI"].x);
   EXPECT_EQ(graph.getFrameInFlight(), (4 % framesInFlight));
   EXPECT_EQ(elementMock->getDrawCount(), 12);
 
@@ -492,7 +451,8 @@ TEST(ScenarioTest, BufferOwnershipTransferUsesLastResourceOwner) {
   RenderGraph::MemoryAllocator allocator(device, instance);
 
   constexpr int framesInFlight = 2;
-  RenderGraph::Graph graph(4, framesInFlight, device);
+  RenderGraph::Tracer tracer(device);
+  RenderGraph::Graph graph(4, framesInFlight, device, tracer);
   graph.initialize();
 
   auto addStorageBuffers = [&](std::string_view name) {
@@ -580,7 +540,8 @@ TEST(ScenarioTest, SwapchainGraphRejectsSeparateComputeLastPass) {
   swapchain.initialize();
 
   constexpr int framesInFlight = 2;
-  RenderGraph::Graph graph(1, framesInFlight, device);
+  RenderGraph::Tracer tracer(device);
+  RenderGraph::Graph graph(1, framesInFlight, device, tracer);
   graph.setSwapchain(swapchain);
   graph.initialize();
 
@@ -615,7 +576,8 @@ TEST(ScenarioTest, GraphicsPassBufferInputs) {
   swapchain.initialize();
 
   constexpr int framesInFlight = 2;
-  RenderGraph::Graph graph(2, framesInFlight, device);
+  RenderGraph::Tracer tracer(device);
+  RenderGraph::Graph graph(2, framesInFlight, device, tracer);
   graph.setSwapchain(swapchain);
   graph.initialize();
   graph.getGraphStorage().add(
@@ -731,7 +693,8 @@ TEST(ScenarioTest, ComputePassIndirectBufferInput) {
   swapchain.initialize();
 
   constexpr int framesInFlight = 2;
-  RenderGraph::Graph graph(2, framesInFlight, device);
+  RenderGraph::Tracer tracer(device);
+  RenderGraph::Graph graph(2, framesInFlight, device, tracer);
   graph.setSwapchain(swapchain);
   graph.initialize();
 
@@ -784,7 +747,8 @@ TEST(ScenarioTest, GraphReset) {
   RenderGraph::Swapchain swapchain(
       resolution, allocator, device, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT);
   int framesInFlight = 2;
-  RenderGraph::Graph graph(4, framesInFlight, device);
+  RenderGraph::Tracer tracer(device);
+  RenderGraph::Graph graph(4, framesInFlight, device, tracer);
 
   auto commandPool = std::make_shared<RenderGraph::CommandPool>(RenderGraph::QueueType::GRAPHICS, device);
   std::vector<RenderGraph::CommandBuffer> commandBuffer;
@@ -940,7 +904,8 @@ TEST(ScenarioTest, DepthExistance) {
   RenderGraph::MemoryAllocator allocator(device, instance);
   RenderGraph::Swapchain swapchain(resolution, allocator, device);
   int framesInFlight = 2;
-  RenderGraph::Graph graph(4, framesInFlight, device);
+  RenderGraph::Tracer tracer(device);
+  RenderGraph::Graph graph(4, framesInFlight, device, tracer);
 
   auto commandPool = std::make_shared<RenderGraph::CommandPool>(RenderGraph::QueueType::GRAPHICS, device);
   std::vector<RenderGraph::CommandBuffer> commandBuffer;
@@ -1037,7 +1002,8 @@ TEST(ScenarioTest, TraversalKeepsTransitiveProducerBeforeConsumer) {
 
   constexpr int framesInFlight = 2;
 
-  RenderGraph::Graph graph(4, framesInFlight, device);
+  RenderGraph::Tracer tracer(device);
+  RenderGraph::Graph graph(4, framesInFlight, device, tracer);
   graph.setSwapchain(swapchain);
 
   graph.initialize();
@@ -1144,7 +1110,8 @@ TEST(ScenarioTest, TraversalDiamondGraph) {
 
   constexpr int framesInFlight = 2;
 
-  RenderGraph::Graph graph(4, framesInFlight, device);
+  RenderGraph::Tracer tracer(device);
+  RenderGraph::Graph graph(4, framesInFlight, device, tracer);
   graph.setSwapchain(swapchain);
 
   graph.initialize();

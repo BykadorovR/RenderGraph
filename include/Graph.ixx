@@ -19,11 +19,11 @@ import Pipeline;
 import Texture;
 import Swapchain;
 import Sync;
-import Timestamps;
 import Command;
 import CommandPool;
 import Buffer;
 import Device;
+import Instrumentation;
 import glm;
 
 // Forward declarations for test classes, not visible outside this module
@@ -190,10 +190,12 @@ class Graph final {
 
   Swapchain* _swapchain = nullptr;
   const Device* _device;
+  Tracer* _tracer;
   std::unique_ptr<BS::thread_pool> _threadPool;
   std::vector<std::unique_ptr<GraphPass>> _passes;
   std::deque<GraphPass*> _passesOrdered;
-  std::unique_ptr<Timestamps> _timestamps;
+  std::unordered_map<GraphPass*, QueueType> _passQueueTypes;
+  std::unordered_set<GraphPass*> _collectionPasses;
   std::unique_ptr<GraphStorage> _graphStorage;
   // special semaphores
   std::vector<std::shared_ptr<Semaphore>> _semaphoreRenderFinished, _semaphoreImageAvailable;
@@ -250,12 +252,11 @@ class Graph final {
   };
   std::unordered_map<GraphPass*, Sync> _sync;
 
+  void _setResourceNames();
   bool _usesSeparateQueue(GraphPass* pass);
 
  public:
-  Graph(int threadsNumber,
-        int maxFramesInFlight,
-        const Device& device);
+  Graph(int threadsNumber, int maxFramesInFlight, const Device& device, Tracer& tracer);
   Graph(const Graph&) = delete;
   Graph& operator=(const Graph&) = delete;
   Graph(Graph&&) = delete;
@@ -268,7 +269,6 @@ class Graph final {
   GraphPassGraphic* getPassGraphic(std::string_view name) const;
   GraphPassCompute* getPassCompute(std::string_view name) const;
   GraphStorage& getGraphStorage() const noexcept;
-  std::unordered_map<std::string, glm::dvec2> getTimestamps() const;
   int getFrameInFlight() const noexcept;
 
   void calculate();

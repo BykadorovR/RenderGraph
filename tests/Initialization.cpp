@@ -34,7 +34,6 @@ import Pipeline;
 import Swapchain;
 import Sync;
 import Texture;
-import Timestamps;
 
 namespace {
 RenderGraph::DeviceRequirements descriptorBufferRequirements() {
@@ -209,29 +208,6 @@ TEST(CommandTest, BeginEnd) {
   EXPECT_TRUE(commandBuffer.getActive());
   commandBuffer.endCommands();
   EXPECT_FALSE(commandBuffer.getActive());
-}
-
-TEST(TimestampsTest, NotReadyIsNonFatal) {
-  RenderGraph::Instance instance("TestApp", false);
-  RenderGraph::Window window({1920, 1080});
-  window.initialize();
-  RenderGraph::Surface surface(window, instance);
-  RenderGraph::Device device(instance);
-  device.setSurface(surface);
-  device.initialize();
-  RenderGraph::CommandPool commandPool(RenderGraph::QueueType::GRAPHICS, device);
-  RenderGraph::CommandBuffer commandBuffer(commandPool, device);
-  RenderGraph::Timestamps timestamps(device, 1);
-
-  commandBuffer.beginCommands();
-  timestamps.pushTimestamp("Pending", commandBuffer);
-  timestamps.popTimestamp("Pending", commandBuffer);
-  commandBuffer.endCommands();
-
-  // The commands were deliberately not submitted, so the query remains unavailable.
-  timestamps.finishFrame();
-  EXPECT_NO_THROW(timestamps.resetQueryPool());
-  EXPECT_TRUE(timestamps.getTimestamps().empty());
 }
 
 TEST(ResourceUploaderTest, UploadToHostVisibleBuffer) {
