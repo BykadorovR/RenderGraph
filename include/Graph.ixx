@@ -26,7 +26,8 @@ import Device;
 import Instrumentation;
 import glm;
 
-// Forward declarations for test classes, not visible outside this module
+// Keep GoogleTest-generated classes in the global module
+extern "C++" {
 class ScenarioTest_GraphSeparateQueues_Test;
 class ScenarioTest_BufferOwnershipTransferUsesLastResourceOwner_Test;
 class ScenarioTest_ComputePassIndirectBufferInput_Test;
@@ -34,6 +35,7 @@ class ScenarioTest_GraphicsPassBufferInputs_Test;
 class ScenarioTest_GraphOneQueue_Test;
 class ScenarioTest_TraversalKeepsTransitiveProducerBeforeConsumer_Test;
 class ScenarioTest_TraversalDiamondGraph_Test;
+}
 
 export namespace RenderGraph {
 class GraphStorage final {

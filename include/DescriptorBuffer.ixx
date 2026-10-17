@@ -15,7 +15,8 @@ import Allocator;
 import Command;
 import Texture;
 
-// Forward declarations for test classes, not visible outside this module
+// Keep GoogleTest-generated classes in the global module
+extern "C++" {
 class DescriptorBufferTest_Create_Test;
 class DescriptorBufferTest_BigDescriptorCount_Test;
 class DescriptorBufferTest_DifferentBinning_Test;
@@ -23,6 +24,7 @@ class DescriptorBufferTest_DifferentSets_Test;
 class DescriptorBufferTest_Update_Test;
 class DescriptorSetTest_Create_Test;
 class DescriptorSetTest_Update_Test;
+}
 
 export namespace RenderGraph {
 class DescriptorSetLayout final {
