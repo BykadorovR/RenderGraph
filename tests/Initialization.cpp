@@ -104,6 +104,19 @@ TEST(DeviceTest, CreateWithoutSurface) {
   EXPECT_NE(device.getLogicalDevice(), nullptr);
 }
 
+TEST(DeviceTest, SelectPhysicalDevice) {
+  RenderGraph::Instance instance("PhysicalDeviceSelectionTest", false);
+  RenderGraph::Device device(instance);
+  const auto physicalDevices = device.getAvailablePhysicalDevices();
+  ASSERT_FALSE(physicalDevices.empty());
+
+  device.setPhysicalDevice(physicalDevices.front().first);
+  device.initialize();
+
+  EXPECT_EQ(device.getPhysicalDevice(), physicalDevices.front().first);
+  EXPECT_FALSE(physicalDevices.front().second.empty());
+}
+
 TEST(DeviceTest, CreateWithExtensionFeatures) {
   RenderGraph::Instance instance("ExtensionFeaturesDeviceTest", false);
   RenderGraph::Device device(instance);

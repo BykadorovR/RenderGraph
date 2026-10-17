@@ -2,6 +2,7 @@ module;
 
 #include <VkBootstrap.h>
 #include <string>
+#include <utility>
 #include <vector>
 #include <volk.h>
 
@@ -35,6 +36,7 @@ class Device final {
   vkb::Device _device;
   const Surface* _surface = nullptr;
   const Instance* _instance;
+  VkPhysicalDevice _selectedPhysicalDevice = VK_NULL_HANDLE;
   bool _initialized = false;
   std::vector<VkQueueFamilyProperties> _queueFamilyProperties;
   std::vector<std::string> _enabledExtensions;
@@ -46,6 +48,8 @@ class Device final {
   Device(Device&&) = delete;
   Device& operator=(Device&&) = delete;
   void setSurface(const Surface& surface);
+  void setPhysicalDevice(VkPhysicalDevice physicalDevice);
+  std::vector<std::pair<VkPhysicalDevice, std::string>> getAvailablePhysicalDevices() const;
   void initialize(const DeviceRequirements& requirements = {});
 
   bool isFormatFeatureSupported(VkFormat format, VkImageTiling tiling, VkFormatFeatureFlagBits featureFlagBit) const;

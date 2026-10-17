@@ -20,6 +20,35 @@ void Device::setSurface(const Surface& surface) {
   _surface = &surface;
 }
 
+void Device::setPhysicalDevice(VkPhysicalDevice physicalDevice) {
+  if (_initialized) {
+    throw std::logic_error("Can't set a physical device after device initialization");
+  }
+  _selectedPhysicalDevice = physicalDevice;
+}
+
+std::vector<std::pair<VkPhysicalDevice, std::string>> Device::getAvailablePhysicalDevices() const {
+  uint32_t physicalDeviceCount = 0;
+  if (vkEnumeratePhysicalDevices(_instance->getInstance().instance, &physicalDeviceCount, nullptr) != VK_SUCCESS) {
+    throw std::runtime_error("Failed to enumerate physical devices");
+  }
+
+  std::vector<VkPhysicalDevice> physicalDevices(physicalDeviceCount);
+  if (vkEnumeratePhysicalDevices(_instance->getInstance().instance, &physicalDeviceCount, physicalDevices.data()) !=
+      VK_SUCCESS) {
+    throw std::runtime_error("Failed to enumerate physical devices");
+  }
+
+  std::vector<std::pair<VkPhysicalDevice, std::string>> devices;
+  devices.reserve(physicalDevices.size());
+  for (const auto physicalDevice : physicalDevices) {
+    VkPhysicalDeviceProperties properties;
+    vkGetPhysicalDeviceProperties(physicalDevice, &properties);
+    devices.emplace_back(physicalDevice, properties.deviceName);
+  }
+  return devices;
+}
+
 void Device::initialize(const DeviceRequirements& requirements) {
   if (_initialized) {
     throw std::logic_error("Device is already initialized");
@@ -77,11 +106,27 @@ void Device::initialize(const DeviceRequirements& requirements) {
   } else {
     deviceSelector.require_present(false);
   }
-  auto deviceSelectorResult = deviceSelector.select();
-  if (!deviceSelectorResult) {
-    throw std::runtime_error(deviceSelectorResult.error().message());
+
+  vkb::PhysicalDevice devicePhysical;
+  if (_selectedPhysicalDevice == VK_NULL_HANDLE) {
+    auto deviceResult = deviceSelector.select();
+    if (!deviceResult) {
+      throw std::runtime_error(deviceResult.error().message());
+    }
+    devicePhysical = deviceResult.value();
+  } else {
+    auto devicesResult = deviceSelector.select_devices();
+    if (!devicesResult) {
+      throw std::runtime_error(devicesResult.error().message());
+    }
+    const auto selectedDevice = std::find_if(
+        devicesResult->begin(), devicesResult->end(),
+        [this](const vkb::PhysicalDevice& device) { return device.physical_device == _selectedPhysicalDevice; });
+    if (selectedDevice == devicesResult->end()) {
+      throw std::runtime_error("Selected physical device does not satisfy the device requirements");
+    }
+    devicePhysical = *selectedDevice;
   }
-  auto devicePhysical = deviceSelectorResult.value();
   const auto enableOptionalDescriptorBuffer =
       !descriptorBufferRequired && descriptorBufferOptional && requirements.descriptorBufferFeatures.descriptorBuffer &&
       devicePhysical.is_extension_present(VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME);
