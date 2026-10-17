@@ -6,7 +6,6 @@ OPTION(RENDER_GRAPH_BUILD_TESTS "Build the RenderGraph test suite" ON)
 
 set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT ${PROJECT_NAME})
 include(FetchContent)
-find_package(Threads REQUIRED)
 
 if (NOT ANDROID)
   set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "Disable GLFW examples")
@@ -95,6 +94,7 @@ endif()
 FetchContent_MakeAvailable(${renderGraphDependencies})
 
 # need to build as module
+find_package(Threads REQUIRED)
 add_library(glm-module)
 target_sources(glm-module PUBLIC
     FILE_SET CXX_MODULES

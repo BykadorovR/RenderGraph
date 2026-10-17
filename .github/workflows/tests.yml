@@ -30,16 +30,22 @@ jobs:
           cache: true
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Configure Vulkan runtime
+      - name: Configure Vulkan
         shell: pwsh
         run: |
           $runtimePath = Join-Path $env:VULKAN_SDK "runtime\x64"
           if (-not (Test-Path (Join-Path $runtimePath "vulkan-1.dll"))) {
             throw "Vulkan loader was not installed at $runtimePath"
           }
+          $layerPath = Join-Path $env:VULKAN_SDK "Bin"
+          if (-not (Test-Path (Join-Path $layerPath "VkLayer_khronos_validation.json"))) {
+            throw "Vulkan validation layer was not installed at $layerPath"
+          }
           $runtimePath |
             Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           "VK_DRIVER_FILES=C:\lavapipe\share\vulkan\icd.d\lvp_icd.x86_64.json" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "VK_LAYER_PATH=$layerPath" |
             Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Configure
