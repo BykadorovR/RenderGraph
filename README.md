@@ -1,3 +1,18 @@
+RenderGraph — a lightweight, modern C++20 render graph framework for Vulkan applications.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 # RenderGraph
 
 RenderGraph is a lightweight C++ library for organizing rendering and compute workloads with Vulkan. It helps describe passes and resources while handling execution order and synchronization behind the scenes.
