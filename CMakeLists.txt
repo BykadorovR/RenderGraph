@@ -94,6 +94,7 @@ endif()
 FetchContent_MakeAvailable(${renderGraphDependencies})
 
 # need to build as module
+# Match Tracy's platform thread flags to keep Clang PCM compilation settings consistent.
 find_package(Threads REQUIRED)
 add_library(glm-module)
 target_sources(glm-module PUBLIC
