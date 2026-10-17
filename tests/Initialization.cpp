@@ -34,6 +34,7 @@ import Pipeline;
 import Swapchain;
 import Sync;
 import Texture;
+import glm;
 
 namespace {
 RenderGraph::DeviceRequirements descriptorBufferRequirements() {

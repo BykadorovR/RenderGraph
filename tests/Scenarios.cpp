@@ -30,6 +30,7 @@ import Instrumentation;
 import Texture;
 import CommandPool;
 import Command;
+import Sync;
 import glm;
 
 class GraphElementMock : public RenderGraph::GraphElement {
