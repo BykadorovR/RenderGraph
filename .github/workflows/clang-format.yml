@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  clang-format:
+  clangFormat:
     name: clang-format
     runs-on: windows-2022
 

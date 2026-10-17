@@ -37,3 +37,63 @@ jobs:
 
       - name: Build
         run: cmake --build build --config Release --parallel
+
+  linux:
+    name: Linux / GCC
+    runs-on: ubuntu-24.04
+    env:
+      CC: gcc-14
+      CXX: g++-14
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes ninja-build xorg-dev
+
+      - name: Set up Vulkan SDK
+        uses: humbletim/setup-vulkan-sdk@v1.2.1
+        with:
+          vulkan-query-version: 1.4.304.1
+          vulkan-components: Vulkan-Headers, Vulkan-Loader
+          vulkan-use-cache: true
+
+      - name: Configure
+        run: >-
+          cmake -S . -B build
+          -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DRENDER_GRAPH_BUILD_TESTS=OFF
+
+      - name: Build
+        run: cmake --build build --parallel
+
+  android:
+    name: Android / arm64-v8a
+    runs-on: ubuntu-24.04
+    env:
+      ANDROID_NDK_VERSION: 27.3.13750724
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Android NDK
+        run: sdkmanager "ndk;$ANDROID_NDK_VERSION"
+
+      - name: Configure
+        run: >-
+          cmake -S . -B build-android
+          -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_TOOLCHAIN_FILE="$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION/build/cmake/android.toolchain.cmake"
+          -DANDROID_ABI=arm64-v8a
+          -DANDROID_PLATFORM=android-28
+          -DANDROID_STL=c++_shared
+          -DRENDER_GRAPH_BUILD_TESTS=OFF
+
+      - name: Build
+        run: cmake --build build-android --parallel
