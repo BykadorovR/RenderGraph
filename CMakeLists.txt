@@ -53,6 +53,13 @@ FetchContent_Declare(
   GIT_TAG v3.2.1
 )
 
+set(TRACY_ENABLE ON CACHE BOOL "" FORCE)
+FetchContent_Declare(
+    tracy
+    GIT_REPOSITORY https://github.com/wolfpld/tracy.git
+    GIT_TAG v0.14.1
+)
+
 if (RENDER_GRAPH_BUILD_TESTS)
   FetchContent_Declare(
     googletest
@@ -76,6 +83,7 @@ set(renderGraphDependencies
   volk
   vulkan-memory-allocator
   spirv-reflect
+  tracy
 )
 if (NOT ANDROID)
   list(APPEND renderGraphDependencies glfw)
@@ -144,7 +152,7 @@ target_include_directories(RenderGraph
         ${thread-pool_SOURCE_DIR}/include
 )
 
-target_link_libraries(${PROJECT_NAME} PUBLIC vk-bootstrap::vk-bootstrap volk::volk GPUOpen::VulkanMemoryAllocator glm-module spirv-reflect-static)
+target_link_libraries(${PROJECT_NAME} PUBLIC vk-bootstrap::vk-bootstrap volk::volk GPUOpen::VulkanMemoryAllocator glm-module spirv-reflect-static Tracy::TracyClient)
 if (ANDROID)
   find_library(androidLibrary android REQUIRED)
   target_link_libraries(${PROJECT_NAME} PUBLIC ${androidLibrary})

@@ -3,6 +3,7 @@ module;
 #include "BS_thread_pool.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <cstdint>
 #include <future>
 #include <functional>
@@ -298,9 +299,39 @@ void GraphPassCompute::execute(int currentFrame, const CommandBuffer& commandBuf
   }
 }
 
-Graph::Graph(int threadsNumber, int maxFramesInFlight, const Device& device) : _device(&device) {
+void Graph::_setResourceNames() {
+  for (const auto& resourceEntry : _resources) {
+    for (const Resource& resource : resourceEntry.second.getResources()) {
+      if (resource.type == Resource::Type::BUFFER) {
+        const auto buffers = _graphStorage->getBuffer(resource.name);
+        for (std::size_t index = 0; index < buffers.size(); ++index) {
+          _tracer->setObjectName(VK_OBJECT_TYPE_BUFFER, std::bit_cast<uint64_t>(buffers[index]->getBuffer()),
+                                 resource.name + ".buffer[" + std::to_string(index) + "]");
+        }
+      } else {
+        const auto imageViews = _graphStorage->getImageViewHolder(resource.name).getImageViews();
+        for (std::size_t index = 0; index < imageViews.size(); ++index) {
+          const std::string suffix = "[" + std::to_string(index) + "]";
+          _tracer->setObjectName(VK_OBJECT_TYPE_IMAGE,
+                                 std::bit_cast<uint64_t>(imageViews[index]->getImage().getImage()),
+                                 resource.name + ".image" + suffix);
+          _tracer->setObjectName(VK_OBJECT_TYPE_IMAGE_VIEW,
+                                 std::bit_cast<uint64_t>(imageViews[index]->getImageView()),
+                                 resource.name + ".imageView" + suffix);
+        }
+      }
+    }
+  }
+}
+
+bool Graph::_usesSeparateQueue(GraphPass* pass) {
+  return pass->getGraphPassType() == GraphPassType::COMPUTE && static_cast<GraphPassCompute*>(pass)->isSeparate();
+};
+
+Graph::Graph(int threadsNumber, int maxFramesInFlight, const Device& device, Tracer& tracer)
+    : _device(&device),
+      _tracer(&tracer) {
   _threadPool = std::make_unique<BS::thread_pool>(threadsNumber);
-  _timestamps = std::make_unique<Timestamps>(device, static_cast<uint32_t>(maxFramesInFlight));
   _graphStorage = std::make_unique<GraphStorage>();
   _maxFramesInFlight = maxFramesInFlight;
 }
@@ -323,8 +354,6 @@ void Graph::setSwapchain(Swapchain& swapchain) {
 void Graph::initialize() { _semaphoreInFlight = std::make_unique<Semaphore>(VK_SEMAPHORE_TYPE_TIMELINE, *_device); }
 
 GraphStorage& Graph::getGraphStorage() const noexcept { return *_graphStorage; }
-
-std::unordered_map<std::string, glm::dvec2> Graph::getTimestamps() const { return _timestamps->getTimestamps(); }
 
 int Graph::getFrameInFlight() const noexcept { return _frameInFlight; }
 
@@ -697,9 +726,12 @@ void Graph::print() const {
 }
 
 void Graph::calculate() {
+  const auto cpuTrace = _tracer->traceCPU("Graph.calculate");
   // store resources in a convinient way
   _resources.clear();
   _passesOrdered.clear();
+  _passQueueTypes.clear();
+  _collectionPasses.clear();
   _sync.clear();
 
   if (_passes.empty()) {
@@ -750,6 +782,8 @@ void Graph::calculate() {
       }
     }
   }
+
+  _setResourceNames();
 
   const auto passes = _passes | std::views::transform([](const auto& pass) { return pass.get(); }) |
                       std::ranges::to<std::vector<GraphPass*>>();
@@ -952,9 +986,7 @@ void Graph::calculate() {
   };
 
   auto getQueueFamilyIndex = [this](GraphPass* pass) -> uint32_t {
-    const auto queueType = _usesSeparateQueue(pass) ? QueueType::COMPUTE : QueueType::GRAPHICS;
-
-    return static_cast<uint32_t>(_device->getQueueIndex(queueType));
+    return static_cast<uint32_t>(_device->getQueueIndex(_passQueueTypes.at(pass)));
   };
 
   GraphPass* root = _passes.back().get();
@@ -970,9 +1002,17 @@ void Graph::calculate() {
     _sync[acquireWaitPass].addWaitSemaphore(_semaphoreImageAvailable, [this]() { return _frameInFlight; });
   }
 
+  // Select one pass per actual queue so render() doesn't discover queues every frame.
+  std::unordered_set<VkQueue> collectionQueues;
   GraphPass* previousPass = nullptr;
   for (auto&& pass : _passesOrdered) {
-    const bool queueTypeChange = previousPass && _usesSeparateQueue(previousPass) != _usesSeparateQueue(pass);
+    const QueueType queueType = _usesSeparateQueue(pass) ? QueueType::COMPUTE : QueueType::GRAPHICS;
+    _passQueueTypes.emplace(pass, queueType);
+    if (collectionQueues.insert(_device->getQueue(queueType)).second) {
+      _collectionPasses.insert(pass);
+    }
+
+    const bool queueTypeChange = previousPass && _passQueueTypes.at(previousPass) != queueType;
     if (queueTypeChange) {
       // signal semaphore for the previous pass
       // wait semaphore for the current pass
@@ -1052,8 +1092,11 @@ void Graph::calculate() {
 }
 
 bool Graph::render() {
+  _tracer->markFrame();
+  const auto cpuTrace = _tracer->traceCPU("Graph.render");
   // timeline semaphore instead of fence
   if (_valueSemaphoreInFlight > _maxFramesInFlight) {
+    const auto waitCpuTrace = _tracer->traceCPU("Graph.waitForFrame");
     uint64_t waitValue = _valueSemaphoreInFlight - _maxFramesInFlight;
     auto semaphoreInFlight = _semaphoreInFlight->getSemaphore();
 
@@ -1082,13 +1125,18 @@ bool Graph::render() {
     swapchainIndex = _swapchain->getSwapchainIndex();
   }
 
-  _timestamps->resetQueryPool();
   // Record all pass command buffers.
   std::vector<std::future<void>> futureTasks =
       _passesOrdered | std::views::transform([this](GraphPass* pass) {
         auto commandBuffer = pass->getCommandBuffers()[_frameInFlight];
         if (!commandBuffer->getActive()) {
           commandBuffer->beginCommands();
+        }
+
+        const QueueType queueType = _passQueueTypes.at(pass);
+
+        if (_collectionPasses.contains(pass)) {
+          _tracer->collect(queueType, *commandBuffer);
         }
 
         // Change image layouts required by the pass.
@@ -1105,6 +1153,8 @@ bool Graph::render() {
               }
               const auto oldLayout =
                   loadAction == RenderTargetLoadAction::KEEP ? image.getImageLayout() : VK_IMAGE_LAYOUT_UNDEFINED;
+              const auto transitionGpuTrace =
+                  _tracer->traceGPU("Graph.transition." + colorTarget, queueType, *commandBuffer);
               image.changeLayout(oldLayout, VK_IMAGE_LAYOUT_GENERAL, 0, 0,
                                  VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, dstAccessMask, *commandBuffer);
             }
@@ -1120,6 +1170,8 @@ bool Graph::render() {
               }
               const auto oldLayout =
                   loadAction == RenderTargetLoadAction::KEEP ? image.getImageLayout() : VK_IMAGE_LAYOUT_UNDEFINED;
+              const auto transitionGpuTrace =
+                  _tracer->traceGPU("Graph.transition." + *depthTarget, queueType, *commandBuffer);
               image.changeLayout(
                   oldLayout, VK_IMAGE_LAYOUT_GENERAL, 0, 0,
                   VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
@@ -1140,6 +1192,8 @@ bool Graph::render() {
             auto& imageView = _graphStorage->getImageViewHolder(name).getImageView();
             auto& image = imageView.getImage();
             if (image.getImageLayout() != VK_IMAGE_LAYOUT_GENERAL) {
+              const auto transitionGpuTrace =
+                  _tracer->traceGPU("Graph.transition." + name, queueType, *commandBuffer);
               image.changeLayout(image.getImageLayout(), VK_IMAGE_LAYOUT_GENERAL, 0, 0,
                                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, dstAccessMask, *commandBuffer);
             }
@@ -1153,8 +1207,11 @@ bool Graph::render() {
         if (const auto syncIt = _sync.find(pass); syncIt != _sync.end()) {
           sync = syncIt->second;
         }
-        return _threadPool->submit([this, pass, commandBuffer, sync]() {
-          _timestamps->pushTimestamp(pass->getName(), *commandBuffer);
+
+        return _threadPool->submit([this, pass, commandBuffer, queueType, sync]() {
+          const auto passCpuTrace = _tracer->traceCPU("Graph.pass." + pass->getName());
+          const auto passGpuTrace = _tracer->traceGPU("Graph.pass." + pass->getName(), queueType, *commandBuffer);
+
           for (auto&& barrier : sync.getBarriersBefore()) {
             barrier->execute(commandBuffer->getCommandBuffer());
           }
@@ -1162,7 +1219,6 @@ bool Graph::render() {
           for (auto&& barrier : sync.getBarriersAfter()) {
             barrier->execute(commandBuffer->getCommandBuffer());
           }
-          _timestamps->popTimestamp(pass->getName(), *commandBuffer);
         });
       }) |
       std::ranges::to<std::vector<std::future<void>>>();
@@ -1202,13 +1258,7 @@ bool Graph::render() {
       });
     }
 
-    auto queueType = QueueType::GRAPHICS;
-    if (previousPass->getGraphPassType() == GraphPassType::COMPUTE) {
-      auto* passCompute = static_cast<GraphPassCompute*>(previousPass);
-      if (passCompute->isSeparate()) {
-        queueType = QueueType::COMPUTE;
-      }
-    }
+    const QueueType queueType = _passQueueTypes.at(previousPass);
 
     const VkSubmitInfo2 submitInfo{
         .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
@@ -1236,7 +1286,7 @@ bool Graph::render() {
     }
 
     if (previousPass != nullptr) {
-      const bool queueTypeChange = _usesSeparateQueue(previousPass) != _usesSeparateQueue(pass);
+      const bool queueTypeChange = _passQueueTypes.at(previousPass) != _passQueueTypes.at(pass);
       if (queueTypeChange) {
         submitPassToQueue(previousPass, commandBufferSubmit, waitSemaphores, signalSemaphores);
         commandBufferSubmit.clear();
@@ -1260,6 +1310,8 @@ bool Graph::render() {
   // Change the swapchain image layout before presentation.
   if (_swapchain != nullptr &&
       _swapchain->getImage(swapchainIndex).getImageLayout() != VK_IMAGE_LAYOUT_PRESENT_SRC_KHR) {
+    const auto transitionGpuTrace = _tracer->traceGPU(
+        "Graph.transition.present", _passQueueTypes.at(_passesOrdered.back()), *commandBufferSubmit.back());
     _swapchain->getImage(swapchainIndex)
         .changeLayout(_swapchain->getImage(swapchainIndex).getImageLayout(), VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
                       VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT, 0, 0,
@@ -1271,8 +1323,6 @@ bool Graph::render() {
   signalSemaphores.push_back(_semaphoreInFlight->getSemaphore());
 
   submitPassToQueue(_passesOrdered.back(), commandBufferSubmit, waitSemaphores, signalSemaphores, signalValues);
-
-  _timestamps->finishFrame();
 
   ++_valueSemaphoreInFlight;
 
@@ -1305,6 +1355,7 @@ bool Graph::render() {
 }
 
 void Graph::reset(glm::ivec2 resolution) {
+  const auto cpuTrace = _tracer->traceCPU("Graph.reset");
   if (_swapchain == nullptr) {
     throw std::logic_error("Can't reset presentation without a swapchain");
   }
@@ -1328,6 +1379,3 @@ void Graph::reset(glm::ivec2 resolution) {
   calculate();
 }
 
-bool Graph::_usesSeparateQueue(GraphPass* pass) {
-  return pass->getGraphPassType() == GraphPassType::COMPUTE && static_cast<GraphPassCompute*>(pass)->isSeparate();
-};

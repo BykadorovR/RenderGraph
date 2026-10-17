@@ -13,7 +13,7 @@ The project is designed for applications that need a compact rendering foundatio
 - Headless compute workloads
 - Descriptor buffers and descriptor sets
 - Asynchronous CPU-to-GPU resource uploads
-- GPU timestamp collection
+- Tracy CPU/GPU tracing and Vulkan debug object names
 - Desktop and Android support
 
 ## Requirements
@@ -55,6 +55,7 @@ The following example creates a headless Vulkan device and an empty compute grap
 import Device;
 import Graph;
 import Instance;
+import Instrumentation;
 
 void buildGraph(RenderGraph::Graph& graph) {
   graph.initialize();
@@ -78,7 +79,9 @@ int main() {
   // Frames that may be processed concurrently.
   constexpr int framesInFlight = 2;
 
-  RenderGraph::Graph graph(workerThreadCount, framesInFlight, device);
+  // Tracer must outlive every graph that references it.
+  RenderGraph::Tracer tracer(device);
+  RenderGraph::Graph graph(workerThreadCount, framesInFlight, device, tracer);
   buildGraph(graph);
 
   // Call once per frame from a dedicated rendering thread.
@@ -105,6 +108,7 @@ import Allocator;
 import Device;
 import Graph;
 import Instance;
+import Instrumentation;
 import Surface;
 import Swapchain;
 import Texture;
@@ -165,7 +169,8 @@ int main() {
   constexpr int workerThreadCount = 2;
   // Frames that may be processed concurrently.
   constexpr int framesInFlight = 2;
-  RenderGraph::Graph graph(workerThreadCount, framesInFlight, device);
+  RenderGraph::Tracer tracer(device);
+  RenderGraph::Graph graph(workerThreadCount, framesInFlight, device, tracer);
 
   buildGraph(graph, swapchain);
   runRenderLoop(graph, window);

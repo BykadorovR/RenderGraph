@@ -25,6 +25,7 @@ import DescriptorBuffer;
 import Device;
 import Graph;
 import Instance;
+import Instrumentation;
 import Pipeline;
 import Shader;
 import Surface;
@@ -483,7 +484,8 @@ TEST_P(ValidationScenarioTest, FullGraphPipelineHasNoValidationErrorsAcrossReset
     RenderGraph::Swapchain swapchain(
         resolution, allocator, device, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT);
     swapchain.initialize();
-    RenderGraph::Graph graph(4, framesInFlight, device);
+    RenderGraph::Tracer tracer(device);
+    RenderGraph::Graph graph(4, framesInFlight, device, tracer);
     graph.setSwapchain(swapchain);
     graph.initialize();
 
@@ -611,7 +613,6 @@ TEST_P(ValidationScenarioTest, FullGraphPipelineHasNoValidationErrorsAcrossReset
 
     EXPECT_EQ(graphElement->getDrawCount(), passCount * (initialFrameCount + resetCycleCount * framesPerReset));
     EXPECT_EQ(graphElement->getResetCount(), passCount * totalResetCount);
-    EXPECT_EQ(graph.getTimestamps().size(), passCount);
     ASSERT_EQ(vkDeviceWaitIdle(device.getLogicalDevice()), VK_SUCCESS);
   }
 
@@ -648,7 +649,8 @@ TEST_P(ValidationScenarioTest, GpuDrivenIndexedIndirectCountDrawsTriangle) {
     RenderGraph::MemoryAllocator allocator(device, instance);
     RenderGraph::Swapchain swapchain(resolution, allocator, device);
     swapchain.initialize();
-    RenderGraph::Graph graph(2, framesInFlight, device);
+    RenderGraph::Tracer tracer(device);
+    RenderGraph::Graph graph(2, framesInFlight, device, tracer);
     graph.setSwapchain(swapchain);
     graph.initialize();
 
@@ -740,7 +742,8 @@ TEST(ValidationTest, ComputeGraphRunsWithoutSwapchain) {
       GTEST_SKIP() << "VK_FORMAT_R8G8B8A8_UNORM storage images are unavailable";
     }
     RenderGraph::MemoryAllocator allocator(device, instance);
-    RenderGraph::Graph graph(2, framesInFlight, device);
+    RenderGraph::Tracer tracer(device);
+    RenderGraph::Graph graph(2, framesInFlight, device, tracer);
     graph.initialize();
 
     auto addMappedBuffers = [&](std::string_view name, VkDeviceSize size) {
@@ -836,7 +839,8 @@ TEST(ValidationTest, OffscreenComputeGraphPresentsWithoutWritingSwapchain) {
     RenderGraph::MemoryAllocator allocator(device, instance);
     RenderGraph::Swapchain swapchain(resolution, allocator, device);
     swapchain.initialize();
-    RenderGraph::Graph graph(2, framesInFlight, device);
+    RenderGraph::Tracer tracer(device);
+    RenderGraph::Graph graph(2, framesInFlight, device, tracer);
     graph.setSwapchain(swapchain);
     graph.initialize();
 
