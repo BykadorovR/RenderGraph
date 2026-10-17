@@ -106,6 +106,45 @@ class ValidationMessenger final {
   }
 };
 
+bool supportsStorageSwapchain(const RenderGraph::Device& device, const RenderGraph::Surface& surface) {
+  VkSurfaceCapabilitiesKHR capabilities{};
+  if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(device.getPhysicalDevice(), surface.getSurface(), &capabilities) !=
+          VK_SUCCESS ||
+      (capabilities.supportedUsageFlags & VK_IMAGE_USAGE_STORAGE_BIT) == 0) {
+    return false;
+  }
+
+  uint32_t formatCount = 0;
+  if (vkGetPhysicalDeviceSurfaceFormatsKHR(device.getPhysicalDevice(), surface.getSurface(), &formatCount, nullptr) !=
+          VK_SUCCESS ||
+      formatCount == 0) {
+    return false;
+  }
+
+  std::vector<VkSurfaceFormatKHR> formats(formatCount);
+  if (vkGetPhysicalDeviceSurfaceFormatsKHR(device.getPhysicalDevice(), surface.getSurface(), &formatCount,
+                                           formats.data()) != VK_SUCCESS) {
+    return false;
+  }
+
+  constexpr VkSurfaceFormatKHR desiredFormat{
+      .format = VK_FORMAT_R8G8B8A8_UNORM,
+      .colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR,
+  };
+  VkSurfaceFormatKHR selectedFormat = formats.front();
+  for (const VkSurfaceFormatKHR format : formats) {
+    if (format.format == desiredFormat.format && format.colorSpace == desiredFormat.colorSpace) {
+      selectedFormat = format;
+      break;
+    }
+  }
+
+  VkImageFormatProperties properties{};
+  return vkGetPhysicalDeviceImageFormatProperties(
+             device.getPhysicalDevice(), selectedFormat.format, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL,
+             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT, 0, &properties) == VK_SUCCESS;
+}
+
 class ValidationGraphElement final : public RenderGraph::GraphElement {
  private:
   std::atomic<int> _drawCount = 0;
@@ -474,6 +513,9 @@ TEST_P(ValidationScenarioTest, FullGraphPipelineHasNoValidationErrorsAcrossReset
     deviceRequirements.features.geometryShader = true;
     deviceRequirements.features.tessellationShader = true;
     device.initialize(deviceRequirements);
+    if (!supportsStorageSwapchain(device, surface)) {
+      GTEST_SKIP() << "Storage swapchain images are unavailable";
+    }
     RenderGraph::MemoryAllocator allocator(device, instance);
     RenderGraph::Swapchain swapchain(resolution, allocator, device,
                                      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT);

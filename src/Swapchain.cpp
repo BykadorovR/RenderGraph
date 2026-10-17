@@ -41,6 +41,7 @@ Swapchain::Swapchain(glm::ivec2 resolution,
   }
   // TODO: check extent
   _swapchain = swapchainResult.value();
+  _swapchainFormat = _swapchain.image_format;
 }
 
 void Swapchain::initialize() {
@@ -104,6 +105,7 @@ std::vector<std::shared_ptr<ImageView>> Swapchain::reset(glm::ivec2 resolution) 
   _destroy();
   // Get the new swapchain and place it in our variable
   _swapchain = swapchainResult.value();
+  _swapchainFormat = _swapchain.image_format;
 
   initialize();
 
