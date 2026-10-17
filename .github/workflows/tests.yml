@@ -79,7 +79,6 @@ jobs:
     env:
       CC: clang-18
       CXX: clang++-18
-      VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
 
     steps:
       - name: Checkout
@@ -106,6 +105,18 @@ jobs:
           vulkan-query-version: 1.4.304.1
           vulkan-components: Vulkan-Headers, Vulkan-Loader
           vulkan-use-cache: true
+
+      - name: Select Lavapipe
+        run: |
+          mapfile -t lavapipeManifests < <(
+            find /usr/share/vulkan/icd.d -maxdepth 1 -type f -name 'lvp_icd*.json' ! -name '*i686*'
+          )
+          if (( ${#lavapipeManifests[@]} == 0 )); then
+            dpkg --listfiles mesa-vulkan-drivers
+            exit 1
+          fi
+          echo "Using ${lavapipeManifests[0]}"
+          echo "VK_DRIVER_FILES=${lavapipeManifests[0]}" >> "$GITHUB_ENV"
 
       - name: Verify Vulkan
         run: |
