@@ -84,8 +84,7 @@ class ValidationMessenger final {
         .pNext = nullptr,
         .flags = 0,
         .messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,
-        .messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
-                       VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
+        .messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
                        VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,
         .pfnUserCallback = validationErrorCallback,
         .pUserData = &collector,
@@ -175,8 +174,7 @@ class GpuDrivenComputeElement final : public RenderGraph::GraphElement {
     }
     _pipeline.createCompute(shaderStages.front(), descriptorSetLayouts, {});
 
-    _descriptorSet =
-        std::make_unique<RenderGraph::DescriptorSet>(descriptorSetLayouts, _descriptorPool, device);
+    _descriptorSet = std::make_unique<RenderGraph::DescriptorSet>(descriptorSetLayouts, _descriptorPool, device);
     for (std::size_t frameIndex = 0; frameIndex < positions.size(); ++frameIndex) {
       _descriptorSet->add({positions[frameIndex]});
       _descriptorSet->add({indices[frameIndex]});
@@ -249,8 +247,7 @@ class GpuDrivenGraphicElement final : public RenderGraph::GraphElement {
     _pipeline.createGraphic(pipelineGraphic, _shader.getShaderStageInfo(), descriptorSetLayouts, {},
                             *_shader.getVertexInputInfo());
 
-    _descriptorSet =
-        std::make_unique<RenderGraph::DescriptorSet>(descriptorSetLayouts, _descriptorPool, device);
+    _descriptorSet = std::make_unique<RenderGraph::DescriptorSet>(descriptorSetLayouts, _descriptorPool, device);
     for (auto* positionBuffer : positions) {
       _descriptorSet->add({positionBuffer});
     }
@@ -348,8 +345,7 @@ TEST(ValidationTest, DescriptorSetBindsAtNonZeroSet) {
   device.initialize(deviceRequirements);
   RenderGraph::MemoryAllocator allocator(device, instance);
   RenderGraph::Buffer buffer(256, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-                             VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-                                 VMA_ALLOCATION_CREATE_MAPPED_BIT,
+                             VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
                              allocator);
   RenderGraph::DescriptorPool descriptorPool({}, device);
 
@@ -412,10 +408,8 @@ TEST(ValidationTest, DescriptorBufferBindsAtNonZeroSet) {
   }
 
   RenderGraph::MemoryAllocator allocator(device, instance);
-  RenderGraph::Buffer buffer(256,
-                             VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                             VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-                                 VMA_ALLOCATION_CREATE_MAPPED_BIT,
+  RenderGraph::Buffer buffer(256, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                             VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
                              allocator);
   std::vector<RenderGraph::DescriptorSetLayout> layouts;
   layouts.reserve(3);
@@ -481,8 +475,8 @@ TEST_P(ValidationScenarioTest, FullGraphPipelineHasNoValidationErrorsAcrossReset
     deviceRequirements.features.tessellationShader = true;
     device.initialize(deviceRequirements);
     RenderGraph::MemoryAllocator allocator(device, instance);
-    RenderGraph::Swapchain swapchain(
-        resolution, allocator, device, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT);
+    RenderGraph::Swapchain swapchain(resolution, allocator, device,
+                                     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT);
     swapchain.initialize();
     RenderGraph::Tracer tracer(device);
     RenderGraph::Graph graph(4, framesInFlight, device, tracer);
@@ -505,9 +499,9 @@ TEST_P(ValidationScenarioTest, FullGraphPipelineHasNoValidationErrorsAcrossReset
 
     for (int frameIndex = 0; frameIndex < framesInFlight; ++frameIndex) {
       auto colorImage = std::make_unique<RenderGraph::Image>(allocator);
-      colorImage->createImage(VK_FORMAT_R16G16B16A16_SFLOAT, resolution, 1, 1, VK_IMAGE_ASPECT_COLOR_BIT,
-                              VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
-                                  VK_IMAGE_USAGE_STORAGE_BIT);
+      colorImage->createImage(
+          VK_FORMAT_R16G16B16A16_SFLOAT, resolution, 1, 1, VK_IMAGE_ASPECT_COLOR_BIT,
+          VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT);
       auto colorImageView = std::make_shared<RenderGraph::ImageView>(std::move(colorImage), device);
       colorImageView->createImageView(VK_IMAGE_VIEW_TYPE_2D, 0, 0);
       colorImageViews.push_back(std::move(colorImageView));
@@ -520,19 +514,16 @@ TEST_P(ValidationScenarioTest, FullGraphPipelineHasNoValidationErrorsAcrossReset
       depthImageViews.push_back(std::move(depthImageView));
     }
 
-    graph.getGraphStorage().add(
-        "Color", std::make_unique<RenderGraph::ImageViewHolder>(
-                     colorImageViews, [&graph]() { return graph.getFrameInFlight(); }));
-    graph.getGraphStorage().add(
-        "Depth", std::make_unique<RenderGraph::ImageViewHolder>(
-                     depthImageViews, [&graph]() { return graph.getFrameInFlight(); }));
+    graph.getGraphStorage().add("Color", std::make_unique<RenderGraph::ImageViewHolder>(
+                                             colorImageViews, [&graph]() { return graph.getFrameInFlight(); }));
+    graph.getGraphStorage().add("Depth", std::make_unique<RenderGraph::ImageViewHolder>(
+                                             depthImageViews, [&graph]() { return graph.getFrameInFlight(); }));
 
     std::vector<std::unique_ptr<RenderGraph::Buffer>> storageBuffers;
     storageBuffers.reserve(framesInFlight);
     for (int frameIndex = 0; frameIndex < framesInFlight; ++frameIndex) {
       storageBuffers.push_back(std::make_unique<RenderGraph::Buffer>(
-          4096, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
-          allocator));
+          4096, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT, allocator));
     }
     graph.getGraphStorage().add("Data", storageBuffers);
 
@@ -600,10 +591,10 @@ TEST_P(ValidationScenarioTest, FullGraphPipelineHasNoValidationErrorsAcrossReset
 
     constexpr int framesPerReset = framesInFlight + 1;
     for (int resetIndex = 0; resetIndex < resetCycleCount; ++resetIndex) {
-    ASSERT_NO_THROW(graph.reset(resolution));
+      ASSERT_NO_THROW(graph.reset(resolution));
       ++totalResetCount;
       if (resetIndex == 1) {
-    ASSERT_NO_THROW(graph.reset(resolution));
+        ASSERT_NO_THROW(graph.reset(resolution));
         ++totalResetCount;
       }
       for (int frameIndex = 0; frameIndex < framesPerReset; ++frameIndex) {
@@ -669,8 +660,7 @@ TEST_P(ValidationScenarioTest, GpuDrivenIndexedIndirectCountDrawsTriangle) {
     };
 
     addBuffers("Positions", sizeof(float) * 4 * 3, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-    addBuffers("Indices", sizeof(uint32_t) * 3,
-               VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+    addBuffers("Indices", sizeof(uint32_t) * 3, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
     addBuffers("DrawCommands", sizeof(VkDrawIndexedIndirectCommand),
                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT);
     addBuffers("DrawCounts", sizeof(uint32_t),
@@ -694,8 +684,8 @@ TEST_P(ValidationScenarioTest, GpuDrivenIndexedIndirectCountDrawsTriangle) {
     drawPass.addIndirectBufferInput("DrawCounts");
     drawPass.addColorTarget("Swapchain", RenderGraph::RenderTargetLoadAction::CLEAR);
 
-    auto computeElement = std::make_shared<GpuDrivenComputeElement>(
-        device, *generatePass.getCommandBuffers().front(), positions, indices, drawCommands, drawCounts);
+    auto computeElement = std::make_shared<GpuDrivenComputeElement>(device, *generatePass.getCommandBuffers().front(),
+                                                                    positions, indices, drawCommands, drawCounts);
     auto graphicElement = std::make_shared<GpuDrivenGraphicElement>(
         device, *drawPass.getCommandBuffers().front(), drawPass.getPipelineGraphic(graph.getGraphStorage()),
         VkExtent2D{static_cast<uint32_t>(resolution.x), static_cast<uint32_t>(resolution.y)}, positions, indices,
@@ -752,8 +742,7 @@ TEST(ValidationTest, ComputeGraphRunsWithoutSwapchain) {
       for (int frameIndex = 0; frameIndex < framesInFlight; ++frameIndex) {
         buffers.push_back(std::make_unique<RenderGraph::Buffer>(
             size, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-            VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
-            allocator));
+            VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT, allocator));
       }
       graph.getGraphStorage().add(name, buffers);
     };
@@ -778,9 +767,8 @@ TEST(ValidationTest, ComputeGraphRunsWithoutSwapchain) {
       storageImageView->createImageView(VK_IMAGE_VIEW_TYPE_2D, 0, 0);
       storageImageViews.push_back(std::move(storageImageView));
     }
-    graph.getGraphStorage().add(
-        "Image", std::make_unique<RenderGraph::ImageViewHolder>(
-                     storageImageViews, [&graph]() { return graph.getFrameInFlight(); }));
+    graph.getGraphStorage().add("Image", std::make_unique<RenderGraph::ImageViewHolder>(
+                                             storageImageViews, [&graph]() { return graph.getFrameInFlight(); }));
 
     auto& computePass = graph.createPassCompute("Compute", false);
     computePass.addStorageBufferOutput("Positions");
@@ -798,11 +786,10 @@ TEST(ValidationTest, ComputeGraphRunsWithoutSwapchain) {
 
     ASSERT_EQ(vkDeviceWaitIdle(device.getLogicalDevice()), VK_SUCCESS);
     for (int frameIndex = 0; frameIndex < framesInFlight; ++frameIndex) {
-      ASSERT_EQ(vmaInvalidateAllocation(allocator.getAllocator(), drawCounts[frameIndex]->getAllocation(), 0,
-                                        VK_WHOLE_SIZE),
-                VK_SUCCESS);
-      const auto* drawCount =
-          static_cast<const uint32_t*>(drawCounts[frameIndex]->getAllocationInfo().pMappedData);
+      ASSERT_EQ(
+          vmaInvalidateAllocation(allocator.getAllocator(), drawCounts[frameIndex]->getAllocation(), 0, VK_WHOLE_SIZE),
+          VK_SUCCESS);
+      const auto* drawCount = static_cast<const uint32_t*>(drawCounts[frameIndex]->getAllocationInfo().pMappedData);
       ASSERT_NE(drawCount, nullptr);
       EXPECT_EQ(*drawCount, 1u);
     }
@@ -848,8 +835,7 @@ TEST(ValidationTest, OffscreenComputeGraphPresentsWithoutWritingSwapchain) {
     storageBuffers.reserve(framesInFlight);
     for (int frameIndex = 0; frameIndex < framesInFlight; ++frameIndex) {
       storageBuffers.push_back(std::make_unique<RenderGraph::Buffer>(
-          4096, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
-          allocator));
+          4096, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT, allocator));
     }
     graph.getGraphStorage().add("Data", storageBuffers);
 
@@ -878,8 +864,9 @@ TEST(ValidationTest, OffscreenComputeGraphPresentsWithoutWritingSwapchain) {
   EXPECT_TRUE(errors.empty()) << joinErrors(errors);
 }
 
-INSTANTIATE_TEST_SUITE_P(
-    QueueModes, ValidationScenarioTest, testing::Values(false, true),
-    [](const testing::TestParamInfo<ValidationScenarioTest::ParamType>& info) {
-      return info.param ? "SeparateComputeQueue" : "SingleQueue";
-    });
+INSTANTIATE_TEST_SUITE_P(QueueModes,
+                         ValidationScenarioTest,
+                         testing::Values(false, true),
+                         [](const testing::TestParamInfo<ValidationScenarioTest::ParamType>& info) {
+                           return info.param ? "SeparateComputeQueue" : "SingleQueue";
+                         });

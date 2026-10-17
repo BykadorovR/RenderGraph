@@ -58,8 +58,7 @@ export class Tracer final {
 
   void setObjectName(VkObjectType type, uint64_t handle, std::string name);
   // Guaranteed copy elision (C++17), accessible to importers via auto.
-  [[nodiscard]] MarkerCPU traceCPU(std::string name,
-                                   std::source_location location = std::source_location::current());
+  [[nodiscard]] MarkerCPU traceCPU(std::string name, std::source_location location = std::source_location::current());
   [[nodiscard]] MarkerGPU traceGPU(std::string name,
                                    QueueType type,
                                    const CommandBuffer& commandBuffer,

@@ -25,12 +25,14 @@ void Device::initialize(const DeviceRequirements& requirements) {
     throw std::logic_error("Device is already initialized");
   }
 
-  const auto descriptorBufferRequired =
-      std::find(requirements.requiredExtensions.begin(), requirements.requiredExtensions.end(),
-                VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME) != requirements.requiredExtensions.end();
-  const auto descriptorBufferOptional =
-      std::find(requirements.optionalExtensions.begin(), requirements.optionalExtensions.end(),
-                VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME) != requirements.optionalExtensions.end();
+  const auto descriptorBufferRequired = std::find(requirements.requiredExtensions.begin(),
+                                                  requirements.requiredExtensions.end(),
+                                                  VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME) !=
+                                        requirements.requiredExtensions.end();
+  const auto descriptorBufferOptional = std::find(requirements.optionalExtensions.begin(),
+                                                  requirements.optionalExtensions.end(),
+                                                  VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME) !=
+                                        requirements.optionalExtensions.end();
 
   // Vulkan 1.2 features
   VkPhysicalDeviceVulkan12Features features12{};

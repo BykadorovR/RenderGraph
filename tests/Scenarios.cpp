@@ -58,8 +58,8 @@ TEST(ScenarioTest, GraphOneQueue) {
   device.setSurface(surface);
   device.initialize();
   RenderGraph::MemoryAllocator allocator(device, instance);
-  RenderGraph::Swapchain swapchain(
-      resolution, allocator, device, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT);
+  RenderGraph::Swapchain swapchain(resolution, allocator, device,
+                                   VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT);
   int framesInFlight = 2;
   RenderGraph::Tracer tracer(device);
   RenderGraph::Graph graph(4, framesInFlight, device, tracer);
@@ -89,8 +89,7 @@ TEST(ScenarioTest, GraphOneQueue) {
     positionImage->createImage(VK_FORMAT_R16G16B16A16_SFLOAT, resolution, 1, 1, VK_IMAGE_ASPECT_COLOR_BIT,
                                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
     positionImage->changeLayout(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, 0, 0,
-                                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                                 commandBuffer[graph.getFrameInFlight()]);
     auto positionImageView = std::make_shared<RenderGraph::ImageView>(std::move(positionImage), device);
     positionImageView->createImageView(VK_IMAGE_VIEW_TYPE_2D, 0, 0);
@@ -271,8 +270,8 @@ TEST(ScenarioTest, GraphSeparateQueues) {
   device.setSurface(surface);
   device.initialize();
   RenderGraph::MemoryAllocator allocator(device, instance);
-  RenderGraph::Swapchain swapchain(
-      resolution, allocator, device, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT);
+  RenderGraph::Swapchain swapchain(resolution, allocator, device,
+                                   VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT);
   int framesInFlight = 2;
   RenderGraph::Tracer tracer(device);
   RenderGraph::Graph graph(4, framesInFlight, device, tracer);
@@ -302,8 +301,7 @@ TEST(ScenarioTest, GraphSeparateQueues) {
     positionImage->createImage(VK_FORMAT_R16G16B16A16_SFLOAT, resolution, 1, 1, VK_IMAGE_ASPECT_COLOR_BIT,
                                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
     positionImage->changeLayout(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, 0, 0,
-                                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                                 commandBuffer[graph.getFrameInFlight()]);
     auto positionImageView = std::make_shared<RenderGraph::ImageView>(std::move(positionImage), device);
     positionImageView->createImageView(VK_IMAGE_VIEW_TYPE_2D, 0, 0);
@@ -580,9 +578,9 @@ TEST(ScenarioTest, GraphicsPassBufferInputs) {
   RenderGraph::Graph graph(2, framesInFlight, device, tracer);
   graph.setSwapchain(swapchain);
   graph.initialize();
-  graph.getGraphStorage().add(
-      "Swapchain", std::make_unique<RenderGraph::ImageViewHolder>(
-                       swapchain.getImageViews(), [&swapchain]() { return swapchain.getSwapchainIndex(); }));
+  graph.getGraphStorage().add("Swapchain",
+                              std::make_unique<RenderGraph::ImageViewHolder>(
+                                  swapchain.getImageViews(), [&swapchain]() { return swapchain.getSwapchainIndex(); }));
 
   auto addBuffers = [&](std::string_view name, VkBufferUsageFlags usage) {
     std::vector<std::unique_ptr<RenderGraph::Buffer>> buffers;
@@ -637,10 +635,11 @@ TEST(ScenarioTest, GraphicsPassBufferInputs) {
   const VkBuffer indirectCommandsBuffer = graph.getGraphStorage().getBuffer("IndirectCommands")[0]->getBuffer();
   const VkBuffer vertexBuffer = graph.getGraphStorage().getBuffer("Vertices")[0]->getBuffer();
   const VkBuffer indexBuffer = graph.getGraphStorage().getBuffer("Indices")[0]->getBuffer();
-  const VkPipelineStageFlags2 graphicsShaderStages =
-      VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_CONTROL_SHADER_BIT |
-      VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT |
-      VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+  const VkPipelineStageFlags2 graphicsShaderStages = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT |
+                                                     VK_PIPELINE_STAGE_2_TESSELLATION_CONTROL_SHADER_BIT |
+                                                     VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT |
+                                                     VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT |
+                                                     VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
 
   bool foundStorageBarrier = false;
   bool foundIndirectBarrier = false;
@@ -744,8 +743,8 @@ TEST(ScenarioTest, GraphReset) {
   device.setSurface(surface);
   device.initialize();
   RenderGraph::MemoryAllocator allocator(device, instance);
-  RenderGraph::Swapchain swapchain(
-      resolution, allocator, device, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT);
+  RenderGraph::Swapchain swapchain(resolution, allocator, device,
+                                   VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT);
   int framesInFlight = 2;
   RenderGraph::Tracer tracer(device);
   RenderGraph::Graph graph(4, framesInFlight, device, tracer);
@@ -775,8 +774,7 @@ TEST(ScenarioTest, GraphReset) {
     positionImage->createImage(VK_FORMAT_R16G16B16A16_SFLOAT, resolution, 1, 1, VK_IMAGE_ASPECT_COLOR_BIT,
                                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
     positionImage->changeLayout(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, 0, 0,
-                                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                                 commandBuffer[graph.getFrameInFlight()]);
     auto positionImageView = std::make_shared<RenderGraph::ImageView>(std::move(positionImage), device);
     positionImageView->createImageView(VK_IMAGE_VIEW_TYPE_2D, 0, 0);

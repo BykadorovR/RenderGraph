@@ -239,8 +239,7 @@ class Graph final {
 
    public:
     Sync() = default;
-    void addSignalSemaphore(std::vector<std::shared_ptr<Semaphore>>& signalSemaphore,
-                            std::function<int()> index);
+    void addSignalSemaphore(std::vector<std::shared_ptr<Semaphore>>& signalSemaphore, std::function<int()> index);
     void addWaitSemaphore(std::vector<std::shared_ptr<Semaphore>>& waitSemaphore, std::function<int()> index);
     void addBarrierBefore(std::vector<Barrier>& barriers, std::function<int()> index);
     void addBarrierAfter(std::vector<Barrier>& barriers, std::function<int()> index);

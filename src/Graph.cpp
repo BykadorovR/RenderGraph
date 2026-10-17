@@ -315,8 +315,7 @@ void Graph::_setResourceNames() {
           _tracer->setObjectName(VK_OBJECT_TYPE_IMAGE,
                                  std::bit_cast<uint64_t>(imageViews[index]->getImage().getImage()),
                                  resource.name + ".image" + suffix);
-          _tracer->setObjectName(VK_OBJECT_TYPE_IMAGE_VIEW,
-                                 std::bit_cast<uint64_t>(imageViews[index]->getImageView()),
+          _tracer->setObjectName(VK_OBJECT_TYPE_IMAGE_VIEW, std::bit_cast<uint64_t>(imageViews[index]->getImageView()),
                                  resource.name + ".imageView" + suffix);
         }
       }
@@ -1151,10 +1150,10 @@ bool Graph::render() {
               if (loadAction == RenderTargetLoadAction::KEEP) {
                 dstAccessMask |= VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT;
               }
-              const auto oldLayout =
-                  loadAction == RenderTargetLoadAction::KEEP ? image.getImageLayout() : VK_IMAGE_LAYOUT_UNDEFINED;
-              const auto transitionGpuTrace =
-                  _tracer->traceGPU("Graph.transition." + colorTarget, queueType, *commandBuffer);
+              const auto oldLayout = loadAction == RenderTargetLoadAction::KEEP ? image.getImageLayout()
+                                                                                : VK_IMAGE_LAYOUT_UNDEFINED;
+              const auto transitionGpuTrace = _tracer->traceGPU("Graph.transition." + colorTarget, queueType,
+                                                                *commandBuffer);
               image.changeLayout(oldLayout, VK_IMAGE_LAYOUT_GENERAL, 0, 0,
                                  VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, dstAccessMask, *commandBuffer);
             }
@@ -1168,10 +1167,10 @@ bool Graph::render() {
               if (loadAction == RenderTargetLoadAction::KEEP) {
                 dstAccessMask |= VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
               }
-              const auto oldLayout =
-                  loadAction == RenderTargetLoadAction::KEEP ? image.getImageLayout() : VK_IMAGE_LAYOUT_UNDEFINED;
-              const auto transitionGpuTrace =
-                  _tracer->traceGPU("Graph.transition." + *depthTarget, queueType, *commandBuffer);
+              const auto oldLayout = loadAction == RenderTargetLoadAction::KEEP ? image.getImageLayout()
+                                                                                : VK_IMAGE_LAYOUT_UNDEFINED;
+              const auto transitionGpuTrace = _tracer->traceGPU("Graph.transition." + *depthTarget, queueType,
+                                                                *commandBuffer);
               image.changeLayout(
                   oldLayout, VK_IMAGE_LAYOUT_GENERAL, 0, 0,
                   VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
@@ -1192,8 +1191,7 @@ bool Graph::render() {
             auto& imageView = _graphStorage->getImageViewHolder(name).getImageView();
             auto& image = imageView.getImage();
             if (image.getImageLayout() != VK_IMAGE_LAYOUT_GENERAL) {
-              const auto transitionGpuTrace =
-                  _tracer->traceGPU("Graph.transition." + name, queueType, *commandBuffer);
+              const auto transitionGpuTrace = _tracer->traceGPU("Graph.transition." + name, queueType, *commandBuffer);
               image.changeLayout(image.getImageLayout(), VK_IMAGE_LAYOUT_GENERAL, 0, 0,
                                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, dstAccessMask, *commandBuffer);
             }
@@ -1378,4 +1376,3 @@ void Graph::reset(glm::ivec2 resolution) {
 
   calculate();
 }
-

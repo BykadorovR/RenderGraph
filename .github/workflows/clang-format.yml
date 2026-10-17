@@ -1,0 +1,32 @@
+name: Clang Format
+
+on:
+  pull_request:
+    branches:
+      - master
+
+permissions:
+  contents: read
+
+concurrency:
+  group: clang-format-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  clang-format:
+    name: clang-format
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install clang-format
+        run: python -m pip install --disable-pip-version-check clang-format==17.0.6
+
+      - name: Check formatting
+        shell: pwsh
+        run: |
+          $sourceFiles = Get-ChildItem -Path include, src, tests -Recurse -File |
+            Where-Object { $_.Extension -in '.cpp', '.ixx', '.cppm', '.h', '.hpp' }
+          clang-format --dry-run --Werror --style=file $sourceFiles.FullName

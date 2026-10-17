@@ -27,7 +27,7 @@ class ImageCPU final {
   T* _data = nullptr;
   std::function<void(T*)> _deleter;
   glm::ivec2 _resolution{};
- int _channels = 0;
+  int _channels = 0;
 
  public:
   ImageCPU() = default;

@@ -466,8 +466,8 @@ TEST(DescriptorSetTest, Update) {
       512, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
       VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT, allocator);
   RenderGraph::DescriptorHandler& descriptorHandler = arrayDescriptorSet;
-  EXPECT_NO_THROW(descriptorHandler.update(
-      5, std::vector<RenderGraph::Buffer*>{&updatedArrayBuffer0, &updatedArrayBuffer1}, 0, 1));
+  EXPECT_NO_THROW(
+      descriptorHandler.update(5, std::vector<RenderGraph::Buffer*>{&updatedArrayBuffer0, &updatedArrayBuffer1}, 0, 1));
   EXPECT_EQ(arrayDescriptorSet._resources[1].buffers[0], &updatedArrayBuffer0);
   EXPECT_EQ(arrayDescriptorSet._resources[1].buffers[1], &updatedArrayBuffer1);
   EXPECT_THROW(descriptorHandler.update(5, std::vector<RenderGraph::Buffer*>{&updatedArrayBuffer0}, 0, 1),
@@ -481,8 +481,7 @@ TEST(DescriptorSetTest, Update) {
                                .pImmutableSamplers = nullptr}});
   const auto createTexture = [&]() {
     auto image = std::make_unique<RenderGraph::Image>(allocator);
-    image->createImage(VK_FORMAT_R8G8B8A8_UNORM, {2, 2}, 1, 1, VK_IMAGE_ASPECT_COLOR_BIT,
-                       VK_IMAGE_USAGE_SAMPLED_BIT);
+    image->createImage(VK_FORMAT_R8G8B8A8_UNORM, {2, 2}, 1, 1, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_USAGE_SAMPLED_BIT);
     auto imageView = std::make_shared<RenderGraph::ImageView>(std::move(image), device);
     imageView->createImageView(VK_IMAGE_VIEW_TYPE_2D, 0, 0);
     auto sampler = std::make_shared<RenderGraph::Sampler>(device);
@@ -494,8 +493,8 @@ TEST(DescriptorSetTest, Update) {
   RenderGraph::DescriptorSet textureDescriptorSet({&textureLayout}, descriptorPool, device);
   textureDescriptorSet.add({texture.get()});
   textureDescriptorSet.initialize(commandBuffer);
-  EXPECT_NO_THROW(textureDescriptorSet.update(
-      0, std::vector<RenderGraph::Texture*>{updatedTexture.get()}, commandBuffer));
+  EXPECT_NO_THROW(
+      textureDescriptorSet.update(0, std::vector<RenderGraph::Texture*>{updatedTexture.get()}, commandBuffer));
   EXPECT_EQ(textureDescriptorSet._resources[0].textures[0], updatedTexture.get());
   commandBuffer.endCommands();
 }
@@ -739,8 +738,7 @@ TEST(DescriptorBufferTest, Update) {
                                .pImmutableSamplers = nullptr}});
   const auto createTexture = [&]() {
     auto image = std::make_unique<RenderGraph::Image>(allocator);
-    image->createImage(VK_FORMAT_R8G8B8A8_UNORM, {2, 2}, 1, 1, VK_IMAGE_ASPECT_COLOR_BIT,
-                       VK_IMAGE_USAGE_SAMPLED_BIT);
+    image->createImage(VK_FORMAT_R8G8B8A8_UNORM, {2, 2}, 1, 1, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_USAGE_SAMPLED_BIT);
     auto imageView = std::make_shared<RenderGraph::ImageView>(std::move(image), device);
     imageView->createImageView(VK_IMAGE_VIEW_TYPE_2D, 0, 0);
     auto sampler = std::make_shared<RenderGraph::Sampler>(device);
@@ -761,8 +759,8 @@ TEST(DescriptorBufferTest, Update) {
   EXPECT_EQ(textureDescriptorBuffer._resources[0].textures[1], updatedTexture1.get());
   EXPECT_NE(textureDescriptorBuffer._descriptors, oldTextureDescriptors);
 
-  const auto descriptorSize =
-      static_cast<std::size_t>(textureDescriptorBuffer._descriptorBufferProperties.combinedImageSamplerDescriptorSize);
+  const auto descriptorSize = static_cast<std::size_t>(
+      textureDescriptorBuffer._descriptorBufferProperties.combinedImageSamplerDescriptorSize);
   for (std::size_t index = 0; index < 2; ++index) {
     auto* updatedTexture = index == 0 ? updatedTexture0.get() : updatedTexture1.get();
     VkDescriptorImageInfo imageInfo{
@@ -777,20 +775,20 @@ TEST(DescriptorBufferTest, Update) {
     vkGetDescriptorEXT(device.getLogicalDevice(), &descriptorInfo, descriptorSize, expectedDescriptor.data());
 
     if (textureDescriptorBuffer._descriptorBufferProperties.combinedImageSamplerDescriptorSingleArray) {
-      EXPECT_TRUE(std::equal(expectedDescriptor.begin(), expectedDescriptor.end(),
-                             textureDescriptorBuffer._descriptors.begin() +
-                                 textureDescriptorBuffer._offsets[0][index]));
+      EXPECT_TRUE(
+          std::equal(expectedDescriptor.begin(), expectedDescriptor.end(),
+                     textureDescriptorBuffer._descriptors.begin() + textureDescriptorBuffer._offsets[0][index]));
     } else {
       const auto imageSize = static_cast<std::size_t>(
           textureDescriptorBuffer._descriptorBufferProperties.sampledImageDescriptorSize);
-      const auto samplerSize =
-          static_cast<std::size_t>(textureDescriptorBuffer._descriptorBufferProperties.samplerDescriptorSize);
+      const auto samplerSize = static_cast<std::size_t>(
+          textureDescriptorBuffer._descriptorBufferProperties.samplerDescriptorSize);
       const auto bindingOffset = textureDescriptorBuffer._offsets[0][0];
       EXPECT_TRUE(std::equal(expectedDescriptor.begin(), expectedDescriptor.begin() + imageSize,
                              textureDescriptorBuffer._descriptors.begin() + bindingOffset + imageSize * index));
-      EXPECT_TRUE(std::equal(expectedDescriptor.begin() + imageSize, expectedDescriptor.end(),
-                             textureDescriptorBuffer._descriptors.begin() + bindingOffset + imageSize * 2 +
-                                 samplerSize * index));
+      EXPECT_TRUE(std::equal(
+          expectedDescriptor.begin() + imageSize, expectedDescriptor.end(),
+          textureDescriptorBuffer._descriptors.begin() + bindingOffset + imageSize * 2 + samplerSize * index));
     }
   }
   commandBuffer.endCommands();
@@ -929,8 +927,7 @@ TEST(ImageTest, CreateCubemapCompatible) {
 
   auto image = std::make_unique<RenderGraph::Image>(allocator);
   image->createImage(VK_FORMAT_R8G8B8A8_UNORM, {64, 64}, 1, 6, VK_IMAGE_ASPECT_COLOR_BIT,
-                     VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-                     VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT);
+                     VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT);
   EXPECT_EQ(image->getCreateFlags(), VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT);
 
   RenderGraph::ImageView imageView(std::move(image), device);
@@ -949,8 +946,7 @@ TEST(ResourceUploaderTest, UploadsImage) {
   RenderGraph::MemoryAllocator allocator(device, instance);
   RenderGraph::Image image(allocator);
   image.createImage(VK_FORMAT_R8G8B8A8_UNORM, {2, 2}, 2, 1, VK_IMAGE_ASPECT_COLOR_BIT,
-                    VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-                        VK_IMAGE_USAGE_SAMPLED_BIT);
+                    VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
 
   RenderGraph::ResourceUploader resourceUploader(allocator, device);
   const std::vector<std::byte> pixels(2 * 2 * 4, std::byte{42});

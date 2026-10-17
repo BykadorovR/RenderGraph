@@ -1,17 +1,5 @@
-RenderGraph — a lightweight, modern C++20 render graph framework for Vulkan applications.
-
-
-
-
-
-
-
-
-
-
-
-
-
+[![Build](https://github.com/BykadorovR/RenderGraph/actions/workflows/build.yml/badge.svg)](https://github.com/BykadorovR/RenderGraph/actions/workflows/build.yml)
+[![Clang Format](https://github.com/BykadorovR/RenderGraph/actions/workflows/clang-format.yml/badge.svg)](https://github.com/BykadorovR/RenderGraph/actions/workflows/clang-format.yml)
 
 # RenderGraph
 

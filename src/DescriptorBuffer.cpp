@@ -88,11 +88,10 @@ DescriptorBuffer::DescriptorBuffer(const std::vector<DescriptorSetLayout*>& layo
       VkDeviceSize offset;
       vkGetDescriptorSetLayoutBindingOffsetEXT(device.getLogicalDevice(), layout->getDescriptorSetLayout(),
                                                bindingInfo.binding, &offset);
-      const auto descriptorStride =
-          bindingInfo.descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER &&
-                  !_descriptorBufferProperties.combinedImageSamplerDescriptorSingleArray
-              ? _descriptorBufferProperties.sampledImageDescriptorSize
-              : _getDescriptorSize(bindingInfo.descriptorType);
+      const auto descriptorStride = bindingInfo.descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER &&
+                                            !_descriptorBufferProperties.combinedImageSamplerDescriptorSingleArray
+                                        ? _descriptorBufferProperties.sampledImageDescriptorSize
+                                        : _getDescriptorSize(bindingInfo.descriptorType);
       for (int j = 0; j < layout->getLayoutInfo()[i].descriptorCount; j++) {
         _offsets[id].push_back(offset + descriptorStride * j);
       }
@@ -274,8 +273,7 @@ void DescriptorBuffer::initialize(const CommandBuffer& commandBuffer) {
       *_memoryAllocator);
 
   // Descriptor buffers are explicitly created as persistently mapped host-visible buffers.
-  const auto descriptorData =
-      std::span(reinterpret_cast<const std::byte*>(_descriptors.data()), _descriptors.size());
+  const auto descriptorData = std::span(reinterpret_cast<const std::byte*>(_descriptors.data()), _descriptors.size());
   const auto result = vmaCopyMemoryToAllocation(_memoryAllocator->getAllocator(), descriptorData.data(),
                                                 _descriptorBuffer->getAllocation(), 0, descriptorData.size());
   if (result != VK_SUCCESS) {
@@ -337,9 +335,8 @@ void DescriptorBuffer::update(std::uint32_t binding,
                                            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
                                            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
       if (image.getAspectMask() & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) {
-        dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
-                        VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_SHADER_READ_BIT |
-                        VK_ACCESS_2_SHADER_WRITE_BIT;
+        dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                        VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT;
         dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
                        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
                        VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
@@ -380,7 +377,6 @@ void DescriptorBuffer::update(std::uint32_t binding,
     resourceIndex += _descriptorLayouts[currentSet]->getLayoutInfo().size();
   if (resourceIndex < _resources.size())
     _resources[resourceIndex] = Resource{.type = Resource::Type::TEXTURE, .textures = std::move(textures)};
-
 }
 
 void DescriptorBuffer::update(std::uint32_t binding,
@@ -436,7 +432,6 @@ void DescriptorBuffer::update(std::uint32_t binding,
     resourceIndex += _descriptorLayouts[currentSet]->getLayoutInfo().size();
   if (resourceIndex < _resources.size())
     _resources[resourceIndex] = Resource{.type = Resource::Type::BUFFER, .buffers = std::move(buffers)};
-
 }
 
 void DescriptorBuffer::bind(VkPipelineBindPoint bindPoint,
@@ -526,8 +521,8 @@ void DescriptorSet::_allocateDescriptorSetsForNextFrame() {
   const auto status = vkAllocateDescriptorSets(_device->getLogicalDevice(), &allocInfo, setFrame.data());
   if (status != VK_SUCCESS) {
     std::ostringstream descriptors;
-    descriptors << "failed to allocate descriptor sets: allocated sets: "
-                << _descriptorPool->getDescriptorSetsNumber() << ", descriptors: ";
+    descriptors << "failed to allocate descriptor sets: allocated sets: " << _descriptorPool->getDescriptorSetsNumber()
+                << ", descriptors: ";
     for (auto&& [key, value] : _descriptorPool->getDescriptorsNumber()) {
       descriptors << key << ":" << value << " ";
     }
@@ -663,9 +658,8 @@ void DescriptorSet::update(std::uint32_t binding,
                                            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
                                            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
       if (image.getAspectMask() & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) {
-        dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
-                        VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_SHADER_READ_BIT |
-                        VK_ACCESS_2_SHADER_WRITE_BIT;
+        dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                        VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT;
         dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
                        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
                        VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
