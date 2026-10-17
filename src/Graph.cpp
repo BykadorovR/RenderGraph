@@ -1154,7 +1154,7 @@ bool Graph::render() {
                                                                                 : VK_IMAGE_LAYOUT_UNDEFINED;
               const auto transitionGpuTrace = _tracer->traceGPU("Graph.transition." + colorTarget, queueType,
                                                                 *commandBuffer);
-              image.changeLayout(oldLayout, VK_IMAGE_LAYOUT_GENERAL, 0, 0,
+              image.changeLayout(oldLayout, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
                                  VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, dstAccessMask, *commandBuffer);
             }
           }
@@ -1172,7 +1172,7 @@ bool Graph::render() {
               const auto transitionGpuTrace = _tracer->traceGPU("Graph.transition." + *depthTarget, queueType,
                                                                 *commandBuffer);
               image.changeLayout(
-                  oldLayout, VK_IMAGE_LAYOUT_GENERAL, 0, 0,
+                  oldLayout, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
                   VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
                   dstAccessMask, *commandBuffer);
             }
@@ -1192,8 +1192,8 @@ bool Graph::render() {
             auto& image = imageView.getImage();
             if (image.getImageLayout() != VK_IMAGE_LAYOUT_GENERAL) {
               const auto transitionGpuTrace = _tracer->traceGPU("Graph.transition." + name, queueType, *commandBuffer);
-              image.changeLayout(image.getImageLayout(), VK_IMAGE_LAYOUT_GENERAL, 0, 0,
-                                 VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, dstAccessMask, *commandBuffer);
+              image.changeLayout(image.getImageLayout(), VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+                                 0, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, dstAccessMask, *commandBuffer);
             }
           }
         }
@@ -1312,8 +1312,8 @@ bool Graph::render() {
         "Graph.transition.present", _passQueueTypes.at(_passesOrdered.back()), *commandBufferSubmit.back());
     _swapchain->getImage(swapchainIndex)
         .changeLayout(_swapchain->getImage(swapchainIndex).getImageLayout(), VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-                      VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT, 0, 0,
-                      *commandBufferSubmit.back());
+                      VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT,
+                      VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, 0, *commandBufferSubmit.back());
   }
 
   std::vector<uint64_t> signalValues(signalSemaphores.size() + 1, 0);
