@@ -96,6 +96,7 @@ jobs:
             ninja-build \
             vulkan-tools \
             vulkan-validationlayers \
+            xauth \
             xorg-dev \
             xvfb
 
@@ -108,9 +109,9 @@ jobs:
 
       - name: Verify Vulkan
         run: |
-          vulkanInfo=$(xvfb-run --auto-servernum vulkaninfo --summary 2>&1)
+          vulkanInfo=$(xvfb-run --auto-servernum vulkaninfo --summary 2>&1 || true)
+          echo "$vulkanInfo"
           if [[ $vulkanInfo != *"llvmpipe"* || $vulkanInfo != *"VK_LAYER_KHRONOS_validation"* ]]; then
-            echo "$vulkanInfo"
             exit 1
           fi
 
