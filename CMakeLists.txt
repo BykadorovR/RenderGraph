@@ -6,6 +6,7 @@ OPTION(RENDER_GRAPH_BUILD_TESTS "Build the RenderGraph test suite" ON)
 
 set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT ${PROJECT_NAME})
 include(FetchContent)
+find_package(Threads REQUIRED)
 
 if (NOT ANDROID)
   set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "Disable GLFW examples")
@@ -100,7 +101,7 @@ target_sources(glm-module PUBLIC
     BASE_DIRS ${glm_SOURCE_DIR}/glm
     FILES ${glm_SOURCE_DIR}/glm/glm.cppm
 )
-target_link_libraries(glm-module PUBLIC glm::glm)
+target_link_libraries(glm-module PUBLIC glm::glm PRIVATE Threads::Threads)
 target_compile_features(glm-module PRIVATE cxx_std_23)
 if (MSVC)
   #enable multiple cores compilation for VS

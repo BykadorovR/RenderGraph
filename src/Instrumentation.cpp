@@ -3,6 +3,7 @@ module;
 #include <tracy/TracyVulkan.hpp>
 
 #include <cstring>
+#include <source_location>
 #include <stdexcept>
 #include <utility>
 
