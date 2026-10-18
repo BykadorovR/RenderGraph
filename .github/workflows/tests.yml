@@ -97,17 +97,17 @@ jobs:
             mesa-vulkan-drivers \
             ninja-build \
             vulkan-tools \
-            vulkan-validationlayers \
             xauth \
             xorg-dev \
             xvfb
 
       - name: Set up Vulkan SDK
-        uses: humbletim/setup-vulkan-sdk@v1.2.1
+        # Ubuntu 24.04 layers lack timeline semaphore sync validation; use the SDK's layers.
+        uses: jakoch/install-vulkan-sdk-action@v1
         with:
-          vulkan-query-version: 1.4.304.1
-          vulkan-components: Vulkan-Headers, Vulkan-Loader
-          vulkan-use-cache: true
+          vulkan_version: 1.4.304.1
+          cache: true
+          github_token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Select Lavapipe
         run: |
@@ -123,6 +123,7 @@ jobs:
 
       - name: Verify Vulkan
         run: |
+          cat "$VULKAN_SDK/share/vulkan/explicit_layer.d/VkLayer_khronos_validation.json"
           vulkanInfo=$(xvfb-run --auto-servernum vulkaninfo --summary 2>&1 || true)
           echo "$vulkanInfo"
           if [[ $vulkanInfo != *"llvmpipe"* || $vulkanInfo != *"VK_LAYER_KHRONOS_validation"* ]]; then
