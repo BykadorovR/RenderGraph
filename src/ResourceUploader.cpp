@@ -87,10 +87,8 @@ void ResourceUploader::upload(Buffer& destination, std::span<const std::byte> da
       throw std::runtime_error("Can't upload data to host-visible buffer: " + std::to_string(result));
     }
 
-    const VkCommandBuffer commandBuffer = _getRecordingBatch()._commandBuffer->getCommandBuffer();
-    _recordBufferBarrier(commandBuffer, destination.getBuffer(), offset, dataSize, VK_PIPELINE_STAGE_2_HOST_BIT,
-                         VK_ACCESS_2_HOST_WRITE_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-                         VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
+    // Create a batch and begin its command buffer for the subsequent submit().
+    _getRecordingBatch();
     return;
   }
 
@@ -118,9 +116,9 @@ void ResourceUploader::upload(Buffer& destination, std::span<const std::byte> da
   };
   vkCmdCopyBuffer(commandBuffer, stagingBuffer->getBuffer(), destination.getBuffer(), 1, &copyRegion);
 
-  _recordBufferBarrier(commandBuffer, destination.getBuffer(), offset, dataSize, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                       VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-                       VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
+  if (!std::ranges::contains(batch._buffers, &destination)) {
+    batch._buffers.push_back(&destination);
+  }
   batch._stagingBuffers.push_back(std::move(stagingBuffer));
 }
 
@@ -177,24 +175,9 @@ void ResourceUploader::_generateMipmaps(Image& image, VkCommandBuffer commandBuf
     vkCmdBlitImage(commandBuffer, image.getImage(), VK_IMAGE_LAYOUT_GENERAL, image.getImage(), VK_IMAGE_LAYOUT_GENERAL,
                    1, &blit, VK_FILTER_LINEAR);
 
-    barrier.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-    barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
-    barrier.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-    barrier.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
-    vkCmdPipelineBarrier2(commandBuffer, &dependencyInfo);
-
     mipWidth = mipWidth > 1 ? mipWidth / 2 : 1;
     mipHeight = mipHeight > 1 ? mipHeight / 2 : 1;
   }
-
-  barrier.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-  barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-  barrier.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-  barrier.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
-  barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-  barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-  barrier.subresourceRange.baseMipLevel = static_cast<uint32_t>(image.getMipMapNumber() - 1);
-  vkCmdPipelineBarrier2(commandBuffer, &dependencyInfo);
 }
 
 void ResourceUploader::upload(Image& destination,
@@ -290,40 +273,48 @@ void ResourceUploader::upload(Image& destination,
 
   if (destination.getMipMapNumber() > 1) {
     _generateMipmaps(destination, commandBuffer);
-  } else {
-    const VkImageMemoryBarrier2 afterCopyBarrier{
-        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-        .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-        .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-        .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-        .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
-        .oldLayout = VK_IMAGE_LAYOUT_GENERAL,
-        .newLayout = VK_IMAGE_LAYOUT_GENERAL,
-        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .image = destination.getImage(),
-        .subresourceRange =
-            {
-                .aspectMask = destination.getAspectMask(),
-                .baseMipLevel = 0,
-                .levelCount = 1,
-                .baseArrayLayer = 0,
-                .layerCount = static_cast<uint32_t>(destination.getLayerNumber()),
-            },
-    };
-    const VkDependencyInfo dependencyInfo{
-        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-        .imageMemoryBarrierCount = 1,
-        .pImageMemoryBarriers = &afterCopyBarrier,
-    };
-    vkCmdPipelineBarrier2(commandBuffer, &dependencyInfo);
+  }
+  if (!std::ranges::contains(batch._images, &destination)) {
+    batch._images.push_back(&destination);
   }
   batch._stagingBuffers.push_back(std::move(stagingBuffer));
 }
 
-UploadTicket ResourceUploader::submit() {
+UploadTicket ResourceUploader::submit(QueueType destinationQueueType) {
   if (_recordingBatch == nullptr) {
     throw std::logic_error("Can't submit an empty upload batch");
+  }
+
+  const auto sourceFamily = static_cast<uint32_t>(_device->getQueueIndex(QueueType::GRAPHICS));
+  const auto destinationFamily = static_cast<uint32_t>(_device->getQueueIndex(destinationQueueType));
+  Barrier releaseBarrier;
+  Barrier acquireBarrier;
+  if (sourceFamily != destinationFamily) {
+    for (Buffer* buffer : _recordingBatch->_buffers) {
+      releaseBarrier.addBuffer(buffer, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                               VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT, 0, 0, sourceFamily,
+                               destinationFamily);
+      acquireBarrier.addBuffer(buffer, 0, 0, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                               VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT, sourceFamily,
+                               destinationFamily);
+    }
+    for (Image* image : _recordingBatch->_images) {
+      const VkImageSubresourceRange subresourceRange{
+          image->getAspectMask(),
+          0,
+          static_cast<uint32_t>(image->getMipMapNumber()),
+          0,
+          static_cast<uint32_t>(image->getLayerNumber()),
+      };
+      releaseBarrier.addImage(image->getImage(), VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                              VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT, 0, 0,
+                              VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, subresourceRange, sourceFamily,
+                              destinationFamily);
+      acquireBarrier.addImage(image->getImage(), 0, 0, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                              VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT, VK_IMAGE_LAYOUT_GENERAL,
+                              VK_IMAGE_LAYOUT_GENERAL, subresourceRange, sourceFamily, destinationFamily);
+    }
+    releaseBarrier.execute(_recordingBatch->_commandBuffer->getCommandBuffer());
   }
 
   _recordingBatch->_commandBuffer->endCommands();
@@ -356,6 +347,8 @@ UploadTicket ResourceUploader::submit() {
   return {
       .semaphore = _timelineSemaphore.getSemaphore(),
       .value = completionValue,
+      .destinationQueueType = destinationQueueType,
+      .acquireBarrier = std::move(acquireBarrier),
   };
 }
 

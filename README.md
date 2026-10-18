@@ -65,6 +65,7 @@ void buildGraph(RenderGraph::Graph& graph) {
   graph.initialize();
   // Adds a compute pass to the graphics queue instead of a separate queue.
   graph.createPassCompute("Compute", false);
+  // Custom uploads from ResourceUploader can be included via graph.calculate(uploadTickets).
   graph.calculate();
 }
 
@@ -137,6 +138,7 @@ void buildGraph(RenderGraph::Graph& graph, RenderGraph::Swapchain& swapchain) {
   uiPass.addColorTarget("Swapchain", RenderGraph::RenderTargetLoadAction::KEEP);
   // uiPass.registerGraphElement(uiElement);
 
+  // Custom uploads from ResourceUploader can be included via graph.calculate(uploadTickets).
   graph.calculate();
 }
 

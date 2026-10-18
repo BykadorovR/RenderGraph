@@ -6,6 +6,7 @@ module;
 #include <functional>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -25,6 +26,7 @@ import CommandPool;
 import Buffer;
 import Device;
 import Instrumentation;
+import ResourceUploader;
 import glm;
 
 // Keep GoogleTest-generated classes in the global module
@@ -267,6 +269,8 @@ class Graph final {
     std::vector<const Barrier*> getBarriersAfter() const;
   };
   std::unordered_map<GraphPass*, Sync> _sync;
+  // Each queue consumes its upload waits and ownership acquire barriers once, at its first pass.
+  std::unordered_map<GraphPass*, std::vector<UploadTicket>> _uploadTickets;
 
   void _setResourceNames();
   bool _usesSeparateQueue(GraphPass* pass);
@@ -287,7 +291,9 @@ class Graph final {
   GraphStorage& getGraphStorage() const noexcept;
   int getFrameInFlight() const noexcept;
 
-  void calculate();
+  // Keep ResourceUploader alive until the GPU finishes the frame waiting on its tickets (first frame-slot reuse).
+  // Keep uploaded Buffer/Image objects alive until their last GPU use completes; tickets are copied here.
+  void calculate(std::span<const UploadTicket> uploadTickets = {});
   // true -> need to call reset
   bool render();
   void reset(glm::ivec2 resolution);

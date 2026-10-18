@@ -14,6 +14,7 @@ module;
 #include <optional>
 #include <ranges>
 #include <set>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -751,7 +752,7 @@ void Graph::print() const {
   std::cout << "========================================" << std::endl;
 }
 
-void Graph::calculate() {
+void Graph::calculate(std::span<const UploadTicket> uploadTickets) {
   const auto cpuTrace = _tracer->traceCPU("Graph.calculate");
   // store resources in a convinient way
   _resources.clear();
@@ -1115,6 +1116,22 @@ void Graph::calculate() {
 
     previousPass = pass;
   }
+  std::vector<UploadTicket> pendingUploads(uploadTickets.begin(), uploadTickets.end());
+  for (auto& [pass, tickets] : _uploadTickets) {
+    pendingUploads.insert(pendingUploads.end(), std::make_move_iterator(tickets.begin()),
+                          std::make_move_iterator(tickets.end()));
+  }
+  _uploadTickets.clear();
+  for (auto& ticket : pendingUploads) {
+    const VkQueue destinationQueue = _device->getQueue(ticket.destinationQueueType);
+    const auto passIt = std::ranges::find_if(_passesOrdered, [this, destinationQueue](GraphPass* pass) {
+      return _device->getQueue(_passQueueTypes.at(pass)) == destinationQueue;
+    });
+    if (passIt == _passesOrdered.end()) {
+      throw std::logic_error("Upload ticket destination queue is not used by the graph");
+    }
+    _uploadTickets[*passIt].push_back(std::move(ticket));
+  }
 }
 
 bool Graph::render() {
@@ -1157,6 +1174,12 @@ bool Graph::render() {
         auto commandBuffer = pass->getCommandBuffers()[_frameInFlight];
         if (!commandBuffer->getActive()) {
           commandBuffer->beginCommands();
+        }
+
+        if (const auto uploadIt = _uploadTickets.find(pass); uploadIt != _uploadTickets.end()) {
+          for (const auto& ticket : uploadIt->second) {
+            ticket.acquireBarrier.execute(commandBuffer->getCommandBuffer());
+          }
         }
 
         const QueueType queueType = _passQueueTypes.at(pass);
@@ -1249,7 +1272,7 @@ bool Graph::render() {
       std::ranges::to<std::vector<std::future<void>>>();
 
   auto submitPassToQueue = [this](GraphPass* previousPass, const std::vector<CommandBuffer*>& commandBufferSubmit,
-                                  const std::vector<VkSemaphore>& waitSemaphores,
+                                  const std::vector<VkSemaphoreSubmitInfo>& waitSemaphoreInfos,
                                   const std::vector<VkSemaphore>& signalSemaphores,
                                   const std::optional<std::vector<uint64_t>> signalValues = std::nullopt) {
     std::vector<VkCommandBufferSubmitInfo> commandBufferInfos;
@@ -1262,16 +1285,6 @@ bool Graph::render() {
       });
     }
 
-    std::vector<VkSemaphoreSubmitInfo> waitSemaphoreInfos;
-    waitSemaphoreInfos.reserve(waitSemaphores.size());
-    for (VkSemaphore semaphore : waitSemaphores) {
-      waitSemaphoreInfos.push_back({
-          .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
-          .semaphore = semaphore,
-          .value = 0,
-          .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-      });
-    }
     std::vector<VkSemaphoreSubmitInfo> signalSemaphoreInfos;
     signalSemaphoreInfos.reserve(signalSemaphores.size());
     for (std::size_t i = 0; i < signalSemaphores.size(); ++i) {
@@ -1303,7 +1316,7 @@ bool Graph::render() {
 
   std::vector<CommandBuffer*> commandBufferSubmit;
   std::vector<VkSemaphore> signalSemaphores;
-  std::vector<VkSemaphore> waitSemaphores;
+  std::vector<VkSemaphoreSubmitInfo> waitSemaphores;
   GraphPass* previousPass = nullptr;
   for (auto&& [pass, futureTask] : std::views::zip(_passesOrdered, futureTasks)) {
     if (futureTask.valid()) {
@@ -1322,9 +1335,31 @@ bool Graph::render() {
 
     previousPass = pass;
     commandBufferSubmit.push_back(pass->getCommandBuffers()[_frameInFlight]);
+    if (const auto uploadIt = _uploadTickets.find(pass); uploadIt != _uploadTickets.end()) {
+      for (const auto& ticket : uploadIt->second) {
+        // One uploader shares a timeline semaphore across its tickets; waiting for the largest value covers them all.
+        // A submit's wait list must not contain the same semaphore more than once.
+        const auto waitIt = std::ranges::find(waitSemaphores, ticket.semaphore, &VkSemaphoreSubmitInfo::semaphore);
+        if (waitIt != waitSemaphores.end()) {
+          waitIt->value = std::max(waitIt->value, ticket.value);
+        } else {
+          waitSemaphores.push_back({
+              .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+              .semaphore = ticket.semaphore,
+              .value = ticket.value,
+              .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+          });
+        }
+      }
+    }
     if (const auto syncIt = _sync.find(pass); syncIt != _sync.end()) {
       for (Semaphore* semaphore : syncIt->second.getWaitSemaphores()) {
-        waitSemaphores.push_back(semaphore->getSemaphore());
+        waitSemaphores.push_back({
+            .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+            .semaphore = semaphore->getSemaphore(),
+            .value = 0,
+            .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+        });
       }
       for (Semaphore* semaphore : syncIt->second.getSignalSemaphores()) {
         signalSemaphores.push_back(semaphore->getSemaphore());
@@ -1348,6 +1383,7 @@ bool Graph::render() {
   signalSemaphores.push_back(_semaphoreInFlight->getSemaphore());
 
   submitPassToQueue(_passesOrdered.back(), commandBufferSubmit, waitSemaphores, signalSemaphores, signalValues);
+  _uploadTickets.clear();
 
   ++_valueSemaphoreInFlight;
 

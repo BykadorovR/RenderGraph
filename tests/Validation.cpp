@@ -8,13 +8,17 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <memory>
 #include <mutex>
+#include <span>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 import Allocator;
@@ -27,6 +31,7 @@ import Graph;
 import Instance;
 import Instrumentation;
 import Pipeline;
+import ResourceUploader;
 import Shader;
 import Surface;
 import Swapchain;
@@ -842,6 +847,135 @@ TEST(ValidationTest, ComputeGraphRunsWithoutSwapchain) {
 
   const std::vector<std::string> errors = validationErrors.getErrors();
   EXPECT_TRUE(errors.empty()) << joinErrors(errors);
+}
+
+TEST_P(ValidationScenarioTest, UploadTicketsSynchronizeFirstPassOnEachQueueOnly) {
+  ValidationErrorCollector validationErrors;
+  RenderGraph::Instance instance("ValidationUploadTicketsTest", true);
+  if (!instance.isDebug()) {
+    GTEST_SKIP() << "Vulkan validation layers or VK_EXT_debug_utils are unavailable";
+  }
+  ValidationMessenger validationMessenger(instance.getInstance().instance, validationErrors);
+
+  {
+    RenderGraph::Device device(instance);
+    device.initialize();
+    RenderGraph::MemoryAllocator allocator(device, instance);
+    RenderGraph::Tracer tracer(device);
+    RenderGraph::ResourceUploader uploader(allocator, device);
+    RenderGraph::Graph graph(1, 1, device, tracer);
+    graph.initialize();
+    const auto destinationQueueType = GetParam() ? RenderGraph::QueueType::COMPUTE : RenderGraph::QueueType::GRAPHICS;
+
+    const std::array<uint32_t, 2> firstData{11, 22};
+    const std::array<uint32_t, 2> secondData{33, 44};
+    std::vector<RenderGraph::UploadTicket> tickets;
+    for (const auto& [name, data] : {std::pair{"First", firstData}, std::pair{"Second", secondData}}) {
+      std::vector<std::unique_ptr<RenderGraph::Buffer>> buffers;
+      buffers.push_back(std::make_unique<RenderGraph::Buffer>(
+          sizeof(data),
+          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, 0,
+          allocator));
+      uploader.upload(*buffers.front(), std::as_bytes(std::span(data)));
+      const auto queueType = std::string_view(name) == "First" ? destinationQueueType
+                                                               : RenderGraph::QueueType::GRAPHICS;
+      tickets.push_back(uploader.submit(queueType));
+      EXPECT_EQ(tickets.back().destinationQueueType, queueType);
+      graph.getGraphStorage().add(name, buffers);
+    }
+
+    RenderGraph::Image image(allocator);
+    image.createImage(VK_FORMAT_R8G8B8A8_UNORM, {2, 2}, 2, 1, VK_IMAGE_ASPECT_COLOR_BIT,
+                      VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+    const std::array<std::byte, 16> pixels{
+        std::byte{42}, std::byte{42}, std::byte{42}, std::byte{42}, std::byte{42}, std::byte{42},
+        std::byte{42}, std::byte{42}, std::byte{42}, std::byte{42}, std::byte{42}, std::byte{42},
+        std::byte{42}, std::byte{42}, std::byte{42}, std::byte{42},
+    };
+    const std::array<VkDeviceSize, 1> offsets{0};
+    uploader.upload(image, pixels, offsets);
+    tickets.push_back(uploader.submit(destinationQueueType));
+
+    RenderGraph::Buffer firstReadback(12, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                      VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+                                      allocator);
+    RenderGraph::Buffer secondReadback(8, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                       VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+                                       allocator);
+    class ReadbackElement final : public RenderGraph::GraphElement {
+     private:
+      VkBuffer _source, _readback;
+      VkImage _image;
+
+     public:
+      ReadbackElement(VkBuffer source, VkBuffer readback, VkImage image = nullptr)
+          : _source(source),
+            _readback(readback),
+            _image(image) {}
+
+      void draw(int currentFrame, const RenderGraph::CommandBuffer& commandBuffer) override {
+        const VkCommandBuffer commands = commandBuffer.getCommandBuffer();
+        const VkBufferCopy bufferCopy{0, 0, 8};
+        vkCmdCopyBuffer(commands, _source, _readback, 1, &bufferCopy);
+        if (_image != nullptr) {
+          const VkBufferImageCopy imageCopy{
+              .bufferOffset = 8,
+              .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 1, 0, 1},
+              .imageExtent = {1, 1, 1},
+          };
+          vkCmdCopyImageToBuffer(commands, _image, VK_IMAGE_LAYOUT_GENERAL, _readback, 1, &imageCopy);
+        }
+        const VkMemoryBarrier2 barrier{
+            .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+            .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+            .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT,
+            .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT,
+        };
+        const VkDependencyInfo dependencyInfo{
+            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+            .memoryBarrierCount = 1,
+            .pMemoryBarriers = &barrier,
+        };
+        vkCmdPipelineBarrier2(commands, &dependencyInfo);
+      }
+
+      void update(int currentFrame, const RenderGraph::CommandBuffer& commandBuffer) override {}
+      void reset(const std::vector<std::shared_ptr<RenderGraph::ImageView>>& swapchain) override {}
+    };
+
+    auto& firstPass = graph.createPassCompute("First readback", GetParam());
+    firstPass.addStorageBufferInput("First");
+    firstPass.registerGraphElement(std::make_shared<ReadbackElement>(
+        graph.getGraphStorage().getBuffer("First").front()->getBuffer(), firstReadback.getBuffer(), image.getImage()));
+    auto& secondPass = graph.createPassCompute("Second readback", false);
+    secondPass.addStorageBufferInput("Second");
+    secondPass.registerGraphElement(std::make_shared<ReadbackElement>(
+        graph.getGraphStorage().getBuffer("Second").front()->getBuffer(), secondReadback.getBuffer()));
+    graph.calculate(tickets);
+    // Recalculation before submission must retain pending uploads; later recalculations must not repeat acquire.
+    for (int frame = 0; frame < 3; ++frame) {
+      graph.calculate();
+      ASSERT_FALSE(graph.render());
+      ASSERT_EQ(vkDeviceWaitIdle(device.getLogicalDevice()), VK_SUCCESS);
+      ASSERT_EQ(vmaInvalidateAllocation(allocator.getAllocator(), firstReadback.getAllocation(), 0, VK_WHOLE_SIZE),
+                VK_SUCCESS);
+      ASSERT_EQ(vmaInvalidateAllocation(allocator.getAllocator(), secondReadback.getAllocation(), 0, VK_WHOLE_SIZE),
+                VK_SUCCESS);
+      const auto* firstResult = static_cast<const uint32_t*>(firstReadback.getAllocationInfo().pMappedData);
+      const auto* secondResult = static_cast<const uint32_t*>(secondReadback.getAllocationInfo().pMappedData);
+      ASSERT_NE(firstResult, nullptr);
+      ASSERT_NE(secondResult, nullptr);
+      EXPECT_EQ(firstResult[0], 11u);
+      EXPECT_EQ(firstResult[1], 22u);
+      EXPECT_EQ(firstResult[2], 0x2a2a2a2au);
+      EXPECT_EQ(secondResult[0], 33u);
+      EXPECT_EQ(secondResult[1], 44u);
+      uploader.reclaim();
+    }
+  }
+
+  EXPECT_TRUE(validationErrors.getErrors().empty()) << joinErrors(validationErrors.getErrors());
 }
 
 TEST(ValidationTest, OffscreenComputeGraphPresentsWithoutWritingSwapchain) {
