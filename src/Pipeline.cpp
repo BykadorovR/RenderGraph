@@ -1,8 +1,10 @@
 module;
 
 #include <algorithm>
+#include <cstdint>
 #include <optional>
 #include <ranges>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -12,6 +14,48 @@ module;
 module Pipeline;
 
 using namespace RenderGraph;
+
+VkPipelineCache PipelineCache::_create(std::span<const uint8_t> data) const {
+  VkPipelineCacheCreateInfo pipelineCacheInfo{
+      .sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO,
+      .initialDataSize = data.size(),
+      .pInitialData = data.empty() ? nullptr : data.data(),
+  };
+  VkPipelineCache pipelineCache;
+  if (vkCreatePipelineCache(_device->getLogicalDevice(), &pipelineCacheInfo, nullptr, &pipelineCache) != VK_SUCCESS) {
+    throw std::runtime_error("Failed to create pipeline cache");
+  }
+  return pipelineCache;
+}
+
+PipelineCache::PipelineCache(const Device& device) : _device(&device) {
+  // An empty cache collects pipeline data on the first run, before persisted data exists.
+  _pipelineCache = _create({});
+}
+
+void PipelineCache::setData(std::span<const uint8_t> data) {
+  const VkPipelineCache pipelineCache = _create(data);
+  vkDestroyPipelineCache(_device->getLogicalDevice(), _pipelineCache, nullptr);
+  _pipelineCache = pipelineCache;
+}
+
+std::vector<uint8_t> PipelineCache::getData() const {
+  size_t dataSize = 0;
+  if (vkGetPipelineCacheData(_device->getLogicalDevice(), _pipelineCache, &dataSize, nullptr) != VK_SUCCESS) {
+    throw std::runtime_error("Failed to get pipeline cache data size");
+  }
+
+  std::vector<uint8_t> data(dataSize);
+  if (vkGetPipelineCacheData(_device->getLogicalDevice(), _pipelineCache, &dataSize, data.data()) != VK_SUCCESS) {
+    throw std::runtime_error("Failed to get pipeline cache data");
+  }
+  data.resize(dataSize);
+  return data;
+}
+
+const VkPipelineCache PipelineCache::getPipelineCache() const noexcept { return _pipelineCache; }
+
+PipelineCache::~PipelineCache() { vkDestroyPipelineCache(_device->getLogicalDevice(), _pipelineCache, nullptr); }
 
 PipelineGraphic::PipelineGraphic() {
   _inputAssembly = VkPipelineInputAssemblyStateCreateInfo{
@@ -147,6 +191,10 @@ const std::optional<VkFormat>& PipelineGraphic::getDepthAttachment() const noexc
 
 Pipeline::Pipeline(const Device& device) noexcept : _device(&device) {}
 
+Pipeline::Pipeline(const Device& device, const PipelineCache& pipelineCache) noexcept
+    : _device(&device),
+      _pipelineCache(&pipelineCache) {}
+
 const std::vector<DescriptorSetLayout*>& Pipeline::getDescriptorSetLayout() const noexcept {
   return _descriptorSetLayout;
 }
@@ -226,7 +274,9 @@ void Pipeline::createGraphic(const PipelineGraphic& pipelineGraphic,
     pipelineInfo.flags = VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
   if (pipelineGraphic.getTessellationState())
     pipelineInfo.pTessellationState = &pipelineGraphic.getTessellationState().value();
-  auto status = vkCreateGraphicsPipelines(_device->getLogicalDevice(), nullptr, 1, &pipelineInfo, nullptr, &_pipeline);
+  const VkPipelineCache pipelineCache = _pipelineCache == nullptr ? VK_NULL_HANDLE : _pipelineCache->getPipelineCache();
+  auto status = vkCreateGraphicsPipelines(_device->getLogicalDevice(), pipelineCache, 1, &pipelineInfo, nullptr,
+                                          &_pipeline);
   if (status != VK_SUCCESS) {
     throw std::runtime_error("failed to create graphics pipeline!");
   }
@@ -268,7 +318,8 @@ void Pipeline::createCompute(const VkPipelineShaderStageCreateInfo& shaderStage,
     computePipelineCreateInfo.flags = VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
   //
   computePipelineCreateInfo.stage = shaderStage;
-  if (vkCreateComputePipelines(_device->getLogicalDevice(), nullptr, 1, &computePipelineCreateInfo, nullptr,
-                               &_pipeline) != VK_SUCCESS)
-    throw std::runtime_error("failed to create compute pipeline!");
+  const VkPipelineCache pipelineCache = _pipelineCache == nullptr ? VK_NULL_HANDLE : _pipelineCache->getPipelineCache();
+  const VkResult status = vkCreateComputePipelines(_device->getLogicalDevice(), pipelineCache, 1,
+                                                   &computePipelineCreateInfo, nullptr, &_pipeline);
+  if (status != VK_SUCCESS) throw std::runtime_error("failed to create compute pipeline!");
 }
