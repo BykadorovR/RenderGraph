@@ -1,6 +1,8 @@
 module;
 
+#include <cstdint>
 #include <optional>
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -13,6 +15,27 @@ import DescriptorBuffer;
 import Device;
 
 export namespace RenderGraph {
+class PipelineCache final {
+ private:
+  const Device* _device;
+  VkPipelineCache _pipelineCache = VK_NULL_HANDLE;
+
+  VkPipelineCache _create(std::span<const uint8_t> data) const;
+
+ public:
+  explicit PipelineCache(const Device& device);
+  PipelineCache(const PipelineCache&) = delete;
+  PipelineCache& operator=(const PipelineCache&) = delete;
+  PipelineCache(PipelineCache&&) = delete;
+  PipelineCache& operator=(PipelineCache&&) = delete;
+
+  void setData(std::span<const uint8_t> data);
+  std::vector<uint8_t> getData() const;
+  const VkPipelineCache getPipelineCache() const noexcept;
+
+  ~PipelineCache();
+};
+
 class PipelineGraphic final {
  private:
   VkPipelineDynamicStateCreateInfo _dynamicState;
@@ -64,6 +87,7 @@ class PipelineGraphic final {
 class Pipeline final {
  protected:
   const Device* _device;
+  const PipelineCache* _pipelineCache = nullptr;
   std::vector<DescriptorSetLayout*> _descriptorSetLayout;
   std::unordered_map<std::string, VkPushConstantRange> _pushConstants;
   VkPipeline _pipeline{};
@@ -71,6 +95,7 @@ class Pipeline final {
 
  public:
   Pipeline(const Device& device) noexcept;
+  Pipeline(const Device& device, const PipelineCache& pipelineCache) noexcept;
   Pipeline(const Pipeline&) = delete;
   Pipeline& operator=(const Pipeline&) = delete;
   Pipeline(Pipeline&&) = delete;

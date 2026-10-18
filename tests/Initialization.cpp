@@ -117,6 +117,24 @@ TEST(DeviceTest, SelectPhysicalDevice) {
   EXPECT_FALSE(physicalDevices.front().second.empty());
 }
 
+TEST(PipelineCacheTest, GetAndSetData) {
+  RenderGraph::Instance instance("PipelineCacheTest", false);
+  std::vector<uint8_t> pipelineCacheData;
+  {
+    RenderGraph::Device device(instance);
+    device.initialize();
+    RenderGraph::PipelineCache pipelineCache(device);
+    pipelineCacheData = pipelineCache.getData();
+  }
+
+  ASSERT_FALSE(pipelineCacheData.empty());
+  RenderGraph::Device restoredDevice(instance);
+  restoredDevice.initialize();
+  RenderGraph::PipelineCache restoredPipelineCache(restoredDevice);
+  restoredPipelineCache.setData(pipelineCacheData);
+  EXPECT_FALSE(restoredPipelineCache.getData().empty());
+}
+
 TEST(DeviceTest, CreateWithExtensionFeatures) {
   RenderGraph::Instance instance("ExtensionFeaturesDeviceTest", false);
   RenderGraph::Device device(instance);
@@ -830,7 +848,8 @@ TEST(PipelineTest, Create) {
   shader.add(spirvCode);
 
   RenderGraph::PipelineGraphic pipelineGraphic;
-  RenderGraph::Pipeline pipeline(device);
+  RenderGraph::PipelineCache pipelineCache(device);
+  RenderGraph::Pipeline pipeline(device, pipelineCache);
 
   RenderGraph::DescriptorSetLayout layout(device);
   std::vector<VkDescriptorSetLayoutBinding> layoutColor{{.binding = 0,
