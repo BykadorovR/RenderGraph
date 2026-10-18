@@ -12,6 +12,7 @@ module;
 #include <unordered_set>
 #include <utility>
 #include <vector>
+#include <volk.h>
 
 export module Graph;
 
@@ -75,6 +76,8 @@ enum class GraphPassType { GRAPHIC, COMPUTE };
 
 enum class RenderTargetLoadAction { CLEAR, KEEP, DONT_CARE };
 
+enum class RenderTargetStoreAction { STORE, DONT_CARE };
+
 class GraphPass {
  protected:
   std::string _name;
@@ -103,10 +106,16 @@ class GraphPass {
 
 class GraphPassGraphic final : public GraphPass {
  private:
+  struct RenderTargetSettings {
+    RenderTargetLoadAction loadAction;
+    RenderTargetStoreAction storeAction;
+    VkClearValue clearValue;
+  };
+
   std::vector<std::string> _colorTargets, _textureInputs, _vertexBufferInputs, _indexBufferInputs;
   std::vector<std::string> _storageBufferInputs, _indirectBufferInputs;
   std::optional<std::string> _depthTarget;
-  std::unordered_map<std::string, RenderTargetLoadAction> _targetLoadActions;
+  std::unordered_map<std::string, RenderTargetSettings> _targetSettings;
 
   std::unique_ptr<PipelineGraphic> _pipelineGraphic;
   const Device* _device;
@@ -122,8 +131,14 @@ class GraphPassGraphic final : public GraphPass {
   GraphPassGraphic& operator=(GraphPassGraphic&&) = delete;
 
   // handle attachments
-  void addColorTarget(std::string_view name, RenderTargetLoadAction loadAction);
-  void setDepthTarget(std::string_view name, RenderTargetLoadAction loadAction);
+  void addColorTarget(std::string_view name,
+                      RenderTargetLoadAction loadAction = RenderTargetLoadAction::CLEAR,
+                      RenderTargetStoreAction storeAction = RenderTargetStoreAction::STORE,
+                      VkClearValue clearValue = {.color = {{0.0f, 0.0f, 0.0f, 1.0f}}});
+  void setDepthTarget(std::string_view name,
+                      RenderTargetLoadAction loadAction = RenderTargetLoadAction::CLEAR,
+                      RenderTargetStoreAction storeAction = RenderTargetStoreAction::STORE,
+                      VkClearValue clearValue = {.depthStencil = {1.0f, 0}});
   // handle input to shaders
   void addTextureInput(std::string_view name);
   void addVertexBufferInput(std::string_view name);

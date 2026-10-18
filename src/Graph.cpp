@@ -121,14 +121,28 @@ GraphPassGraphic::GraphPassGraphic(std::string_view name,
   _pipelineGraphic = std::make_unique<PipelineGraphic>();
 }
 
-void GraphPassGraphic::addColorTarget(std::string_view name, RenderTargetLoadAction loadAction) {
+void GraphPassGraphic::addColorTarget(std::string_view name,
+                                      RenderTargetLoadAction loadAction,
+                                      RenderTargetStoreAction storeAction,
+                                      VkClearValue clearValue) {
   _colorTargets.emplace_back(name);
-  _targetLoadActions[std::string(name)] = loadAction;
+  _targetSettings[std::string(name)] = {
+      .loadAction = loadAction,
+      .storeAction = storeAction,
+      .clearValue = clearValue,
+  };
 }
 
-void GraphPassGraphic::setDepthTarget(std::string_view name, RenderTargetLoadAction loadAction) {
+void GraphPassGraphic::setDepthTarget(std::string_view name,
+                                      RenderTargetLoadAction loadAction,
+                                      RenderTargetStoreAction storeAction,
+                                      VkClearValue clearValue) {
   _depthTarget = name;
-  _targetLoadActions[std::string(name)] = loadAction;
+  _targetSettings[std::string(name)] = {
+      .loadAction = loadAction,
+      .storeAction = storeAction,
+      .clearValue = clearValue,
+  };
 }
 
 void GraphPassGraphic::addTextureInput(std::string_view name) { _textureInputs.emplace_back(name); }
@@ -146,7 +160,7 @@ const std::vector<std::string>& GraphPassGraphic::getColorTargets() const noexce
 std::optional<std::string> GraphPassGraphic::getDepthTarget() const { return _depthTarget; }
 
 RenderTargetLoadAction GraphPassGraphic::getTargetLoadAction(std::string_view name) const {
-  return _targetLoadActions.at(std::string(name));
+  return _targetSettings.at(std::string(name)).loadAction;
 }
 
 const std::vector<std::string>& GraphPassGraphic::getTextureInputs() const noexcept { return _textureInputs; }
@@ -192,14 +206,26 @@ void GraphPassGraphic::execute(int currentFrame, const CommandBuffer& commandBuf
     return VK_ATTACHMENT_LOAD_OP_DONT_CARE;
   };
 
-  auto createColorAttachment = [this, getLoadOp](const auto& colorTarget) {
+  auto getStoreOp = [](RenderTargetStoreAction action) {
+    switch (action) {
+      case RenderTargetStoreAction::STORE:
+        return VK_ATTACHMENT_STORE_OP_STORE;
+      case RenderTargetStoreAction::DONT_CARE:
+        return VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    }
+
+    return VK_ATTACHMENT_STORE_OP_DONT_CARE;
+  };
+
+  auto createColorAttachment = [this, getLoadOp, getStoreOp](const auto& colorTarget) {
     auto& imageViewHolder = _graphStorage->getImageViewHolder(colorTarget);
+    const auto& attachmentSettings = _targetSettings.at(colorTarget);
     VkRenderingAttachmentInfo info{.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
                                    .imageView = imageViewHolder.getImageView().getImageView(),
                                    .imageLayout = imageViewHolder.getImageView().getImage().getImageLayout(),
-                                   .loadOp = getLoadOp(getTargetLoadAction(colorTarget)),
-                                   .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
-    info.clearValue.color = {0.0f, 0.0f, 0.0f, 1.0f};
+                                   .loadOp = getLoadOp(attachmentSettings.loadAction),
+                                   .storeOp = getStoreOp(attachmentSettings.storeAction),
+                                   .clearValue = attachmentSettings.clearValue};
     return info;
   };
 
@@ -211,14 +237,15 @@ void GraphPassGraphic::execute(int currentFrame, const CommandBuffer& commandBuf
   if (_depthTarget.has_value()) {
     auto& target = _depthTarget.value();
     auto& imageViewHolder = _graphStorage->getImageViewHolder(target);
+    const auto& attachmentSettings = _targetSettings.at(target);
 
     depthAttachment = VkRenderingAttachmentInfo{
         .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
         .imageView = imageViewHolder.getImageView().getImageView(),
         .imageLayout = imageViewHolder.getImageView().getImage().getImageLayout(),
-        .loadOp = getLoadOp(getTargetLoadAction(target)),
-        .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-        .clearValue = {.depthStencil = {1.0f, 0}}};
+        .loadOp = getLoadOp(attachmentSettings.loadAction),
+        .storeOp = getStoreOp(attachmentSettings.storeAction),
+        .clearValue = attachmentSettings.clearValue};
   }
 
   VkRenderingInfo renderingInfo = {};

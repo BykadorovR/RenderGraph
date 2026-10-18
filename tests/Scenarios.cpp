@@ -941,8 +941,11 @@ TEST(ScenarioTest, DepthExistance) {
 
   auto elementMock = std::make_shared<GraphElementMock>();
   auto& renderPass = graph.createPassGraphic("Render");
-  renderPass.addColorTarget("Swapchain", RenderGraph::RenderTargetLoadAction::CLEAR);
-  renderPass.setDepthTarget("Depth", RenderGraph::RenderTargetLoadAction::CLEAR);
+  renderPass.addColorTarget("Swapchain", RenderGraph::RenderTargetLoadAction::CLEAR,
+                            RenderGraph::RenderTargetStoreAction::STORE,
+                            VkClearValue{.color = {{0.1f, 0.2f, 0.3f, 1.0f}}});
+  renderPass.setDepthTarget("Depth", RenderGraph::RenderTargetLoadAction::CLEAR,
+                            RenderGraph::RenderTargetStoreAction::DONT_CARE, VkClearValue{.depthStencil = {0.5f, 0}});
   renderPass.registerGraphElement(elementMock);
 
   graph.calculate();
