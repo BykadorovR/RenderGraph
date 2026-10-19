@@ -866,8 +866,13 @@ void Graph::calculate(std::span<const UploadTicket> uploadTickets) {
     VkAccessFlags2 accessMask = 0;
   };
 
-  std::unordered_map<std::string, LastUsage> lastImageUsage;
-  std::unordered_map<std::string, LastUsage> lastBufferUsage;
+  struct ResourceHistory {
+    ResourceUsage lastWrite;
+    ResourceUsage readers;
+  };
+
+  std::unordered_map<std::string, ResourceHistory> imageHistory;
+  std::unordered_map<std::string, ResourceHistory> bufferHistory;
   std::unordered_map<std::string, LastUsage> imageOwnership;
   std::unordered_map<std::string, LastUsage> bufferOwnership;
 
@@ -1050,14 +1055,15 @@ void Graph::calculate(std::span<const UploadTicket> uploadTickets) {
       _sync[previousPass].addSignalSemaphore(semaphoreQueueType, [this]() { return _frameInFlight; });
 
       // clear all barriers because of semaphore
-      lastImageUsage.clear();
-      lastBufferUsage.clear();
+      imageHistory.clear();
+      bufferHistory.clear();
     }
 
     // add barriers
     for (const Resource& resource : _resources.at(pass).getResources()) {
-      auto& lastUsage = resource.type == Resource::Type::IMAGE ? lastImageUsage : lastBufferUsage;
+      auto& history = (resource.type == Resource::Type::IMAGE ? imageHistory : bufferHistory)[resource.name];
       auto& ownership = resource.type == Resource::Type::IMAGE ? imageOwnership : bufferOwnership;
+      const ResourceUsage currentUsage = getResourceUsage(pass, resource);
       // Queue-family ownership transfer.
       const auto ownerIt = ownership.find(resource.name);
       if (ownerIt != ownership.end()) {
@@ -1066,7 +1072,6 @@ void Graph::calculate(std::span<const UploadTicket> uploadTickets) {
         const uint32_t dstQueueFamilyIndex = getQueueFamilyIndex(pass);
         if (srcQueueFamilyIndex != dstQueueFamilyIndex) {
           const ResourceUsage ownerUsage = getResourceUsage(owner.pass, owner.resource);
-          const ResourceUsage currentUsage = getResourceUsage(pass, resource);
           // RELEASE:
           // executed after the last source-family use.
           addResourceBarrier(owner.pass, false, owner.resource, ownerUsage.stageMask, ownerUsage.accessMask, 0, 0,
@@ -1085,28 +1090,27 @@ void Graph::calculate(std::span<const UploadTicket> uploadTickets) {
           .resource = resource,
       };
 
-      // Normal same-queue hazards.
-      const auto previousUsage = lastUsage.find(resource.name);
-      if (previousUsage != lastUsage.end()) {
-        const LastUsage& previous = previousUsage->second;
-        const bool previousWrites = hasOperation(previous.resource, Resource::Operation::WRITE);
-        const bool currentWrites = hasOperation(resource, Resource::Operation::WRITE);
-
-        // READ -> READ needs no memory barrier.
-        if (previousWrites || currentWrites) {
-          const ResourceUsage sourceUsage = getResourceUsage(previous.pass, previous.resource);
-          const ResourceUsage destinationUsage = getResourceUsage(pass, resource);
-
-          addResourceBarrier(pass, true, resource, sourceUsage.stageMask, sourceUsage.accessMask,
-                             destinationUsage.stageMask, destinationUsage.accessMask,
-                             std::numeric_limits<uint32_t>::max(), std::numeric_limits<uint32_t>::max());
-        }
+      // Keep the last writer for W-R-R across different reader stages/accesses.
+      // Accumulate all reader masks so R-R-W waits for every reader before overwriting the resource.
+      const bool currentWrites = hasOperation(resource, Resource::Operation::WRITE);
+      ResourceUsage sourceUsage = history.lastWrite;
+      if (currentWrites) {
+        sourceUsage.stageMask |= history.readers.stageMask;
+        sourceUsage.accessMask |= history.readers.accessMask;
       }
 
-      lastUsage[resource.name] = {
-          .pass = pass,
-          .resource = resource,
-      };
+      if (sourceUsage.stageMask != 0) {
+        addResourceBarrier(pass, true, resource, sourceUsage.stageMask, sourceUsage.accessMask, currentUsage.stageMask,
+                           currentUsage.accessMask, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED);
+      }
+
+      if (currentWrites) {
+        history.lastWrite = currentUsage;
+        history.readers = {};
+      } else {
+        history.readers.stageMask |= currentUsage.stageMask;
+        history.readers.accessMask |= currentUsage.accessMask;
+      }
     }
 
     // end node should signal end semaphore

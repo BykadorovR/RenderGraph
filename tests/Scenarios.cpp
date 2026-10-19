@@ -713,14 +713,24 @@ TEST(ScenarioTest, ComputePassIndirectBufferInput) {
   auto& dispatchPass = graph.createPassCompute("DispatchIndirect", false);
   dispatchPass.addIndirectBufferInput("DispatchCommands");
 
+  auto& inspectPass = graph.createPassCompute("InspectDispatch", false);
+  inspectPass.addStorageBufferInput("DispatchCommands");
+
+  auto& rewritePass = graph.createPassCompute("RewriteDispatch", false);
+  rewritePass.addStorageBufferInput("DispatchCommands");
+  rewritePass.addStorageBufferOutput("DispatchCommands");
+
+  auto& inspectRewritePass = graph.createPassCompute("InspectRewrittenDispatch", false);
+  inspectRewritePass.addStorageBufferInput("DispatchCommands");
+
   graph.calculate();
 
   ASSERT_EQ(dispatchPass.getIndirectBufferInputs().size(), 1);
   EXPECT_EQ(dispatchPass.getIndirectBufferInputs().front(), "DispatchCommands");
 
-  ASSERT_EQ(graph._passesOrdered.size(), 2);
+  ASSERT_EQ(graph._passesOrdered.size(), 5);
   EXPECT_EQ(graph._passesOrdered.front(), &generatePass);
-  EXPECT_EQ(graph._passesOrdered.back(), &dispatchPass);
+  EXPECT_EQ(graph._passesOrdered.back(), &inspectRewritePass);
 
   ASSERT_TRUE(graph._sync.contains(&dispatchPass));
   const auto barriers = graph._sync.at(&dispatchPass).getBarriersBefore();
@@ -732,6 +742,40 @@ TEST(ScenarioTest, ComputePassIndirectBufferInput) {
   EXPECT_EQ(bufferBarrier.srcAccessMask, VK_ACCESS_2_SHADER_WRITE_BIT);
   EXPECT_EQ(bufferBarrier.dstStageMask, VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT);
   EXPECT_EQ(bufferBarrier.dstAccessMask, VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT);
+
+  // The shader reader still depends on GenerateDispatch, not on the intervening indirect reader.
+  ASSERT_TRUE(graph._sync.contains(&inspectPass));
+  const auto inspectBarriers = graph._sync.at(&inspectPass).getBarriersBefore();
+  ASSERT_EQ(inspectBarriers.size(), 1);
+  ASSERT_EQ(inspectBarriers.front()->getBufferBarriers().size(), 1);
+  const auto& inspectBarrier = inspectBarriers.front()->getBufferBarriers().front();
+  EXPECT_EQ(inspectBarrier.srcStageMask, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
+  EXPECT_EQ(inspectBarrier.srcAccessMask, VK_ACCESS_2_SHADER_WRITE_BIT);
+  EXPECT_EQ(inspectBarrier.dstStageMask, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
+  EXPECT_EQ(inspectBarrier.dstAccessMask, VK_ACCESS_2_SHADER_READ_BIT);
+
+  // Rewriting must wait for both readers, even though only the shader reader used the buffer last.
+  ASSERT_TRUE(graph._sync.contains(&rewritePass));
+  const auto rewriteBarriers = graph._sync.at(&rewritePass).getBarriersBefore();
+  ASSERT_EQ(rewriteBarriers.size(), 1);
+  ASSERT_EQ(rewriteBarriers.front()->getBufferBarriers().size(), 1);
+  const auto& rewriteBarrier = rewriteBarriers.front()->getBufferBarriers().front();
+  EXPECT_EQ(rewriteBarrier.srcStageMask,
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT);
+  EXPECT_EQ(rewriteBarrier.srcAccessMask,
+            VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT);
+  EXPECT_EQ(rewriteBarrier.dstStageMask, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
+  EXPECT_EQ(rewriteBarrier.dstAccessMask, VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT);
+
+  ASSERT_TRUE(graph._sync.contains(&inspectRewritePass));
+  const auto inspectRewriteBarriers = graph._sync.at(&inspectRewritePass).getBarriersBefore();
+  ASSERT_EQ(inspectRewriteBarriers.size(), 1);
+  ASSERT_EQ(inspectRewriteBarriers.front()->getBufferBarriers().size(), 1);
+  const auto& inspectRewriteBarrier = inspectRewriteBarriers.front()->getBufferBarriers().front();
+  EXPECT_EQ(inspectRewriteBarrier.srcStageMask, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
+  EXPECT_EQ(inspectRewriteBarrier.srcAccessMask, VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT);
+  EXPECT_EQ(inspectRewriteBarrier.dstStageMask, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
+  EXPECT_EQ(inspectRewriteBarrier.dstAccessMask, VK_ACCESS_2_SHADER_READ_BIT);
 }
 
 TEST(ScenarioTest, GraphReset) {
@@ -1183,4 +1227,75 @@ TEST(ScenarioTest, TraversalDiamondGraph) {
   EXPECT_LT(sourceIndex, rightIndex);
   EXPECT_LT(leftIndex, joinIndex);
   EXPECT_LT(rightIndex, joinIndex);
+
+  RenderGraph::Graph imageGraph(1, 1, device, tracer);
+  imageGraph.initialize();
+  auto image = std::make_unique<RenderGraph::Image>(allocator);
+  image->createImage(VK_FORMAT_R8G8B8A8_UNORM, {8, 8}, 1, 1, VK_IMAGE_ASPECT_COLOR_BIT,
+                     VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+  auto imageView = std::make_shared<RenderGraph::ImageView>(std::move(image), device);
+  imageView->createImageView(VK_IMAGE_VIEW_TYPE_2D, 0, 0);
+  imageGraph.getGraphStorage().add(
+      "Image", std::make_unique<RenderGraph::ImageViewHolder>(std::vector{imageView}, [] { return 0; }));
+
+  auto& initialGraphicsReader = imageGraph.createPassGraphic("InitialSample");
+  initialGraphicsReader.addTextureInput("Image");
+  auto& initialComputeReader = imageGraph.createPassCompute("InitialRead", false);
+  initialComputeReader.addStorageTextureInput("Image");
+  auto& imageWriter = imageGraph.createPassCompute("WriteImage", false);
+  imageWriter.addStorageTextureOutput("Image");
+  auto& graphicsReader = imageGraph.createPassGraphic("SampleImage");
+  graphicsReader.addTextureInput("Image");
+  auto& computeReader = imageGraph.createPassCompute("ReadImage", false);
+  computeReader.addStorageTextureInput("Image");
+  auto& imageRewrite = imageGraph.createPassCompute("RewriteImage", false);
+  imageRewrite.addStorageTextureOutput("Image");
+  auto& sampleRewrite = imageGraph.createPassGraphic("SampleRewrittenImage");
+  sampleRewrite.addTextureInput("Image");
+  imageGraph.calculate();
+
+  // Reads alone need no barrier, but the first write must wait for all preceding readers.
+  EXPECT_FALSE(imageGraph._sync.contains(&initialGraphicsReader));
+  EXPECT_FALSE(imageGraph._sync.contains(&initialComputeReader));
+  ASSERT_TRUE(imageGraph._sync.contains(&imageWriter));
+  const auto initialWriteBarriers = imageGraph._sync.at(&imageWriter).getBarriersBefore();
+  ASSERT_EQ(initialWriteBarriers.size(), 1);
+  ASSERT_EQ(initialWriteBarriers.front()->getImageBarriers().size(), 1);
+  const auto& initialWriteBarrier = initialWriteBarriers.front()->getImageBarriers().front();
+  EXPECT_EQ(initialWriteBarrier.srcStageMask,
+            VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
+  EXPECT_EQ(initialWriteBarrier.srcAccessMask, VK_ACCESS_2_SHADER_READ_BIT);
+  EXPECT_EQ(initialWriteBarrier.dstStageMask, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
+  EXPECT_EQ(initialWriteBarrier.dstAccessMask, VK_ACCESS_2_SHADER_WRITE_BIT);
+
+  // Sampling the image does not remove the write dependency needed by a later compute reader.
+  ASSERT_TRUE(imageGraph._sync.contains(&computeReader));
+  const auto computeBarriers = imageGraph._sync.at(&computeReader).getBarriersBefore();
+  ASSERT_EQ(computeBarriers.size(), 1);
+  ASSERT_EQ(computeBarriers.front()->getImageBarriers().size(), 1);
+  const auto& computeBarrier = computeBarriers.front()->getImageBarriers().front();
+  EXPECT_EQ(computeBarrier.srcStageMask, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
+  EXPECT_EQ(computeBarrier.srcAccessMask, VK_ACCESS_2_SHADER_WRITE_BIT);
+  EXPECT_EQ(computeBarrier.dstStageMask, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
+  EXPECT_EQ(computeBarrier.dstAccessMask, VK_ACCESS_2_SHADER_READ_BIT);
+
+  ASSERT_TRUE(imageGraph._sync.contains(&imageRewrite));
+  const auto imageRewriteBarriers = imageGraph._sync.at(&imageRewrite).getBarriersBefore();
+  ASSERT_EQ(imageRewriteBarriers.size(), 1);
+  ASSERT_EQ(imageRewriteBarriers.front()->getImageBarriers().size(), 1);
+  const auto& imageRewriteBarrier = imageRewriteBarriers.front()->getImageBarriers().front();
+  EXPECT_EQ(imageRewriteBarrier.srcStageMask,
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT);
+  EXPECT_EQ(imageRewriteBarrier.srcAccessMask, VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_SHADER_READ_BIT);
+
+  // A new writer starts a fresh history; old graphics readers must not remain in its source mask.
+  ASSERT_TRUE(imageGraph._sync.contains(&sampleRewrite));
+  const auto sampleRewriteBarriers = imageGraph._sync.at(&sampleRewrite).getBarriersBefore();
+  ASSERT_EQ(sampleRewriteBarriers.size(), 1);
+  ASSERT_EQ(sampleRewriteBarriers.front()->getImageBarriers().size(), 1);
+  const auto& sampleRewriteBarrier = sampleRewriteBarriers.front()->getImageBarriers().front();
+  EXPECT_EQ(sampleRewriteBarrier.srcStageMask, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
+  EXPECT_EQ(sampleRewriteBarrier.srcAccessMask, VK_ACCESS_2_SHADER_WRITE_BIT);
+  EXPECT_EQ(sampleRewriteBarrier.dstStageMask, VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT);
+  EXPECT_EQ(sampleRewriteBarrier.dstAccessMask, VK_ACCESS_2_SHADER_READ_BIT);
 }
