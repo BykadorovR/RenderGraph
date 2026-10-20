@@ -33,6 +33,7 @@ import glm;
 extern "C++" {
 class ScenarioTest_GraphSeparateQueues_Test;
 class ScenarioTest_BufferOwnershipTransferUsesLastResourceOwner_Test;
+class ScenarioTest_BufferOwnershipReturnsToComputeOnFrameSlotReuse_Test;
 class ScenarioTest_ComputePassIndirectBufferInput_Test;
 class ScenarioTest_GraphicsPassBufferInputs_Test;
 class ScenarioTest_GraphOneQueue_Test;
@@ -201,6 +202,7 @@ class Graph final {
  private:
   friend class ::ScenarioTest_GraphSeparateQueues_Test;
   friend class ::ScenarioTest_BufferOwnershipTransferUsesLastResourceOwner_Test;
+  friend class ::ScenarioTest_BufferOwnershipReturnsToComputeOnFrameSlotReuse_Test;
   friend class ::ScenarioTest_ComputePassIndirectBufferInput_Test;
   friend class ::ScenarioTest_GraphicsPassBufferInputs_Test;
   friend class ::ScenarioTest_GraphOneQueue_Test;

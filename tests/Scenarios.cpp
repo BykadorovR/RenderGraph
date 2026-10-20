@@ -525,6 +525,60 @@ TEST(ScenarioTest, BufferOwnershipTransferUsesLastResourceOwner) {
   EXPECT_TRUE(std::ranges::contains(lastWaitSemaphores, middleSignalSemaphores.front()));
 }
 
+TEST(ScenarioTest, BufferOwnershipReturnsToComputeOnFrameSlotReuse) {
+  RenderGraph::Instance instance("FrameSlotOwnershipTest", false);
+  RenderGraph::Device device(instance);
+  device.initialize();
+  const auto computeFamily = static_cast<uint32_t>(device.getQueueIndex(RenderGraph::QueueType::COMPUTE));
+  const auto graphicsFamily = static_cast<uint32_t>(device.getQueueIndex(RenderGraph::QueueType::GRAPHICS));
+  if (computeFamily == graphicsFamily) {
+    GTEST_SKIP() << "Distinct compute and graphics queue families are required";
+  }
+
+  RenderGraph::MemoryAllocator allocator(device, instance);
+  RenderGraph::Tracer tracer(device);
+  constexpr int framesInFlight = 2;
+  RenderGraph::Graph graph(1, framesInFlight, device, tracer);
+  graph.initialize();
+  std::vector<std::unique_ptr<RenderGraph::Buffer>> buffers;
+  for (int frame = 0; frame < framesInFlight; ++frame) {
+    buffers.push_back(std::make_unique<RenderGraph::Buffer>(16, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 0, allocator));
+  }
+  graph.getGraphStorage().add("State", buffers);
+
+  auto& computePass = graph.createPassCompute("UpdateState", true);
+  computePass.addStorageBufferInput("State");
+  computePass.addStorageBufferOutput("State");
+  // This pass runs on the graphics family; shader stage does not change the ownership requirement.
+  auto& graphicsPass = graph.createPassCompute("ReadStateOnGraphics", false);
+  graphicsPass.addStorageBufferInput("State");
+  graph.calculate();
+
+  for (int frame = 0; frame < framesInFlight; ++frame) {
+    SCOPED_TRACE(frame);
+    graph._frameInFlight = frame;
+    const VkBuffer buffer = graph.getGraphStorage().getBuffer("State")[frame]->getBuffer();
+    ASSERT_TRUE(graph._sync.contains(&graphicsPass));
+    const auto acquireBarriers = graph._sync.at(&graphicsPass).getBarriersBefore();
+    ASSERT_EQ(acquireBarriers.size(), 1);
+    ASSERT_EQ(acquireBarriers.front()->getBufferBarriers().size(), 1);
+    const auto& acquire = acquireBarriers.front()->getBufferBarriers().front();
+    EXPECT_EQ(acquire.buffer, buffer);
+    EXPECT_EQ(acquire.srcQueueFamilyIndex, computeFamily);
+    EXPECT_EQ(acquire.dstQueueFamilyIndex, graphicsFamily);
+
+    // Slot reuse reads existing contents on compute, so graphics must release ownership back to it.
+    const auto returnBarriers = graph._sync.at(&graphicsPass).getBarriersAfter();
+    ASSERT_FALSE(returnBarriers.empty()) << "Missing graphics -> compute ownership release for frame-slot reuse";
+    ASSERT_EQ(returnBarriers.front()->getBufferBarriers().size(), 1);
+    const auto& release = returnBarriers.front()->getBufferBarriers().front();
+    EXPECT_EQ(release.buffer, buffer);
+    EXPECT_EQ(release.srcQueueFamilyIndex, graphicsFamily);
+    EXPECT_EQ(release.dstQueueFamilyIndex, computeFamily);
+    EXPECT_EQ(release.dstAccessMask, 0);
+  }
+}
+
 TEST(ScenarioTest, SwapchainGraphRejectsSeparateComputeLastPass) {
   const glm::ivec2 resolution(1920, 1080);
   RenderGraph::Instance instance("TestApp", false);
