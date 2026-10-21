@@ -856,14 +856,14 @@ void Graph::calculate(std::span<const UploadTicket> uploadTickets) {
   }
 
   // set semaphores between passes + fill barriers
-  struct LastUsage {
-    GraphPass* pass;
-    Resource resource;
-  };
-
   struct ResourceUsage {
     VkPipelineStageFlags2 stageMask = 0;
     VkAccessFlags2 accessMask = 0;
+  };
+
+  struct LastUsage {
+    GraphPass* pass;
+    ResourceUsage resourceUsage;
   };
 
   struct ResourceHistory {
@@ -971,12 +971,13 @@ void Graph::calculate(std::span<const UploadTicket> uploadTickets) {
   };
 
   // Creates barrier array for a resource and stores it in the corresponding Sync object.
-  auto addResourceBarrier = [&](GraphPass* barrierPass, bool beforePass, const Resource& resource,
-                                VkPipelineStageFlags2 srcStageMask, VkAccessFlags2 srcAccessMask,
-                                VkPipelineStageFlags2 dstStageMask, VkAccessFlags2 dstAccessMask,
-                                uint32_t srcQueueFamilyIndex, uint32_t dstQueueFamilyIndex) {
-    if (resource.type == Resource::Type::BUFFER) {
-      const auto buffers = _graphStorage->getBuffer(resource.name);
+  auto addResourceBarrier = [&](GraphPass* barrierPass, bool beforePass, std::string_view resourceName,
+                                Resource::Type resourceType, VkPipelineStageFlags2 srcStageMask,
+                                VkAccessFlags2 srcAccessMask, VkPipelineStageFlags2 dstStageMask,
+                                VkAccessFlags2 dstAccessMask, uint32_t srcQueueFamilyIndex,
+                                uint32_t dstQueueFamilyIndex) {
+    if (resourceType == Resource::Type::BUFFER) {
+      const auto buffers = _graphStorage->getBuffer(resourceName);
       std::vector<Barrier> barriers(_maxFramesInFlight);
       for (int frameIndex = 0; frameIndex < _maxFramesInFlight; ++frameIndex) {
         barriers[frameIndex].addBuffer(buffers[frameIndex], srcStageMask, srcAccessMask, dstStageMask, dstAccessMask,
@@ -992,7 +993,7 @@ void Graph::calculate(std::span<const UploadTicket> uploadTickets) {
       return;
     }
 
-    const auto& imageHolder = _graphStorage->getImageViewHolder(resource.name);
+    const auto& imageHolder = _graphStorage->getImageViewHolder(resourceName);
     const auto imageViews = imageHolder.getImageViews();
     std::vector<Barrier> barriers(imageViews.size());
     for (std::size_t imageIndex = 0; imageIndex < imageViews.size(); ++imageIndex) {
@@ -1034,7 +1035,7 @@ void Graph::calculate(std::span<const UploadTicket> uploadTickets) {
     _sync[acquireWaitPass].addWaitSemaphore(_semaphoreImageAvailable, [this]() { return _frameInFlight; });
   }
 
-  // Select one pass per actual queue so render() doesn't discover queues every frame.
+  // Select one pass per actual queue so render() doesn't discover queues every frame for traces.
   std::unordered_set<VkQueue> collectionQueues;
   GraphPass* previousPass = nullptr;
   for (auto&& pass : _passesOrdered) {
@@ -1065,30 +1066,29 @@ void Graph::calculate(std::span<const UploadTicket> uploadTickets) {
       auto& ownership = resource.type == Resource::Type::IMAGE ? imageOwnership : bufferOwnership;
       const ResourceUsage currentUsage = getResourceUsage(pass, resource);
       // Queue-family ownership transfer.
+      // We don't insert it to the place with semaphores because it can be:
+      // X (graphic) -> Y (compute) -> X (compute) and in X -> Y transition we aren't sure
+      // that X will be used later + for the barrier itself we should know the queue type
       const auto ownerIt = ownership.find(resource.name);
       if (ownerIt != ownership.end()) {
         const LastUsage& owner = ownerIt->second;
         const uint32_t srcQueueFamilyIndex = getQueueFamilyIndex(owner.pass);
         const uint32_t dstQueueFamilyIndex = getQueueFamilyIndex(pass);
         if (srcQueueFamilyIndex != dstQueueFamilyIndex) {
-          const ResourceUsage ownerUsage = getResourceUsage(owner.pass, owner.resource);
           // RELEASE:
           // executed after the last source-family use.
-          addResourceBarrier(owner.pass, false, owner.resource, ownerUsage.stageMask, ownerUsage.accessMask, 0, 0,
-                             srcQueueFamilyIndex, dstQueueFamilyIndex);
+          addResourceBarrier(owner.pass, false, resource.name, resource.type, owner.resourceUsage.stageMask,
+                             owner.resourceUsage.accessMask, 0, 0, srcQueueFamilyIndex, dstQueueFamilyIndex);
 
           // ACQUIRE:
           // executed before the first destination-family use.
-          addResourceBarrier(pass, true, resource, 0, 0, currentUsage.stageMask, currentUsage.accessMask,
-                             srcQueueFamilyIndex, dstQueueFamilyIndex);
+          addResourceBarrier(pass, true, resource.name, resource.type, 0, 0, currentUsage.stageMask,
+                             currentUsage.accessMask, srcQueueFamilyIndex, dstQueueFamilyIndex);
         }
       }
 
       // The current pass becomes the latest owner/use.
-      ownership[resource.name] = {
-          .pass = pass,
-          .resource = resource,
-      };
+      ownership[resource.name] = {.pass = pass, .resourceUsage = currentUsage};
 
       // Keep the last writer for W-R-R across different reader stages/accesses.
       // Accumulate all reader masks so R-R-W waits for every reader before overwriting the resource.
@@ -1099,9 +1099,15 @@ void Graph::calculate(std::span<const UploadTicket> uploadTickets) {
         sourceUsage.accessMask |= history.readers.accessMask;
       }
 
+      // srcStageMask — Pipeline stages that must complete before the destination stages proceed.
+      // dstStageMask — Pipeline stages that must wait for the source stages.
+      // srcAccessMask — Source memory accesses whose writes are made available.
+      // dstAccessMask — Destination memory accesses for which those writes become visible.
+
       if (sourceUsage.stageMask != 0) {
-        addResourceBarrier(pass, true, resource, sourceUsage.stageMask, sourceUsage.accessMask, currentUsage.stageMask,
-                           currentUsage.accessMask, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED);
+        addResourceBarrier(pass, true, resource.name, resource.type, sourceUsage.stageMask, sourceUsage.accessMask,
+                           currentUsage.stageMask, currentUsage.accessMask, VK_QUEUE_FAMILY_IGNORED,
+                           VK_QUEUE_FAMILY_IGNORED);
       }
 
       if (currentWrites) {
@@ -1120,6 +1126,9 @@ void Graph::calculate(std::span<const UploadTicket> uploadTickets) {
 
     previousPass = pass;
   }
+
+  // Collect all upload tickets and reassign them to the first pass using their destination queue.
+  // This ensures uploads are synchronized before the queue starts executing graph passes.
   std::vector<UploadTicket> pendingUploads(uploadTickets.begin(), uploadTickets.end());
   for (auto& [pass, tickets] : _uploadTickets) {
     pendingUploads.insert(pendingUploads.end(), std::make_move_iterator(tickets.begin()),
@@ -1192,7 +1201,7 @@ bool Graph::render() {
           _tracer->collect(queueType, *commandBuffer);
         }
 
-        // Change image layouts required by the pass.
+        // Change image layouts required by the pass to VK_IMAGE_LAYOUT_GENERAL
         if (pass->getGraphPassType() == GraphPassType::GRAPHIC) {
           auto* passGraphic = static_cast<GraphPassGraphic*>(pass);
           for (const auto& colorTarget : passGraphic->getColorTargets()) {
@@ -1252,9 +1261,7 @@ bool Graph::render() {
           }
         }
 
-        // execute and add barriers
-        // Passes without barriers or semaphores are absent from _sync.
-        // Using _sync.at(pass) would throw, so missing entries use an empty Sync.
+        // execute barriers (specific to the pass) added in calculate()
         Sync sync;
         if (const auto syncIt = _sync.find(pass); syncIt != _sync.end()) {
           sync = syncIt->second;
