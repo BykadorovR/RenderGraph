@@ -561,10 +561,14 @@ TEST_P(ValidationScenarioTest, FullGraphPipelineHasNoValidationErrorsAcrossReset
       depthImageViews.push_back(std::move(depthImageView));
     }
 
-    graph.getGraphStorage().add("Color", std::make_unique<RenderGraph::ImageViewHolder>(
-                                             colorImageViews, [&graph]() { return graph.getFrameInFlight(); }));
-    graph.getGraphStorage().add("Depth", std::make_unique<RenderGraph::ImageViewHolder>(
-                                             depthImageViews, [&graph]() { return graph.getFrameInFlight(); }));
+    graph.getGraphStorage().add("Color",
+                                std::make_unique<RenderGraph::ImageViewHolder>(
+                                    colorImageViews, [&graph]() { return graph.getFrameInFlight(); }),
+                                RenderGraph::ImageResizePolicy::SWAPCHAIN);
+    graph.getGraphStorage().add("Depth",
+                                std::make_unique<RenderGraph::ImageViewHolder>(
+                                    depthImageViews, [&graph]() { return graph.getFrameInFlight(); }),
+                                RenderGraph::ImageResizePolicy::SWAPCHAIN);
 
     std::vector<std::unique_ptr<RenderGraph::Buffer>> storageBuffers;
     storageBuffers.reserve(framesInFlight);
@@ -1081,6 +1085,131 @@ TEST_P(ValidationScenarioTest, UploadTicketsSynchronizeFirstPassOnEachQueueOnly)
   }
 
   EXPECT_TRUE(validationErrors.getErrors().empty()) << joinErrors(validationErrors.getErrors());
+}
+
+TEST(ValidationTest, GraphStorageResetPreservesFixedImages) {
+  ValidationErrorCollector validationErrors;
+  RenderGraph::Instance instance("FixedImageResetValidationTest", true);
+  if (!instance.isDebug()) {
+    GTEST_SKIP() << "Vulkan validation layers or VK_EXT_debug_utils are unavailable";
+  }
+  ValidationMessenger validationMessenger(instance.getInstance().instance, validationErrors);
+
+  {
+    RenderGraph::Device device(instance);
+    device.initialize();
+    RenderGraph::MemoryAllocator allocator(device, instance);
+    RenderGraph::GraphStorage storage;
+    auto createImageView = [&](glm::ivec2 resolution) {
+      auto image = std::make_unique<RenderGraph::Image>(allocator);
+      image->createImage(VK_FORMAT_R8G8B8A8_UNORM, resolution, 1, 1, VK_IMAGE_ASPECT_COLOR_BIT,
+                         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                             VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+      auto imageView = std::make_shared<RenderGraph::ImageView>(std::move(image), device);
+      imageView->createImageView(VK_IMAGE_VIEW_TYPE_2D, 0, 0);
+      return imageView;
+    };
+
+    const glm::ivec2 fixedResolution(4, 2);
+    const glm::ivec2 initialSwapchainResolution(64, 48);
+    auto fixedView = createImageView(fixedResolution);
+    auto sameSizeView = createImageView(initialSwapchainResolution);
+    auto resizedView = createImageView(initialSwapchainResolution);
+    storage.add("Fixed", std::make_unique<RenderGraph::ImageViewHolder>(std::vector{fixedView}, []() { return 0; }));
+    storage.add("FixedSameSize",
+                std::make_unique<RenderGraph::ImageViewHolder>(std::vector{sameSizeView}, []() { return 0; }));
+    storage.add("Resizable",
+                std::make_unique<RenderGraph::ImageViewHolder>(std::vector{resizedView}, []() { return 0; }),
+                RenderGraph::ImageResizePolicy::SWAPCHAIN);
+    std::vector swapchainViews{createImageView(initialSwapchainResolution)};
+    storage.add("Swapchain", std::make_unique<RenderGraph::ImageViewHolder>(swapchainViews, []() { return 0; }));
+
+    RenderGraph::ResourceUploader uploader(allocator, device);
+    const std::vector<std::byte> pixels(fixedResolution.x * fixedResolution.y * 4, std::byte{0x5a});
+    const std::array<VkDeviceSize, 1> offsets{0};
+    uploader.upload(fixedView->getImage(), pixels, offsets);
+    uploader.submit();
+    ASSERT_EQ(vkQueueWaitIdle(device.getQueue(RenderGraph::QueueType::GRAPHICS)), VK_SUCCESS);
+
+    const VkImage fixedImage = fixedView->getImage().getImage();
+    const VkImageView fixedImageView = fixedView->getImageView();
+    const VkImage sameSizeImage = sameSizeView->getImage().getImage();
+    const VkImageView sameSizeImageView = sameSizeView->getImageView();
+    for (const glm::ivec2 resolution : {glm::ivec2(96, 64), initialSwapchainResolution}) {
+      std::vector newSwapchainViews{createImageView(resolution)};
+      storage.reset(swapchainViews, newSwapchainViews);
+      EXPECT_EQ(storage.getImageViewHolder("Swapchain").getImageView().getImageView(),
+                newSwapchainViews.front()->getImageView());
+      ASSERT_EQ(fixedView->getImage().getResolution(), fixedResolution);
+      EXPECT_EQ(fixedView->getImage().getImage(), fixedImage);
+      EXPECT_EQ(fixedView->getImageView(), fixedImageView);
+      EXPECT_EQ(fixedView->getImage().getImageLayout(), VK_IMAGE_LAYOUT_GENERAL);
+      EXPECT_EQ(sameSizeView->getImage().getResolution(), initialSwapchainResolution);
+      EXPECT_EQ(sameSizeView->getImage().getImage(), sameSizeImage);
+      EXPECT_EQ(sameSizeView->getImageView(), sameSizeImageView);
+      EXPECT_EQ(resizedView->getImage().getResolution(), resolution);
+      swapchainViews = std::move(newSwapchainViews);
+    }
+
+    // Replacing a resizable entry with a fixed image must also replace its policy.
+    auto replacementView = createImageView(fixedResolution);
+    const VkImage replacementImage = replacementView->getImage().getImage();
+    storage.add("Resizable",
+                std::make_unique<RenderGraph::ImageViewHolder>(std::vector{replacementView}, []() { return 0; }));
+    std::vector replacementSwapchainViews{createImageView({80, 56})};
+    storage.reset(swapchainViews, replacementSwapchainViews);
+    EXPECT_EQ(replacementView->getImage().getResolution(), fixedResolution);
+    EXPECT_EQ(replacementView->getImage().getImage(), replacementImage);
+
+    RenderGraph::Buffer readback(pixels.size(), VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                 VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+                                 allocator);
+    RenderGraph::CommandPool commandPool(RenderGraph::QueueType::GRAPHICS, device);
+    RenderGraph::CommandBuffer commandBuffer(commandPool, device);
+    commandBuffer.beginCommands();
+    fixedView->getImage().changeLayout(VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL,
+                                       VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                                       VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT, commandBuffer);
+    const VkBufferImageCopy imageCopy{
+        .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+        .imageExtent = {static_cast<uint32_t>(fixedResolution.x), static_cast<uint32_t>(fixedResolution.y), 1},
+    };
+    vkCmdCopyImageToBuffer(commandBuffer.getCommandBuffer(), fixedImage, VK_IMAGE_LAYOUT_GENERAL, readback.getBuffer(),
+                           1, &imageCopy);
+    const VkMemoryBarrier2 readbackBarrier{
+        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+        .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT,
+        .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT,
+    };
+    const VkDependencyInfo dependencyInfo{
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .memoryBarrierCount = 1,
+        .pMemoryBarriers = &readbackBarrier,
+    };
+    vkCmdPipelineBarrier2(commandBuffer.getCommandBuffer(), &dependencyInfo);
+    commandBuffer.endCommands();
+    const VkCommandBufferSubmitInfo commandBufferInfo{
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+        .commandBuffer = commandBuffer.getCommandBuffer(),
+    };
+    const VkSubmitInfo2 submitInfo{
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+        .commandBufferInfoCount = 1,
+        .pCommandBufferInfos = &commandBufferInfo,
+    };
+    ASSERT_EQ(vkQueueSubmit2(device.getQueue(RenderGraph::QueueType::GRAPHICS), 1, &submitInfo, nullptr), VK_SUCCESS);
+    ASSERT_EQ(vkQueueWaitIdle(device.getQueue(RenderGraph::QueueType::GRAPHICS)), VK_SUCCESS);
+    ASSERT_EQ(vmaInvalidateAllocation(allocator.getAllocator(), readback.getAllocation(), 0, VK_WHOLE_SIZE),
+              VK_SUCCESS);
+    const auto* result = static_cast<const std::byte*>(readback.getAllocationInfo().pMappedData);
+    ASSERT_NE(result, nullptr);
+    EXPECT_EQ(std::vector<std::byte>(result, result + pixels.size()), pixels);
+  }
+
+  const std::vector<std::string> errors = validationErrors.getErrors();
+  EXPECT_TRUE(errors.empty()) << joinErrors(errors);
 }
 
 TEST(ValidationTest, OffscreenComputeGraphPresentsWithoutWritingSwapchain) {

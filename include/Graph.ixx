@@ -42,9 +42,15 @@ class ScenarioTest_TraversalDiamondGraph_Test;
 }
 
 export namespace RenderGraph {
+enum class ImageResizePolicy { FIXED, SWAPCHAIN };
+
 class GraphStorage final {
  private:
-  std::unordered_map<std::string, std::unique_ptr<ImageViewHolder>> _imageViewHolders;
+  struct ImageResource {
+    std::unique_ptr<ImageViewHolder> imageViewHolder;
+    ImageResizePolicy resizePolicy;
+  };
+  std::unordered_map<std::string, ImageResource> _images;
   std::unordered_map<std::string, std::vector<std::unique_ptr<Buffer>>> _buffers;
 
  public:
@@ -54,7 +60,10 @@ class GraphStorage final {
   GraphStorage(GraphStorage&&) = delete;
   GraphStorage& operator=(GraphStorage&&) = delete;
 
-  void add(std::string_view name, std::unique_ptr<ImageViewHolder> imageViewHolder);
+  // Non-swapchain images retain their size and contents by default when the swapchain is reset.
+  void add(std::string_view name,
+           std::unique_ptr<ImageViewHolder> imageViewHolder,
+           ImageResizePolicy resizePolicy = ImageResizePolicy::FIXED);
   // not const because will do std::move
   void add(std::string_view name, std::vector<std::unique_ptr<Buffer>>& buffers);
   void reset(std::vector<std::shared_ptr<ImageView>> oldSwapchain,

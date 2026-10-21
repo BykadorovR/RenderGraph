@@ -99,7 +99,7 @@ TEST(ScenarioTest, GraphOneQueue) {
 
   std::unique_ptr<RenderGraph::ImageViewHolder> positionHolder = std::make_unique<RenderGraph::ImageViewHolder>(
       positionImageViews, [&]() { return graph.getFrameInFlight(); });
-  graph.getGraphStorage().add("Target", std::move(positionHolder));
+  graph.getGraphStorage().add("Target", std::move(positionHolder), RenderGraph::ImageResizePolicy::SWAPCHAIN);
 
   EXPECT_GE(graph.getGraphStorage().getImageViewHolder("Swapchain").getImageViews().size(), 2);
 
@@ -311,7 +311,7 @@ TEST(ScenarioTest, GraphSeparateQueues) {
 
   std::unique_ptr<RenderGraph::ImageViewHolder> positionHolder = std::make_unique<RenderGraph::ImageViewHolder>(
       positionImageViews, [&]() { return graph.getFrameInFlight(); });
-  graph.getGraphStorage().add("Target", std::move(positionHolder));
+  graph.getGraphStorage().add("Target", std::move(positionHolder), RenderGraph::ImageResizePolicy::SWAPCHAIN);
 
   EXPECT_GE(graph.getGraphStorage().getImageViewHolder("Swapchain").getImageViews().size(), 2);
 
@@ -875,7 +875,7 @@ TEST(ScenarioTest, GraphReset) {
 
   std::unique_ptr<RenderGraph::ImageViewHolder> positionHolder = std::make_unique<RenderGraph::ImageViewHolder>(
       positionImageViews, [&]() { return graph.getFrameInFlight(); });
-  graph.getGraphStorage().add("Target", std::move(positionHolder));
+  graph.getGraphStorage().add("Target", std::move(positionHolder), RenderGraph::ImageResizePolicy::SWAPCHAIN);
 
   auto elementMock = std::make_shared<GraphElementMock>();
   auto& renderPass = graph.createPassGraphic("Render");

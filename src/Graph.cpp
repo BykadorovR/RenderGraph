@@ -28,8 +28,10 @@ module Graph;
 
 using namespace RenderGraph;
 
-void GraphStorage::add(std::string_view name, std::unique_ptr<ImageViewHolder> imageHolder) {
-  _imageViewHolders[std::string(name)] = std::move(imageHolder);
+void GraphStorage::add(std::string_view name,
+                       std::unique_ptr<ImageViewHolder> imageHolder,
+                       ImageResizePolicy resizePolicy) {
+  _images[std::string(name)] = {.imageViewHolder = std::move(imageHolder), .resizePolicy = resizePolicy};
 }
 
 void GraphStorage::add(std::string_view name, std::vector<std::unique_ptr<Buffer>>& buffers) {
@@ -41,42 +43,37 @@ void GraphStorage::reset(std::vector<std::shared_ptr<ImageView>> oldSwapchain,
   glm::ivec2 resolution = newSwapchain.front()->getImage().getResolution();
   auto nameSwapchain = find(oldSwapchain);
   if (nameSwapchain.empty() == false) {
-    _imageViewHolders[nameSwapchain]->setImageViews(newSwapchain);
+    _images.at(nameSwapchain).imageViewHolder->setImageViews(newSwapchain);
   }
 
-  for (auto&& [name, value] : _imageViewHolders) {
-    if (name != nameSwapchain) {
-      auto indexFunction = value->getIndexFunction();
-      auto imageViews = value->getImageViews();
-      for (int i = 0; i < imageViews.size(); i++) {
-        auto& image = imageViews[i]->getImage();
-        if (image.getResolution() != resolution) {
-          // recreate image
-          imageViews[i]->destroy();
-          image.destroy();
-          image.createImage(image.getFormat(), resolution, image.getMipMapNumber(), image.getLayerNumber(),
-                            image.getAspectMask(), image.getUsageFlags(), image.getCreateFlags());
-          imageViews[i]->createImageView(imageViews[i]->getType(), imageViews[i]->getBaseMipMap(),
-                                         imageViews[i]->getBaseArrayLayer());
-        }
+  for (auto&& [name, resource] : _images) {
+    if (name == nameSwapchain || resource.resizePolicy == ImageResizePolicy::FIXED) {
+      continue;
+    }
+    for (auto* imageView : resource.imageViewHolder->getImageViews()) {
+      auto& image = imageView->getImage();
+      if (image.getResolution() != resolution) {
+        imageView->destroy();
+        image.destroy();
+        image.createImage(image.getFormat(), resolution, image.getMipMapNumber(), image.getLayerNumber(),
+                          image.getAspectMask(), image.getUsageFlags(), image.getCreateFlags());
+        imageView->createImageView(imageView->getType(), imageView->getBaseMipMap(), imageView->getBaseArrayLayer());
       }
     }
   }
 }
 
 std::string GraphStorage::find(const std::vector<std::shared_ptr<ImageView>>& imageViews) {
-  for (auto&& [name, imageViewHolder] : _imageViewHolders) {
-    if (imageViewHolder->contains(imageViews)) return name;
+  for (auto&& [name, resource] : _images) {
+    if (resource.imageViewHolder->contains(imageViews)) return name;
   }
   return std::string{};
 }
 
-bool GraphStorage::containsImageViewHolder(std::string_view name) const {
-  return _imageViewHolders.contains(std::string(name));
-}
+bool GraphStorage::containsImageViewHolder(std::string_view name) const { return _images.contains(std::string(name)); }
 
 const ImageViewHolder& GraphStorage::getImageViewHolder(std::string_view name) const {
-  return *_imageViewHolders.at(std::string(name));
+  return *_images.at(std::string(name)).imageViewHolder;
 }
 
 bool GraphStorage::containsBuffer(std::string_view name) const { return _buffers.contains(std::string(name)); }
