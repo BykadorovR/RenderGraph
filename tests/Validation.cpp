@@ -758,6 +758,111 @@ TEST_P(ValidationScenarioTest, GpuDrivenIndexedIndirectCountDrawsTriangle) {
   EXPECT_TRUE(errors.empty()) << joinErrors(errors);
 }
 
+TEST_P(ValidationScenarioTest, GraphicsStorageBufferBarriersUseDefaultDeviceFeatures) {
+  ValidationErrorCollector validationErrors;
+  RenderGraph::Instance instance("GraphicsStorageBufferValidationTest", true);
+  if (!instance.isDebug()) {
+    GTEST_SKIP() << "Vulkan validation layers or VK_EXT_debug_utils are unavailable";
+  }
+
+  ValidationMessenger validationMessenger(instance.getInstance().instance, validationErrors);
+
+  {
+    constexpr int framesInFlight = 2;
+    RenderGraph::Device device(instance);
+    device.initialize();
+    RenderGraph::MemoryAllocator allocator(device, instance);
+    RenderGraph::Tracer tracer(device);
+    RenderGraph::Graph graph(2, framesInFlight, device, tracer);
+    graph.initialize();
+
+    std::vector<std::unique_ptr<RenderGraph::Buffer>> buffers;
+    std::vector<std::shared_ptr<RenderGraph::ImageView>> colorImageViews;
+    for (int frameIndex = 0; frameIndex < framesInFlight; ++frameIndex) {
+      buffers.push_back(std::make_unique<RenderGraph::Buffer>(16, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 0, allocator));
+      auto image = std::make_unique<RenderGraph::Image>(allocator);
+      image->createImage(VK_FORMAT_R8G8B8A8_UNORM, {16, 16}, 1, 1, VK_IMAGE_ASPECT_COLOR_BIT,
+                         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
+      auto imageView = std::make_shared<RenderGraph::ImageView>(std::move(image), device);
+      imageView->createImageView(VK_IMAGE_VIEW_TYPE_2D, 0, 0);
+      colorImageViews.push_back(std::move(imageView));
+    }
+    graph.getGraphStorage().add("Data", buffers);
+    graph.getGraphStorage().add("Color", std::make_unique<RenderGraph::ImageViewHolder>(
+                                             colorImageViews, [&graph]() { return graph.getFrameInFlight(); }));
+
+    auto& producer = graph.createPassCompute("Produce", GetParam());
+    producer.addStorageBufferOutput("Data");
+    auto& consumer = graph.createPassGraphic("Draw");
+    consumer.addStorageBufferInput("Data");
+    consumer.addColorTarget("Color");
+    // Exercise the graphics stage mask in both destination and source scopes.
+    auto& rewrite = graph.createPassCompute("Rewrite", GetParam());
+    rewrite.addStorageBufferOutput("Data");
+    graph.calculate();
+
+    for (int frameIndex = 0; frameIndex < framesInFlight + 1; ++frameIndex) {
+      ASSERT_FALSE(graph.render());
+    }
+    ASSERT_EQ(vkDeviceWaitIdle(device.getLogicalDevice()), VK_SUCCESS);
+  }
+
+  const std::vector<std::string> errors = validationErrors.getErrors();
+  EXPECT_TRUE(errors.empty()) << joinErrors(errors);
+}
+
+TEST_P(ValidationScenarioTest, ComputePassesWithoutResourcesRunAcrossFrames) {
+  ValidationErrorCollector validationErrors;
+  RenderGraph::Instance instance("ResourceFreePassValidationTest", true);
+  if (!instance.isDebug()) {
+    GTEST_SKIP() << "Vulkan validation layers or VK_EXT_debug_utils are unavailable";
+  }
+
+  ValidationMessenger validationMessenger(instance.getInstance().instance, validationErrors);
+
+  {
+    constexpr int framesInFlight = 2;
+    constexpr int frameCount = framesInFlight + 1;
+    RenderGraph::Device device(instance);
+    device.initialize();
+    RenderGraph::MemoryAllocator allocator(device, instance);
+    RenderGraph::Tracer tracer(device);
+    RenderGraph::Graph graph(2, framesInFlight, device, tracer);
+    graph.initialize();
+
+    const std::array passes{&graph.createPassCompute("Before", false), &graph.createPassCompute("Middle", GetParam()),
+                            &graph.createPassCompute("After", false)};
+    auto graphElement = std::make_shared<ValidationGraphElement>();
+    for (auto* pass : passes) {
+      pass->registerGraphElement(graphElement);
+    }
+    ASSERT_NO_THROW(graph.calculate());
+    for (int frameIndex = 0; frameIndex < frameCount; ++frameIndex) {
+      ASSERT_FALSE(graph.render());
+    }
+    ASSERT_EQ(vkDeviceWaitIdle(device.getLogicalDevice()), VK_SUCCESS);
+    EXPECT_EQ(graphElement->getDrawCount(), frameCount * 3);
+
+    // Recalculate with an empty pass between a producer and its consumer.
+    std::vector<std::unique_ptr<RenderGraph::Buffer>> buffers;
+    for (int frameIndex = 0; frameIndex < framesInFlight; ++frameIndex) {
+      buffers.push_back(std::make_unique<RenderGraph::Buffer>(16, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 0, allocator));
+    }
+    graph.getGraphStorage().add("Data", buffers);
+    passes.front()->addStorageBufferOutput("Data");
+    passes.back()->addStorageBufferInput("Data");
+    ASSERT_NO_THROW(graph.calculate());
+    for (int frameIndex = 0; frameIndex < frameCount; ++frameIndex) {
+      ASSERT_FALSE(graph.render());
+    }
+    ASSERT_EQ(vkDeviceWaitIdle(device.getLogicalDevice()), VK_SUCCESS);
+    EXPECT_EQ(graphElement->getDrawCount(), frameCount * 6);
+  }
+
+  const std::vector<std::string> errors = validationErrors.getErrors();
+  EXPECT_TRUE(errors.empty()) << joinErrors(errors);
+}
+
 TEST(ValidationTest, ComputeGraphRunsWithoutSwapchain) {
   ValidationErrorCollector validationErrors;
   RenderGraph::Instance instance("ValidationComputeGraphTest", true);

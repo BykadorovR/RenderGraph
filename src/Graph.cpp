@@ -776,6 +776,8 @@ void Graph::calculate(std::span<const UploadTicket> uploadTickets) {
   };
 
   for (auto&& pass : _passes) {
+    // initialize Resources structure for current pass
+    _resources.try_emplace(pass.get());
     if (pass->getGraphPassType() == GraphPassType::COMPUTE) {
       auto* compute = static_cast<GraphPassCompute*>(pass.get());
       addResources(pass.get(), compute->getStorageBufferInputs(), Resource::Type::BUFFER, Resource::Operation::READ);
@@ -922,10 +924,7 @@ void Graph::calculate(std::span<const UploadTicket> uploadTickets) {
           usage.accessMask |= VK_ACCESS_2_INDEX_READ_BIT;
         }
         if (std::ranges::contains(graphic->getStorageBufferInputs(), resource.name)) {
-          usage.stageMask |= VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT |
-                             VK_PIPELINE_STAGE_2_TESSELLATION_CONTROL_SHADER_BIT |
-                             VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT |
-                             VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+          usage.stageMask |= VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT;
           usage.accessMask |= VK_ACCESS_2_SHADER_READ_BIT;
         }
         if (std::ranges::contains(graphic->getIndirectBufferInputs(), resource.name)) {
