@@ -7,6 +7,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <array>
 #include <cstddef>
@@ -1135,9 +1136,17 @@ TEST(ValidationTest, GraphStorageResetPreservesFixedImages) {
     const VkImageView fixedImageView = fixedView->getImageView();
     const VkImage sameSizeImage = sameSizeView->getImage().getImage();
     const VkImageView sameSizeImageView = sameSizeView->getImageView();
-    for (const glm::ivec2 resolution : {glm::ivec2(96, 64), initialSwapchainResolution}) {
+    for (const glm::ivec2 resolution : {glm::ivec2(96, 64), initialSwapchainResolution, initialSwapchainResolution}) {
+      const VkImage oldSwapchainImage = swapchainViews.front()->getImage().getImage();
+      const VkImage oldResizableImage = resizedView->getImage().getImage();
+      const bool resized = resizedView->getImage().getResolution() != resolution;
       std::vector newSwapchainViews{createImageView(resolution)};
-      storage.reset(swapchainViews, newSwapchainViews);
+      const auto replacedImages = storage.reset(swapchainViews, newSwapchainViews);
+      EXPECT_EQ(replacedImages.size(), resized ? 2u : 1u);
+      EXPECT_NE(std::ranges::find(replacedImages, oldSwapchainImage), replacedImages.end());
+      EXPECT_EQ(std::ranges::find(replacedImages, oldResizableImage) != replacedImages.end(), resized);
+      EXPECT_EQ(std::ranges::find(replacedImages, fixedImage), replacedImages.end());
+      EXPECT_EQ(std::ranges::find(replacedImages, sameSizeImage), replacedImages.end());
       EXPECT_EQ(storage.getImageViewHolder("Swapchain").getImageView().getImageView(),
                 newSwapchainViews.front()->getImageView());
       ASSERT_EQ(fixedView->getImage().getResolution(), fixedResolution);
@@ -1209,6 +1218,92 @@ TEST(ValidationTest, GraphStorageResetPreservesFixedImages) {
   }
 
   const std::vector<std::string> errors = validationErrors.getErrors();
+  EXPECT_TRUE(errors.empty()) << joinErrors(errors);
+}
+
+TEST(ValidationTest, FrameOwnershipSurvivesImageResize) {
+  ValidationErrorCollector validationErrors;
+  RenderGraph::Instance instance("FrameOwnershipResizeValidationTest", true);
+  if (!instance.isDebug()) {
+    GTEST_SKIP() << "Vulkan validation layers or VK_EXT_debug_utils are unavailable";
+  }
+  ValidationMessenger validationMessenger(instance.getInstance().instance, validationErrors);
+
+  {
+    constexpr int framesInFlight = 2;
+    const glm::ivec2 resolution(64, 64);
+    RenderGraph::Window window(resolution);
+    window.initialize();
+    RenderGraph::Surface surface(window, instance);
+    RenderGraph::Device device(instance);
+    device.setSurface(surface);
+    device.initialize();
+    if (device.getQueueIndex(RenderGraph::QueueType::COMPUTE) ==
+        device.getQueueIndex(RenderGraph::QueueType::GRAPHICS)) {
+      GTEST_SKIP() << "Distinct compute and graphics queue families are required";
+    }
+    RenderGraph::MemoryAllocator allocator(device, instance);
+    RenderGraph::Swapchain swapchain(resolution, allocator, device);
+    swapchain.initialize();
+    const auto swapchainResolution = swapchain.getImage(0).getResolution();
+    RenderGraph::Tracer tracer(device);
+    RenderGraph::Graph graph(2, framesInFlight, device, tracer);
+    graph.setSwapchain(swapchain);
+    graph.initialize();
+    graph.getGraphStorage().add(
+        "Swapchain", std::make_unique<RenderGraph::ImageViewHolder>(
+                         swapchain.getImageViews(), [&swapchain]() { return swapchain.getSwapchainIndex(); }));
+
+    auto addImages = [&](std::string_view name, glm::ivec2 size, RenderGraph::ImageResizePolicy policy) {
+      std::vector<std::shared_ptr<RenderGraph::ImageView>> views;
+      for (int frame = 0; frame < framesInFlight; ++frame) {
+        auto image = std::make_unique<RenderGraph::Image>(allocator);
+        image->createImage(VK_FORMAT_R8G8B8A8_UNORM, size, 1, 1, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_USAGE_STORAGE_BIT);
+        auto view = std::make_shared<RenderGraph::ImageView>(std::move(image), device);
+        view->createImageView(VK_IMAGE_VIEW_TYPE_2D, 0, 0);
+        views.push_back(std::move(view));
+      }
+      graph.getGraphStorage().add(
+          name, std::make_unique<RenderGraph::ImageViewHolder>(views, [&graph]() { return graph.getFrameInFlight(); }),
+          policy);
+      return views;
+    };
+    const auto resized = addImages("Resized", {4, 4}, RenderGraph::ImageResizePolicy::SWAPCHAIN);
+    const auto fixed = addImages("Fixed", {8, 8}, RenderGraph::ImageResizePolicy::FIXED);
+    const auto sameSize = addImages("SameSize", swapchainResolution, RenderGraph::ImageResizePolicy::SWAPCHAIN);
+    std::vector<std::unique_ptr<RenderGraph::Buffer>> buffers;
+    for (int frame = 0; frame < framesInFlight; ++frame) {
+      buffers.push_back(std::make_unique<RenderGraph::Buffer>(16, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 0, allocator));
+    }
+    graph.getGraphStorage().add("State", buffers);
+    auto& compute = graph.createPassCompute("Compute", true);
+    auto& graphics = graph.createPassCompute("ReadOnGraphics", false);
+    compute.addStorageBufferInput("State");
+    compute.addStorageBufferOutput("State");
+    graphics.addStorageBufferInput("State");
+    for (const auto* name : {"Resized", "Fixed", "SameSize"}) {
+      compute.addStorageTextureInput(name);
+      compute.addStorageTextureOutput(name);
+      graphics.addStorageTextureInput(name);
+    }
+    graph.calculate();
+    for (int frame = 0; frame < framesInFlight + 1; ++frame) ASSERT_FALSE(graph.render());
+    ASSERT_EQ(vkDeviceWaitIdle(device.getLogicalDevice()), VK_SUCCESS);
+
+    const VkImage fixedHandle = fixed.front()->getImage().getImage();
+    const VkImage sameSizeHandle = sameSize.front()->getImage().getImage();
+    const VkImage oldResizedHandle = resized.front()->getImage().getImage();
+    for (int cycle = 0; cycle < 2; ++cycle) {
+      ASSERT_NO_THROW(graph.reset(swapchainResolution));
+      if (cycle == 0) RecordProperty("reusedImageHandle", oldResizedHandle == resized.front()->getImage().getImage());
+      EXPECT_EQ(fixed.front()->getImage().getImage(), fixedHandle);
+      EXPECT_EQ(sameSize.front()->getImage().getImage(), sameSizeHandle);
+      EXPECT_EQ(resized.front()->getImage().getResolution(), swapchainResolution);
+      for (int frame = 0; frame < framesInFlight * 2; ++frame) ASSERT_FALSE(graph.render());
+      ASSERT_EQ(vkDeviceWaitIdle(device.getLogicalDevice()), VK_SUCCESS);
+    }
+  }
+  const auto errors = validationErrors.getErrors();
   EXPECT_TRUE(errors.empty()) << joinErrors(errors);
 }
 

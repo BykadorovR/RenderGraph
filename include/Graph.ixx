@@ -66,8 +66,9 @@ class GraphStorage final {
            ImageResizePolicy resizePolicy = ImageResizePolicy::FIXED);
   // not const because will do std::move
   void add(std::string_view name, std::vector<std::unique_ptr<Buffer>>& buffers);
-  void reset(std::vector<std::shared_ptr<ImageView>> oldSwapchain,
-             std::vector<std::shared_ptr<ImageView>> newSwapchain);
+  // Returns the old handles of replaced images so callers can invalidate cached state.
+  std::vector<VkImage> reset(std::vector<std::shared_ptr<ImageView>> oldSwapchain,
+                             std::vector<std::shared_ptr<ImageView>> newSwapchain);
   std::string find(const std::vector<std::shared_ptr<ImageView>>& imageViews);
   bool containsImageViewHolder(std::string_view name) const;
   const ImageViewHolder& getImageViewHolder(std::string_view name) const;
@@ -265,20 +266,25 @@ class Graph final {
     // same semaphore is wait and signal, so can't be unique
     std::vector<std::pair<std::vector<std::shared_ptr<Semaphore>>, std::function<int()>>> _waitSemaphores,
         _signalSemaphores;
-    std::vector<std::pair<std::vector<Barrier>, std::function<int()>>> _barriersBefore, _barriersAfter;
+    std::vector<std::pair<std::vector<Barrier>, std::function<int()>>> _barriers, _barriersAcquire, _barriersRelease;
 
    public:
     Sync() = default;
     void addSignalSemaphore(std::vector<std::shared_ptr<Semaphore>>& signalSemaphore, std::function<int()> index);
     void addWaitSemaphore(std::vector<std::shared_ptr<Semaphore>>& waitSemaphore, std::function<int()> index);
-    void addBarrierBefore(std::vector<Barrier>& barriers, std::function<int()> index);
-    void addBarrierAfter(std::vector<Barrier>& barriers, std::function<int()> index);
+    void addBarrier(std::vector<Barrier>& barriers, std::function<int()> index);
+    void addBarrierAcquire(std::vector<Barrier>& barriers, std::function<int()> index);
+    void addBarrierRelease(std::vector<Barrier>& barriers, std::function<int()> index);
 
     std::vector<Semaphore*> getWaitSemaphores() const;
     std::vector<Semaphore*> getSignalSemaphores() const;
-    std::vector<const Barrier*> getBarriersBefore() const;
-    std::vector<const Barrier*> getBarriersAfter() const;
+    std::vector<const Barrier*> getBarriers() const;
+    std::vector<const Barrier*> getBarriersAcquire() const;
+    std::vector<const Barrier*> getBarriersRelease() const;
   };
+  std::unordered_map<VkImage, bool> _ownershipInterFrameImages;
+  std::unordered_map<VkBuffer, bool> _ownershipInterFrameBuffers;
+
   std::unordered_map<GraphPass*, Sync> _sync;
   // Each queue consumes its upload waits and ownership acquire barriers once, at its first pass.
   std::unordered_map<GraphPass*, std::vector<UploadTicket>> _uploadTickets;

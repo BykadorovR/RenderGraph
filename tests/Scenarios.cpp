@@ -361,11 +361,11 @@ TEST(ScenarioTest, GraphSeparateQueues) {
                                      device.getQueueIndex(RenderGraph::QueueType::COMPUTE);
 
   // Ownership transfer: Render -> Postprocessing.
-  EXPECT_EQ(graph._sync.at(&renderPass).getBarriersAfter().size(), separateQueueFamilies ? 1 : 0);
-  EXPECT_EQ(graph._sync.at(&postprocessingPass).getBarriersBefore().size(), separateQueueFamilies ? 1 : 0);
+  EXPECT_EQ(graph._sync.at(&renderPass).getBarriersRelease().size(), separateQueueFamilies ? 1 : 0);
+  EXPECT_EQ(graph._sync.at(&postprocessingPass).getBarriersAcquire().size(), separateQueueFamilies ? 1 : 0);
   // Ownership transfer: Postprocessing -> GUI.
-  EXPECT_EQ(graph._sync.at(&postprocessingPass).getBarriersAfter().size(), separateQueueFamilies ? 1 : 0);
-  EXPECT_EQ(graph._sync.at(&guiPass).getBarriersBefore().size(), separateQueueFamilies ? 1 : 0);
+  EXPECT_EQ(graph._sync.at(&postprocessingPass).getBarriersRelease().size(), separateQueueFamilies ? 1 : 0);
+  EXPECT_EQ(graph._sync.at(&guiPass).getBarriersAcquire().size(), separateQueueFamilies ? 1 : 0);
   // Render waits for imageAvailable and signals the queue-transfer semaphore.
   ASSERT_TRUE(graph._sync.contains(&renderPass));
   EXPECT_EQ(graph._sync.at(&renderPass).getWaitSemaphores().size(), 1);
@@ -504,18 +504,18 @@ TEST(ScenarioTest, BufferOwnershipTransferUsesLastResourceOwner) {
   ASSERT_TRUE(graph._sync.contains(&lastPass));
 
   // Link stays on the graphics queue and requires one ordinary barrier before Middle.
-  EXPECT_EQ(graph._sync.at(&middlePass).getBarriersBefore().size(), 1);
+  EXPECT_EQ(graph._sync.at(&middlePass).getBarriers().size(), 1);
 
   if (separateQueueFamilies) {
     ASSERT_TRUE(graph._sync.contains(&firstPass));
     // X is released by First, Y is released by Middle, and Last acquires both.
-    EXPECT_EQ(graph._sync.at(&firstPass).getBarriersAfter().size(), 1);
-    EXPECT_EQ(graph._sync.at(&middlePass).getBarriersAfter().size(), 1);
-    EXPECT_EQ(graph._sync.at(&lastPass).getBarriersBefore().size(), 2);
+    EXPECT_EQ(graph._sync.at(&firstPass).getBarriersRelease().size(), 1);
+    EXPECT_EQ(graph._sync.at(&middlePass).getBarriersRelease().size(), 1);
+    EXPECT_EQ(graph._sync.at(&lastPass).getBarriersAcquire().size(), 2);
   } else {
     EXPECT_FALSE(graph._sync.contains(&firstPass));
-    EXPECT_TRUE(graph._sync.at(&middlePass).getBarriersAfter().empty());
-    EXPECT_TRUE(graph._sync.at(&lastPass).getBarriersBefore().empty());
+    EXPECT_TRUE(graph._sync.at(&middlePass).getBarriersRelease().empty());
+    EXPECT_TRUE(graph._sync.at(&lastPass).getBarriersAcquire().empty());
   }
 
   const auto middleSignalSemaphores = graph._sync.at(&middlePass).getSignalSemaphores();
@@ -559,7 +559,7 @@ TEST(ScenarioTest, BufferOwnershipReturnsToComputeOnFrameSlotReuse) {
     graph._frameInFlight = frame;
     const VkBuffer buffer = graph.getGraphStorage().getBuffer("State")[frame]->getBuffer();
     ASSERT_TRUE(graph._sync.contains(&graphicsPass));
-    const auto acquireBarriers = graph._sync.at(&graphicsPass).getBarriersBefore();
+    const auto acquireBarriers = graph._sync.at(&graphicsPass).getBarriersAcquire();
     ASSERT_EQ(acquireBarriers.size(), 1);
     ASSERT_EQ(acquireBarriers.front()->getBufferBarriers().size(), 1);
     const auto& acquire = acquireBarriers.front()->getBufferBarriers().front();
@@ -568,7 +568,7 @@ TEST(ScenarioTest, BufferOwnershipReturnsToComputeOnFrameSlotReuse) {
     EXPECT_EQ(acquire.dstQueueFamilyIndex, graphicsFamily);
 
     // Slot reuse reads existing contents on compute, so graphics must release ownership back to it.
-    const auto returnBarriers = graph._sync.at(&graphicsPass).getBarriersAfter();
+    const auto returnBarriers = graph._sync.at(&graphicsPass).getBarriersRelease();
     ASSERT_FALSE(returnBarriers.empty()) << "Missing graphics -> compute ownership release for frame-slot reuse";
     ASSERT_EQ(returnBarriers.front()->getBufferBarriers().size(), 1);
     const auto& release = returnBarriers.front()->getBufferBarriers().front();
@@ -680,7 +680,7 @@ TEST(ScenarioTest, GraphicsPassBufferInputs) {
   EXPECT_EQ(graph._passesOrdered.back(), &drawPass);
 
   ASSERT_TRUE(graph._sync.contains(&drawPass));
-  const auto barriers = graph._sync.at(&drawPass).getBarriersBefore();
+  const auto barriers = graph._sync.at(&drawPass).getBarriers();
   ASSERT_EQ(barriers.size(), 4);
 
   const VkBuffer visibleObjectsBuffer = graph.getGraphStorage().getBuffer("VisibleObjects")[0]->getBuffer();
@@ -779,7 +779,7 @@ TEST(ScenarioTest, ComputePassIndirectBufferInput) {
   EXPECT_EQ(graph._passesOrdered.back(), &inspectRewritePass);
 
   ASSERT_TRUE(graph._sync.contains(&dispatchPass));
-  const auto barriers = graph._sync.at(&dispatchPass).getBarriersBefore();
+  const auto barriers = graph._sync.at(&dispatchPass).getBarriers();
   ASSERT_EQ(barriers.size(), 1);
   ASSERT_EQ(barriers.front()->getBufferBarriers().size(), 1);
 
@@ -791,7 +791,7 @@ TEST(ScenarioTest, ComputePassIndirectBufferInput) {
 
   // The shader reader still depends on GenerateDispatch, not on the intervening indirect reader.
   ASSERT_TRUE(graph._sync.contains(&inspectPass));
-  const auto inspectBarriers = graph._sync.at(&inspectPass).getBarriersBefore();
+  const auto inspectBarriers = graph._sync.at(&inspectPass).getBarriers();
   ASSERT_EQ(inspectBarriers.size(), 1);
   ASSERT_EQ(inspectBarriers.front()->getBufferBarriers().size(), 1);
   const auto& inspectBarrier = inspectBarriers.front()->getBufferBarriers().front();
@@ -802,7 +802,7 @@ TEST(ScenarioTest, ComputePassIndirectBufferInput) {
 
   // Rewriting must wait for both readers, even though only the shader reader used the buffer last.
   ASSERT_TRUE(graph._sync.contains(&rewritePass));
-  const auto rewriteBarriers = graph._sync.at(&rewritePass).getBarriersBefore();
+  const auto rewriteBarriers = graph._sync.at(&rewritePass).getBarriers();
   ASSERT_EQ(rewriteBarriers.size(), 1);
   ASSERT_EQ(rewriteBarriers.front()->getBufferBarriers().size(), 1);
   const auto& rewriteBarrier = rewriteBarriers.front()->getBufferBarriers().front();
@@ -814,7 +814,7 @@ TEST(ScenarioTest, ComputePassIndirectBufferInput) {
   EXPECT_EQ(rewriteBarrier.dstAccessMask, VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT);
 
   ASSERT_TRUE(graph._sync.contains(&inspectRewritePass));
-  const auto inspectRewriteBarriers = graph._sync.at(&inspectRewritePass).getBarriersBefore();
+  const auto inspectRewriteBarriers = graph._sync.at(&inspectRewritePass).getBarriers();
   ASSERT_EQ(inspectRewriteBarriers.size(), 1);
   ASSERT_EQ(inspectRewriteBarriers.front()->getBufferBarriers().size(), 1);
   const auto& inspectRewriteBarrier = inspectRewriteBarriers.front()->getBufferBarriers().front();
@@ -1304,7 +1304,7 @@ TEST(ScenarioTest, TraversalDiamondGraph) {
   EXPECT_FALSE(imageGraph._sync.contains(&initialGraphicsReader));
   EXPECT_FALSE(imageGraph._sync.contains(&initialComputeReader));
   ASSERT_TRUE(imageGraph._sync.contains(&imageWriter));
-  const auto initialWriteBarriers = imageGraph._sync.at(&imageWriter).getBarriersBefore();
+  const auto initialWriteBarriers = imageGraph._sync.at(&imageWriter).getBarriers();
   ASSERT_EQ(initialWriteBarriers.size(), 1);
   ASSERT_EQ(initialWriteBarriers.front()->getImageBarriers().size(), 1);
   const auto& initialWriteBarrier = initialWriteBarriers.front()->getImageBarriers().front();
@@ -1316,7 +1316,7 @@ TEST(ScenarioTest, TraversalDiamondGraph) {
 
   // Sampling the image does not remove the write dependency needed by a later compute reader.
   ASSERT_TRUE(imageGraph._sync.contains(&computeReader));
-  const auto computeBarriers = imageGraph._sync.at(&computeReader).getBarriersBefore();
+  const auto computeBarriers = imageGraph._sync.at(&computeReader).getBarriers();
   ASSERT_EQ(computeBarriers.size(), 1);
   ASSERT_EQ(computeBarriers.front()->getImageBarriers().size(), 1);
   const auto& computeBarrier = computeBarriers.front()->getImageBarriers().front();
@@ -1326,7 +1326,7 @@ TEST(ScenarioTest, TraversalDiamondGraph) {
   EXPECT_EQ(computeBarrier.dstAccessMask, VK_ACCESS_2_SHADER_READ_BIT);
 
   ASSERT_TRUE(imageGraph._sync.contains(&imageRewrite));
-  const auto imageRewriteBarriers = imageGraph._sync.at(&imageRewrite).getBarriersBefore();
+  const auto imageRewriteBarriers = imageGraph._sync.at(&imageRewrite).getBarriers();
   ASSERT_EQ(imageRewriteBarriers.size(), 1);
   ASSERT_EQ(imageRewriteBarriers.front()->getImageBarriers().size(), 1);
   const auto& imageRewriteBarrier = imageRewriteBarriers.front()->getImageBarriers().front();
@@ -1336,7 +1336,7 @@ TEST(ScenarioTest, TraversalDiamondGraph) {
 
   // A new writer starts a fresh history; old graphics readers must not remain in its source mask.
   ASSERT_TRUE(imageGraph._sync.contains(&sampleRewrite));
-  const auto sampleRewriteBarriers = imageGraph._sync.at(&sampleRewrite).getBarriersBefore();
+  const auto sampleRewriteBarriers = imageGraph._sync.at(&sampleRewrite).getBarriers();
   ASSERT_EQ(sampleRewriteBarriers.size(), 1);
   ASSERT_EQ(sampleRewriteBarriers.front()->getImageBarriers().size(), 1);
   const auto& sampleRewriteBarrier = sampleRewriteBarriers.front()->getImageBarriers().front();

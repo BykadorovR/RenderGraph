@@ -38,11 +38,13 @@ void GraphStorage::add(std::string_view name, std::vector<std::unique_ptr<Buffer
   _buffers[std::string(name)] = std::move(buffers);
 }
 
-void GraphStorage::reset(std::vector<std::shared_ptr<ImageView>> oldSwapchain,
-                         std::vector<std::shared_ptr<ImageView>> newSwapchain) {
+std::vector<VkImage> GraphStorage::reset(std::vector<std::shared_ptr<ImageView>> oldSwapchain,
+                                         std::vector<std::shared_ptr<ImageView>> newSwapchain) {
+  std::vector<VkImage> replacedImages;
   glm::ivec2 resolution = newSwapchain.front()->getImage().getResolution();
   auto nameSwapchain = find(oldSwapchain);
   if (nameSwapchain.empty() == false) {
+    for (const auto& view : oldSwapchain) replacedImages.push_back(view->getImage().getImage());
     _images.at(nameSwapchain).imageViewHolder->setImageViews(newSwapchain);
   }
 
@@ -53,6 +55,7 @@ void GraphStorage::reset(std::vector<std::shared_ptr<ImageView>> oldSwapchain,
     for (auto* imageView : resource.imageViewHolder->getImageViews()) {
       auto& image = imageView->getImage();
       if (image.getResolution() != resolution) {
+        replacedImages.push_back(image.getImage());
         imageView->destroy();
         image.destroy();
         image.createImage(image.getFormat(), resolution, image.getMipMapNumber(), image.getLayerNumber(),
@@ -61,6 +64,7 @@ void GraphStorage::reset(std::vector<std::shared_ptr<ImageView>> oldSwapchain,
       }
     }
   }
+  return replacedImages;
 }
 
 std::string GraphStorage::find(const std::vector<std::shared_ptr<ImageView>>& imageViews) {
@@ -476,12 +480,16 @@ void Graph::Sync::addWaitSemaphore(std::vector<std::shared_ptr<Semaphore>>& wait
   _waitSemaphores.emplace_back(waitSemaphore, index);
 }
 
-void Graph::Sync::addBarrierBefore(std::vector<Barrier>& barriers, std::function<int()> index) {
-  _barriersBefore.emplace_back(barriers, index);
+void Graph::Sync::addBarrier(std::vector<Barrier>& barriers, std::function<int()> index) {
+  _barriers.emplace_back(barriers, index);
 }
 
-void Graph::Sync::addBarrierAfter(std::vector<Barrier>& barriers, std::function<int()> index) {
-  _barriersAfter.emplace_back(barriers, index);
+void Graph::Sync::addBarrierAcquire(std::vector<Barrier>& barriers, std::function<int()> index) {
+  _barriersAcquire.emplace_back(barriers, index);
+}
+
+void Graph::Sync::addBarrierRelease(std::vector<Barrier>& barriers, std::function<int()> index) {
+  _barriersRelease.emplace_back(barriers, index);
 }
 
 std::vector<Semaphore*> Graph::Sync::getSignalSemaphores() const {
@@ -500,16 +508,24 @@ std::vector<Semaphore*> Graph::Sync::getWaitSemaphores() const {
          std::ranges::to<std::vector>();
 }
 
-std::vector<const Barrier*> Graph::Sync::getBarriersBefore() const {
-  return _barriersBefore | std::views::transform([](const auto& pair) {
+std::vector<const Barrier*> Graph::Sync::getBarriers() const {
+  return _barriers | std::views::transform([](const auto& pair) {
            const auto& [barriers, index] = pair;
            return &barriers.at(index());
          }) |
          std::ranges::to<std::vector>();
 }
 
-std::vector<const Barrier*> Graph::Sync::getBarriersAfter() const {
-  return _barriersAfter | std::views::transform([](const auto& pair) {
+std::vector<const Barrier*> Graph::Sync::getBarriersAcquire() const {
+  return _barriersAcquire | std::views::transform([](const auto& pair) {
+           const auto& [barriers, index] = pair;
+           return &barriers.at(index());
+         }) |
+         std::ranges::to<std::vector>();
+}
+
+std::vector<const Barrier*> Graph::Sync::getBarriersRelease() const {
+  return _barriersRelease | std::views::transform([](const auto& pair) {
            const auto& [barriers, index] = pair;
            return &barriers.at(index());
          }) |
@@ -705,13 +721,15 @@ void Graph::print() const {
                  [](const auto* semaphore) { return semaphore->getSemaphore(); });
       printRange(" signal semaphores: ", sync.getSignalSemaphores(),
                  [](const auto* semaphore) { return semaphore->getSemaphore(); });
-      printBarriers(" barriers before: ", sync.getBarriersBefore());
-      printBarriers(" barriers after: ", sync.getBarriersAfter());
+      printBarriers(" barriers: ", sync.getBarriers());
+      printBarriers(" acquire barriers: ", sync.getBarriersAcquire());
+      printBarriers(" release barriers: ", sync.getBarriersRelease());
     } else {
       std::cout << " wait semaphores: <none>" << std::endl;
       std::cout << " signal semaphores: <none>" << std::endl;
-      std::cout << " barriers before: <none>" << std::endl;
-      std::cout << " barriers after: <none>" << std::endl;
+      std::cout << " barriers: <none>" << std::endl;
+      std::cout << " acquire barriers: <none>" << std::endl;
+      std::cout << " release barriers: <none>" << std::endl;
     }
 
     printRange(" command buffers: ", value->getCommandBuffers(),
@@ -870,11 +888,6 @@ void Graph::calculate(std::span<const UploadTicket> uploadTickets) {
     ResourceUsage readers;
   };
 
-  std::unordered_map<std::string, ResourceHistory> imageHistory;
-  std::unordered_map<std::string, ResourceHistory> bufferHistory;
-  std::unordered_map<std::string, LastUsage> imageOwnership;
-  std::unordered_map<std::string, LastUsage> bufferOwnership;
-
   auto hasOperation = [](const Resource& resource, Resource::Operation operation) {
     return (resource.operation & static_cast<uint8_t>(operation)) != 0;
   };
@@ -972,6 +985,16 @@ void Graph::calculate(std::span<const UploadTicket> uploadTickets) {
                                 VkAccessFlags2 srcAccessMask, VkPipelineStageFlags2 dstStageMask,
                                 VkAccessFlags2 dstAccessMask, uint32_t srcQueueFamilyIndex,
                                 uint32_t dstQueueFamilyIndex) {
+    auto addToSync = [&](std::vector<Barrier>& barriers, std::function<int()> index) {
+      auto& sync = _sync[barrierPass];
+      if (srcQueueFamilyIndex == VK_QUEUE_FAMILY_IGNORED) {
+        sync.addBarrier(barriers, index);
+      } else if (beforePass) {
+        sync.addBarrierAcquire(barriers, index);
+      } else {
+        sync.addBarrierRelease(barriers, index);
+      }
+    };
     if (resourceType == Resource::Type::BUFFER) {
       const auto buffers = _graphStorage->getBuffer(resourceName);
       std::vector<Barrier> barriers(_maxFramesInFlight);
@@ -980,11 +1003,7 @@ void Graph::calculate(std::span<const UploadTicket> uploadTickets) {
                                        srcQueueFamilyIndex, dstQueueFamilyIndex, 0, buffers[frameIndex]->getSize());
       }
 
-      if (beforePass) {
-        _sync[barrierPass].addBarrierBefore(barriers, [this]() { return _frameInFlight; });
-      } else {
-        _sync[barrierPass].addBarrierAfter(barriers, [this]() { return _frameInFlight; });
-      }
+      addToSync(barriers, [this]() { return _frameInFlight; });
 
       return;
     }
@@ -1007,11 +1026,7 @@ void Graph::calculate(std::span<const UploadTicket> uploadTickets) {
     }
 
     auto indexFunction = imageHolder.getIndexFunction();
-    if (beforePass) {
-      _sync[barrierPass].addBarrierBefore(barriers, indexFunction);
-    } else {
-      _sync[barrierPass].addBarrierAfter(barriers, indexFunction);
-    }
+    addToSync(barriers, indexFunction);
   };
 
   auto getQueueFamilyIndex = [this](GraphPass* pass) -> uint32_t {
@@ -1031,6 +1046,20 @@ void Graph::calculate(std::span<const UploadTicket> uploadTickets) {
     _sync[acquireWaitPass].addWaitSemaphore(_semaphoreImageAvailable, [this]() { return _frameInFlight; });
   }
 
+  // Track resource usage and queue-family ownership across passes.
+  std::unordered_map<std::string, ResourceHistory> imageHistory;
+  std::unordered_map<std::string, ResourceHistory> bufferHistory;
+  std::unordered_map<std::string, LastUsage> imageOwnership;
+  std::unordered_map<std::string, LastUsage> bufferOwnership;
+  // Track first/last usage for queue-family ownership transfers between frames.
+  struct InterFrameUsage {
+    GraphPass* firstPass;
+    GraphPass* lastPass;
+    Resource::Type type;
+    ResourceUsage firstUsage;
+    ResourceUsage lastUsage;
+  };
+  std::unordered_map<std::string, InterFrameUsage> interFrameUsage;
   // Select one pass per actual queue so render() doesn't discover queues every frame for traces.
   std::unordered_set<VkQueue> collectionQueues;
   GraphPass* previousPass = nullptr;
@@ -1061,6 +1090,17 @@ void Graph::calculate(std::span<const UploadTicket> uploadTickets) {
       auto& history = (resource.type == Resource::Type::IMAGE ? imageHistory : bufferHistory)[resource.name];
       auto& ownership = resource.type == Resource::Type::IMAGE ? imageOwnership : bufferOwnership;
       const ResourceUsage currentUsage = getResourceUsage(pass, resource);
+
+      // Store the first and last usage separately for inter-frame transfers.
+      if (interFrameUsage.find(resource.name) == interFrameUsage.end()) {
+        interFrameUsage[resource.name].firstPass = pass;
+        interFrameUsage[resource.name].type = resource.type;
+        interFrameUsage[resource.name].firstUsage = currentUsage;
+      }
+      interFrameUsage[resource.name].lastPass = pass;
+      interFrameUsage[resource.name].type = resource.type;
+      interFrameUsage[resource.name].lastUsage = currentUsage;
+
       // Queue-family ownership transfer.
       // We don't insert it to the place with semaphores because it can be:
       // X (graphic) -> Y (compute) -> X (compute) and in X -> Y transition we aren't sure
@@ -1121,6 +1161,24 @@ void Graph::calculate(std::span<const UploadTicket> uploadTickets) {
     }
 
     previousPass = pass;
+  }
+
+  // Complete the ownership cycle from the last pass to the first pass of the next frame.
+  for (auto&& [name, interFrame] : interFrameUsage) {
+    // last pass should release, first pass acquire
+    const uint32_t srcQueueFamilyIndex = getQueueFamilyIndex(interFrame.lastPass);
+    const uint32_t dstQueueFamilyIndex = getQueueFamilyIndex(interFrame.firstPass);
+    if (srcQueueFamilyIndex != dstQueueFamilyIndex) {
+      // RELEASE:
+      // executed after the last source-family use.
+      addResourceBarrier(interFrame.lastPass, false, name, interFrame.type, interFrame.lastUsage.stageMask,
+                         interFrame.lastUsage.accessMask, 0, 0, srcQueueFamilyIndex, dstQueueFamilyIndex);
+
+      // ACQUIRE:
+      // executed before the first destination-family use.
+      addResourceBarrier(interFrame.firstPass, true, name, interFrame.type, 0, 0, interFrame.firstUsage.stageMask,
+                         interFrame.firstUsage.accessMask, srcQueueFamilyIndex, dstQueueFamilyIndex);
+    }
   }
 
   // Collect all upload tickets and reassign them to the first pass using their destination queue.
@@ -1257,24 +1315,53 @@ bool Graph::render() {
           }
         }
 
-        // execute barriers (specific to the pass) added in calculate()
+        // Select ownership barriers sequentially; only recording happens on worker threads.
         Sync sync;
         if (const auto syncIt = _sync.find(pass); syncIt != _sync.end()) {
           sync = syncIt->second;
         }
-
-        return _threadPool->submit([this, pass, commandBuffer, queueType, sync]() {
-          const auto passCpuTrace = _tracer->traceCPU("Graph.pass." + pass->getName());
-          const auto passGpuTrace = _tracer->traceGPU("Graph.pass." + pass->getName(), queueType, *commandBuffer);
-
-          for (auto&& barrier : sync.getBarriersBefore()) {
-            barrier->execute(commandBuffer->getCommandBuffer());
+        auto ownershipState = [this](const Barrier* barrier) -> bool& {
+          if (!barrier->getBufferBarriers().empty()) {
+            return _ownershipInterFrameBuffers[barrier->getBufferBarriers().front().buffer];
           }
-          pass->execute(_frameInFlight, *commandBuffer);
-          for (auto&& barrier : sync.getBarriersAfter()) {
-            barrier->execute(commandBuffer->getCommandBuffer());
+          if (!barrier->getImageBarriers().empty()) {
+            return _ownershipInterFrameImages[barrier->getImageBarriers().front().image];
           }
-        });
+          throw std::logic_error("Empty ownership barrier");
+        };
+        std::vector<bool> executeAcquires;
+        for (const Barrier* barrier : sync.getBarriersAcquire()) {
+          bool& released = ownershipState(barrier);
+          executeAcquires.push_back(released);  // Skip acquire before the first release.
+          released = false;
+        }
+        for (const Barrier* barrier : sync.getBarriersRelease()) {
+          bool& released = ownershipState(barrier);
+          if (released) {
+            throw std::logic_error("Ownership release without preceding acquire");
+          }
+          released = true;
+        }
+
+        return _threadPool->submit(
+            [this, pass, commandBuffer, queueType, sync, executeAcquires = std::move(executeAcquires)]() {
+              const auto passCpuTrace = _tracer->traceCPU("Graph.pass." + pass->getName());
+              const auto passGpuTrace = _tracer->traceGPU("Graph.pass." + pass->getName(), queueType, *commandBuffer);
+
+              const auto acquires = sync.getBarriersAcquire();
+              for (std::size_t i = 0; i < acquires.size(); ++i) {
+                if (executeAcquires[i]) {
+                  acquires[i]->execute(commandBuffer->getCommandBuffer());
+                }
+              }
+              for (const Barrier* barrier : sync.getBarriers()) {
+                barrier->execute(commandBuffer->getCommandBuffer());
+              }
+              pass->execute(_frameInFlight, *commandBuffer);
+              for (const Barrier* barrier : sync.getBarriersRelease()) {
+                barrier->execute(commandBuffer->getCommandBuffer());
+              }
+            });
       }) |
       std::ranges::to<std::vector<std::future<void>>>();
 
@@ -1434,7 +1521,9 @@ void Graph::reset(glm::ivec2 resolution) {
   if (resolution.x == 0 || resolution.y == 0) throw std::runtime_error("Can't reset if resolution is 0");
 
   auto oldSwapchain = _swapchain->reset(resolution);
-  _graphStorage->reset(oldSwapchain, _swapchain->getImageViews());
+  for (const VkImage image : _graphStorage->reset(oldSwapchain, _swapchain->getImageViews())) {
+    _ownershipInterFrameImages.erase(image);
+  }
 
   _semaphoreRenderFinished.clear();
   std::ranges::generate_n(std::back_inserter(_semaphoreRenderFinished), _swapchain->getImageCount(),
