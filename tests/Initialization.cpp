@@ -74,6 +74,19 @@ TEST(WindowTest, GetResolution) {
   EXPECT_GT(resolution.y, 0);
 }
 
+TEST(WindowTest, ReinitializationIsRejectedAndWindowCanBeRecreated) {
+  {
+    RenderGraph::Window window({64, 64});
+    window.initialize();
+    EXPECT_THROW(window.initialize(), std::logic_error);
+  }
+
+  RenderGraph::Window next({64, 64});
+  next.initialize();
+  EXPECT_GT(next.getResolution().x, 0);
+  EXPECT_GT(next.getResolution().y, 0);
+}
+
 TEST(SurfaceTest, Create) {
   RenderGraph::Instance instance("TestApp", false);
   RenderGraph::Window window({1920, 1080});

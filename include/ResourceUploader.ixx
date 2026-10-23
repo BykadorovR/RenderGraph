@@ -46,7 +46,7 @@ class ResourceUploader final {
   uint64_t _nextCompletionValue = 1;
 
   UploadBatch& _getRecordingBatch();
-  void _generateMipmaps(Image& image, VkCommandBuffer commandBuffer);
+  void _generateMipmaps(Image& image, VkCommandBuffer commandBuffer, VkFilter filter);
   void _recordBufferBarrier(VkCommandBuffer commandBuffer,
                             VkBuffer buffer,
                             VkDeviceSize offset,
@@ -64,6 +64,7 @@ class ResourceUploader final {
   ResourceUploader& operator=(ResourceUploader&&) = delete;
 
   void upload(Buffer& destination, std::span<const std::byte> data, VkDeviceSize offset = 0);
+  // Mipmaps use linear filtering when supported, otherwise nearest filtering.
   void upload(Image& destination, std::span<const std::byte> data, std::span<const VkDeviceSize> bufferOffsets);
   // Wait on every returned ticket before using an upload on its destination queue.
   UploadTicket submit(QueueType destinationQueueType = QueueType::GRAPHICS);

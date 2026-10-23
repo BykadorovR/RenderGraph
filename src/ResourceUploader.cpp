@@ -120,7 +120,7 @@ void ResourceUploader::upload(Buffer& destination, std::span<const std::byte> da
   batch._stagingBuffers.push_back(std::move(stagingBuffer));
 }
 
-void ResourceUploader::_generateMipmaps(Image& image, VkCommandBuffer commandBuffer) {
+void ResourceUploader::_generateMipmaps(Image& image, VkCommandBuffer commandBuffer, VkFilter filter) {
   VkImageMemoryBarrier2 barrier{
       .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
       .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -171,7 +171,7 @@ void ResourceUploader::_generateMipmaps(Image& image, VkCommandBuffer commandBuf
         .dstOffsets = {{0, 0, 0}, {mipWidth > 1 ? mipWidth / 2 : 1, mipHeight > 1 ? mipHeight / 2 : 1, 1}},
     };
     vkCmdBlitImage(commandBuffer, image.getImage(), VK_IMAGE_LAYOUT_GENERAL, image.getImage(), VK_IMAGE_LAYOUT_GENERAL,
-                   1, &blit, VK_FILTER_LINEAR);
+                   1, &blit, filter);
 
     mipWidth = mipWidth > 1 ? mipWidth / 2 : 1;
     mipHeight = mipHeight > 1 ? mipHeight / 2 : 1;
@@ -190,9 +190,21 @@ void ResourceUploader::upload(Image& destination,
       (destination.getUsageFlags() & VK_IMAGE_USAGE_TRANSFER_DST_BIT) == 0) {
     throw std::invalid_argument("Invalid image upload");
   }
-  if (destination.getMipMapNumber() > 1 && (destination.getAspectMask() != VK_IMAGE_ASPECT_COLOR_BIT ||
-                                            (destination.getUsageFlags() & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) == 0)) {
-    throw std::invalid_argument("Image does not support mipmap generation");
+  VkFilter mipmapFilter = VK_FILTER_LINEAR;
+  if (destination.getMipMapNumber() > 1) {
+    if (destination.getAspectMask() != VK_IMAGE_ASPECT_COLOR_BIT ||
+        (destination.getUsageFlags() & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) == 0) {
+      throw std::invalid_argument("Image does not support mipmap generation");
+    }
+    VkFormatProperties properties{};
+    vkGetPhysicalDeviceFormatProperties(_device->getPhysicalDevice(), destination.getFormat(), &properties);
+    const auto blitFeatures = VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT;
+    if ((properties.optimalTilingFeatures & blitFeatures) != blitFeatures) {
+      throw std::invalid_argument("Image format does not support mipmap blits");
+    }
+    if ((properties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) == 0) {
+      mipmapFilter = VK_FILTER_NEAREST;
+    }
   }
 
   auto stagingBuffer = std::make_unique<Buffer>(
@@ -276,7 +288,7 @@ void ResourceUploader::upload(Image& destination,
                          static_cast<uint32_t>(copyRegions.size()), copyRegions.data());
 
   if (destination.getMipMapNumber() > 1) {
-    _generateMipmaps(destination, commandBuffer);
+    _generateMipmaps(destination, commandBuffer, mipmapFilter);
   }
   batch._stagingBuffers.push_back(std::move(stagingBuffer));
 }

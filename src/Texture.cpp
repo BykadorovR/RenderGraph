@@ -116,6 +116,17 @@ ImageView::ImageView(std::unique_ptr<Image> image, const Device& device) noexcep
       _device(&device) {}
 
 void ImageView::createImageView(VkImageViewType type, int baseMipMap, int baseArrayLayer) {
+  if (baseMipMap < 0 || baseMipMap >= _image->getMipMapNumber() || baseArrayLayer < 0 ||
+      baseArrayLayer >= _image->getLayerNumber()) {
+    throw std::out_of_range("Image view subresource range is out of bounds");
+  }
+  uint32_t layerCount = static_cast<uint32_t>(_image->getLayerNumber() - baseArrayLayer);
+  if (type == VK_IMAGE_VIEW_TYPE_1D || type == VK_IMAGE_VIEW_TYPE_2D || type == VK_IMAGE_VIEW_TYPE_3D) {
+    layerCount = 1;
+  } else if (type == VK_IMAGE_VIEW_TYPE_CUBE) {
+    if (layerCount < 6) throw std::out_of_range("Cube image view requires six layers");
+    layerCount = 6;
+  }
   _type = type;
   _baseMipMap = baseMipMap;
   _baseArrayLayer = baseArrayLayer;
@@ -131,9 +142,9 @@ void ImageView::createImageView(VkImageViewType type, int baseMipMap, int baseAr
                                  .subresourceRange = {
                                      .aspectMask = _image->getAspectMask(),
                                      .baseMipLevel = static_cast<uint32_t>(baseMipMap),
-                                     .levelCount = static_cast<uint32_t>(_image->getMipMapNumber()),
+                                     .levelCount = static_cast<uint32_t>(_image->getMipMapNumber() - baseMipMap),
                                      .baseArrayLayer = static_cast<uint32_t>(baseArrayLayer),
-                                     .layerCount = static_cast<uint32_t>(_image->getLayerNumber()),
+                                     .layerCount = layerCount,
                                  }};
 
   if (vkCreateImageView(_device->getLogicalDevice(), &viewInfo, nullptr, &_imageView) != VK_SUCCESS) {
