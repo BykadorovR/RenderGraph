@@ -37,8 +37,6 @@ class Barrier final {
                  VkAccessFlags2 srcAccessMask,
                  VkPipelineStageFlags2 dstStageMask,
                  VkAccessFlags2 dstAccessMask,
-                 uint32_t srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                 uint32_t dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                  VkDeviceSize offset = 0,
                  VkDeviceSize size = VK_WHOLE_SIZE);
 
@@ -49,9 +47,7 @@ class Barrier final {
                 VkAccessFlags2 dstAccessMask,
                 VkImageLayout oldLayout,
                 VkImageLayout newLayout,
-                VkImageSubresourceRange subresourceRange,
-                uint32_t srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                uint32_t dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED);
+                VkImageSubresourceRange subresourceRange);
   void execute(VkCommandBuffer commandBuffer) const;
 
   const std::vector<VkBufferMemoryBarrier2>& getBufferBarriers() const noexcept;

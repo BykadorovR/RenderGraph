@@ -219,30 +219,9 @@ void DescriptorBuffer::initialize(const CommandBuffer& commandBuffer) {
       }
     }
     if (resource.type == Resource::Type::TEXTURE) {
-      // TODO: change layout and generate mipmaps here
       for (auto&& texture : resource.textures) {
-        // change layout if it's not general
-        auto&& image = texture->getImageView().getImage();
-        if (image.getImageLayout() != VK_IMAGE_LAYOUT_GENERAL) {
-          auto dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT |
-                               VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT;
-          VkPipelineStageFlags2 dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT |
-                                               VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
-                                               VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
-                                               VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-          if (image.getAspectMask() & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) {
-            dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
-                            VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_SHADER_READ_BIT |
-                            VK_ACCESS_2_SHADER_WRITE_BIT;
-            dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
-                           VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
-                           VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
-          }
-          image.changeLayout(image.getImageLayout(), VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0,
-                             dstStageMask, dstAccessMask, commandBuffer);
-        }
         auto info = VkDescriptorImageInfo{.imageView = texture->getImageView().getImageView(),
-                                          .imageLayout = texture->getImageView().getImage().getImageLayout()};
+                                          .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
         auto&& sampler = texture->getSampler();
         if (sampler) info.sampler = sampler->getSampler();
         VkDescriptorGetInfoEXT getInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT};
@@ -270,7 +249,7 @@ void DescriptorBuffer::initialize(const CommandBuffer& commandBuffer) {
   int size = _descriptors.size();
   _descriptorBuffer = std::make_unique<Buffer>(
       size, _usage, VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
-      *_memoryAllocator);
+      *_memoryAllocator, *_device);
 
   // Descriptor buffers are explicitly created as persistently mapped host-visible buffers.
   const auto descriptorData = std::span(reinterpret_cast<const std::byte*>(_descriptors.data()), _descriptors.size());
@@ -326,28 +305,9 @@ void DescriptorBuffer::update(std::uint32_t binding,
     auto* texture = textures[index];
     if (texture == nullptr) throw std::invalid_argument("Texture is null");
 
-    auto& image = texture->getImageView().getImage();
-    if (image.getImageLayout() != VK_IMAGE_LAYOUT_GENERAL) {
-      auto dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT |
-                           VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT;
-      VkPipelineStageFlags2 dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT |
-                                           VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
-                                           VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
-                                           VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-      if (image.getAspectMask() & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) {
-        dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
-                        VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT;
-        dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
-                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
-                       VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
-      }
-      image.changeLayout(image.getImageLayout(), VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0,
-                         dstStageMask, dstAccessMask, commandBuffer);
-    }
-
     VkDescriptorImageInfo imageInfo{
         .imageView = texture->getImageView().getImageView(),
-        .imageLayout = texture->getImageView().getImage().getImageLayout(),
+        .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
     };
     if (const auto& sampler = texture->getSampler()) imageInfo.sampler = sampler->getSampler();
 
@@ -582,29 +542,8 @@ void DescriptorSet::initialize(const CommandBuffer& commandBuffer) {
     if (resource.type == Resource::Type::TEXTURE) {
       std::vector<VkDescriptorImageInfo> imageInfos(resource.textures.size());
       for (int i = 0; i < resource.textures.size(); i++) {
-        // change layout if it's not general
-        auto&& image = resource.textures[i]->getImageView().getImage();
-        if (image.getImageLayout() != VK_IMAGE_LAYOUT_GENERAL) {
-          auto dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT |
-                               VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT;
-          VkPipelineStageFlags2 dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT |
-                                               VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
-                                               VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
-                                               VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-          if (image.getAspectMask() & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) {
-            dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
-                            VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_SHADER_READ_BIT |
-                            VK_ACCESS_2_SHADER_WRITE_BIT;
-            dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
-                           VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
-                           VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
-          }
-          image.changeLayout(image.getImageLayout(), VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0,
-                             dstStageMask, dstAccessMask, commandBuffer);
-        }
-        imageInfos[i] = VkDescriptorImageInfo{
-            .imageView = resource.textures[i]->getImageView().getImageView(),
-            .imageLayout = resource.textures[i]->getImageView().getImage().getImageLayout()};
+        imageInfos[i] = VkDescriptorImageInfo{.imageView = resource.textures[i]->getImageView().getImageView(),
+                                              .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
         auto&& sampler = resource.textures[i]->getSampler();
         if (sampler) imageInfos[i].sampler = sampler->getSampler();
       }
@@ -649,28 +588,10 @@ void DescriptorSet::update(std::uint32_t binding,
   imageInfos.reserve(textures.size());
   for (auto* texture : textures) {
     if (texture == nullptr) throw std::invalid_argument("Texture is null");
-    auto& image = texture->getImageView().getImage();
-    if (image.getImageLayout() != VK_IMAGE_LAYOUT_GENERAL) {
-      auto dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT |
-                           VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT;
-      VkPipelineStageFlags2 dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT |
-                                           VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
-                                           VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
-                                           VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-      if (image.getAspectMask() & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) {
-        dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
-                        VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT;
-        dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
-                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
-                       VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
-      }
-      image.changeLayout(image.getImageLayout(), VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0,
-                         dstStageMask, dstAccessMask, commandBuffer);
-    }
 
     VkDescriptorImageInfo imageInfo{
         .imageView = texture->getImageView().getImageView(),
-        .imageLayout = texture->getImageView().getImage().getImageLayout(),
+        .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
     };
     if (const auto& sampler = texture->getSampler()) imageInfo.sampler = sampler->getSampler();
     imageInfos.push_back(imageInfo);

@@ -32,8 +32,8 @@ import glm;
 // Keep GoogleTest-generated classes in the global module
 extern "C++" {
 class ScenarioTest_GraphSeparateQueues_Test;
-class ScenarioTest_BufferOwnershipTransferUsesLastResourceOwner_Test;
-class ScenarioTest_BufferOwnershipReturnsToComputeOnFrameSlotReuse_Test;
+class ScenarioTest_BufferQueueChangesUseSemaphores_Test;
+class ScenarioTest_BufferQueueChangesSurviveFrameSlotReuse_Test;
 class ScenarioTest_ComputePassIndirectBufferInput_Test;
 class ScenarioTest_GraphicsPassBufferInputs_Test;
 class ScenarioTest_GraphOneQueue_Test;
@@ -66,9 +66,8 @@ class GraphStorage final {
            ImageResizePolicy resizePolicy = ImageResizePolicy::FIXED);
   // not const because will do std::move
   void add(std::string_view name, std::vector<std::unique_ptr<Buffer>>& buffers);
-  // Returns the old handles of replaced images so callers can invalidate cached state.
-  std::vector<VkImage> reset(std::vector<std::shared_ptr<ImageView>> oldSwapchain,
-                             std::vector<std::shared_ptr<ImageView>> newSwapchain);
+  void reset(std::vector<std::shared_ptr<ImageView>> oldSwapchain,
+             std::vector<std::shared_ptr<ImageView>> newSwapchain);
   std::string find(const std::vector<std::shared_ptr<ImageView>>& imageViews);
   bool containsImageViewHolder(std::string_view name) const;
   const ImageViewHolder& getImageViewHolder(std::string_view name) const;
@@ -211,8 +210,8 @@ class GraphPassCompute final : public GraphPass {
 class Graph final {
  private:
   friend class ::ScenarioTest_GraphSeparateQueues_Test;
-  friend class ::ScenarioTest_BufferOwnershipTransferUsesLastResourceOwner_Test;
-  friend class ::ScenarioTest_BufferOwnershipReturnsToComputeOnFrameSlotReuse_Test;
+  friend class ::ScenarioTest_BufferQueueChangesUseSemaphores_Test;
+  friend class ::ScenarioTest_BufferQueueChangesSurviveFrameSlotReuse_Test;
   friend class ::ScenarioTest_ComputePassIndirectBufferInput_Test;
   friend class ::ScenarioTest_GraphicsPassBufferInputs_Test;
   friend class ::ScenarioTest_GraphOneQueue_Test;
@@ -266,28 +265,26 @@ class Graph final {
     // same semaphore is wait and signal, so can't be unique
     std::vector<std::pair<std::vector<std::shared_ptr<Semaphore>>, std::function<int()>>> _waitSemaphores,
         _signalSemaphores;
-    std::vector<std::pair<std::vector<Barrier>, std::function<int()>>> _barriers, _barriersAcquire, _barriersRelease;
+    std::vector<std::pair<std::vector<Barrier>, std::function<int()>>> _barriers;
 
    public:
     Sync() = default;
     void addSignalSemaphore(std::vector<std::shared_ptr<Semaphore>>& signalSemaphore, std::function<int()> index);
     void addWaitSemaphore(std::vector<std::shared_ptr<Semaphore>>& waitSemaphore, std::function<int()> index);
     void addBarrier(std::vector<Barrier>& barriers, std::function<int()> index);
-    void addBarrierAcquire(std::vector<Barrier>& barriers, std::function<int()> index);
-    void addBarrierRelease(std::vector<Barrier>& barriers, std::function<int()> index);
 
     std::vector<Semaphore*> getWaitSemaphores() const;
     std::vector<Semaphore*> getSignalSemaphores() const;
     std::vector<const Barrier*> getBarriers() const;
-    std::vector<const Barrier*> getBarriersAcquire() const;
-    std::vector<const Barrier*> getBarriersRelease() const;
   };
-  std::unordered_map<VkImage, bool> _ownershipInterFrameImages;
-  std::unordered_map<VkBuffer, bool> _ownershipInterFrameBuffers;
 
   std::unordered_map<GraphPass*, Sync> _sync;
-  // Each queue consumes its upload waits and ownership acquire barriers once, at its first pass.
+  // Each queue consumes its upload waits once, at its first pass.
   std::unordered_map<GraphPass*, std::vector<UploadTicket>> _uploadTickets;
+  std::unordered_map<GraphPass*, std::vector<std::pair<Image*, Barrier>>> _initialImageBarriers;
+  GraphPass* _swapchainFirstPass = nullptr;
+  VkPipelineStageFlags2 _swapchainFirstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+  VkAccessFlags2 _swapchainFirstAccessMask = 0;
 
   void _setResourceNames();
   bool _usesSeparateQueue(GraphPass* pass);
@@ -311,7 +308,7 @@ class Graph final {
   // Keep ResourceUploader alive until the GPU finishes the frame waiting on its tickets (first frame-slot reuse).
   // Keep uploaded Buffer/Image objects alive until their last GPU use completes; tickets are copied here.
   void calculate(std::span<const UploadTicket> uploadTickets = {});
-  // true -> need to call reset
+  // true -> need to call reset; an empty graph returns false without submitting work.
   bool render();
   void reset(glm::ivec2 resolution);
 

@@ -13,7 +13,6 @@ module;
 export module Texture;
 
 import Allocator;
-import Command;
 import Device;
 import glm;
 
@@ -53,6 +52,7 @@ class ImageCPU final {
 class Image final {
  private:
   const MemoryAllocator* _memoryAllocator;
+  const Device* _device;
   VkImage _image{};
   VmaAllocation _imageMemory = nullptr;
   // image mandatory options
@@ -66,7 +66,7 @@ class Image final {
   VkImageLayout _imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
  public:
-  Image(const MemoryAllocator& memoryAllocator);
+  Image(const MemoryAllocator& memoryAllocator, const Device& device);
   Image(const Image&) = delete;
   Image& operator=(const Image&) = delete;
   Image(Image&&) = delete;
@@ -87,13 +87,7 @@ class Image final {
                  VkImageAspectFlags aspectMask,
                  VkImageUsageFlags usage);
 
-  void changeLayout(VkImageLayout oldLayout,
-                    VkImageLayout newLayout,
-                    VkPipelineStageFlags2 srcStageMask,
-                    VkAccessFlags2 srcAccessMask,
-                    VkPipelineStageFlags2 dstStageMask,
-                    VkAccessFlags2 dstAccessMask,
-                    const CommandBuffer& commandBuffer);
+  void setImageLayout(VkImageLayout layout) noexcept;
   glm::ivec2 getResolution() const noexcept;
   VkImage getImage() const noexcept;
   VkFormat getFormat() const noexcept;

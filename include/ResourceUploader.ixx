@@ -27,7 +27,6 @@ struct UploadTicket {
   VkSemaphore semaphore = nullptr;
   uint64_t value = 0;
   QueueType destinationQueueType = QueueType::GRAPHICS;
-  Barrier acquireBarrier;
 };
 
 class ResourceUploader final {
@@ -35,8 +34,6 @@ class ResourceUploader final {
   struct UploadBatch {
     std::unique_ptr<CommandBuffer> _commandBuffer;
     std::vector<std::unique_ptr<Buffer>> _stagingBuffers;
-    std::vector<Buffer*> _buffers;
-    std::vector<Image*> _images;
     uint64_t _completionValue = 0;
   };
 
@@ -68,7 +65,7 @@ class ResourceUploader final {
 
   void upload(Buffer& destination, std::span<const std::byte> data, VkDeviceSize offset = 0);
   void upload(Image& destination, std::span<const std::byte> data, std::span<const VkDeviceSize> bufferOffsets);
-  // Resources in a batch are handed to the destination queue; wait on every returned ticket.
+  // Wait on every returned ticket before using an upload on its destination queue.
   UploadTicket submit(QueueType destinationQueueType = QueueType::GRAPHICS);
   void reclaim();
 

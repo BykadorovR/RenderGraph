@@ -39,6 +39,7 @@ class Device final {
   VkPhysicalDevice _selectedPhysicalDevice = VK_NULL_HANDLE;
   bool _initialized = false;
   std::vector<VkQueueFamilyProperties> _queueFamilyProperties;
+  std::vector<uint32_t> _resourceQueueFamilies;
   std::vector<std::string> _enabledExtensions;
 
  public:
@@ -55,8 +56,11 @@ class Device final {
   bool isFormatFeatureSupported(VkFormat format, VkImageTiling tiling, VkFormatFeatureFlagBits featureFlagBit) const;
   const VkDevice getLogicalDevice() const noexcept;
   const VkPhysicalDevice getPhysicalDevice() const noexcept;
+  // PRESENT uses the graphics family; initialize() checks its surface support.
   const VkQueue getQueue(QueueType type) const;
   int getQueueIndex(QueueType type) const;
+  const std::vector<uint32_t>& getResourceQueueFamilies() const noexcept;
+  VkSharingMode getResourceSharingMode() const noexcept;
 
   const vkb::Device& getDevice() const noexcept;
   bool isExtensionSupported(std::string name) const;
