@@ -7,14 +7,19 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <memory>
 #include <mutex>
+#include <span>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 import Allocator;
@@ -27,9 +32,11 @@ import Graph;
 import Instance;
 import Instrumentation;
 import Pipeline;
+import ResourceUploader;
 import Shader;
 import Surface;
 import Swapchain;
+import Sync;
 import Texture;
 import Window;
 import glm;
@@ -106,6 +113,106 @@ class ValidationMessenger final {
   }
 };
 
+// Keep the driver and validation layers active while inspecting what the graph records/submits.
+class GraphCommandRecorder final {
+ private:
+  inline static GraphCommandRecorder* _active = nullptr;
+  PFN_vkCmdPipelineBarrier2 _pipelineBarrier = vkCmdPipelineBarrier2;
+  PFN_vkQueueSubmit2 _queueSubmit = vkQueueSubmit2;
+  std::mutex _mutex;
+
+  static VKAPI_ATTR void VKAPI_CALL recordBarrier(VkCommandBuffer commandBuffer, const VkDependencyInfo* dependency) {
+    auto& recorder = *_active;
+    {
+      std::scoped_lock lock(recorder._mutex);
+      for (uint32_t index = 0; index < dependency->imageMemoryBarrierCount; ++index) {
+        recorder.imageBarriers.emplace_back(commandBuffer, dependency->pImageMemoryBarriers[index]);
+      }
+      for (uint32_t index = 0; index < dependency->bufferMemoryBarrierCount; ++index) {
+        recorder.bufferBarriers.push_back(dependency->pBufferMemoryBarriers[index]);
+      }
+    }
+    recorder._pipelineBarrier(commandBuffer, dependency);
+  }
+
+  static VKAPI_ATTR VkResult VKAPI_CALL recordSubmit(VkQueue queue,
+                                                     uint32_t submitCount,
+                                                     const VkSubmitInfo2* submits,
+                                                     VkFence fence) {
+    auto& recorder = *_active;
+    {
+      std::scoped_lock lock(recorder._mutex);
+      for (uint32_t index = 0; index < submitCount; ++index) {
+        const auto& submit = submits[index];
+        recorder.submissionQueues.push_back(queue);
+        recorder.submissionBuffers.emplace_back();
+        for (uint32_t buffer = 0; buffer < submit.commandBufferInfoCount; ++buffer) {
+          recorder.submissionBuffers.back().push_back(submit.pCommandBufferInfos[buffer].commandBuffer);
+        }
+      }
+    }
+    return recorder._queueSubmit(queue, submitCount, submits, fence);
+  }
+
+ public:
+  std::vector<std::pair<VkCommandBuffer, VkImageMemoryBarrier2>> imageBarriers;
+  std::vector<VkBufferMemoryBarrier2> bufferBarriers;
+  std::vector<VkQueue> submissionQueues;
+  std::vector<std::vector<VkCommandBuffer>> submissionBuffers;
+
+  GraphCommandRecorder() {
+    _active = this;
+    vkCmdPipelineBarrier2 = recordBarrier;
+    vkQueueSubmit2 = recordSubmit;
+  }
+  GraphCommandRecorder(const GraphCommandRecorder&) = delete;
+  GraphCommandRecorder& operator=(const GraphCommandRecorder&) = delete;
+  ~GraphCommandRecorder() {
+    vkCmdPipelineBarrier2 = _pipelineBarrier;
+    vkQueueSubmit2 = _queueSubmit;
+    _active = nullptr;
+  }
+};
+
+class ResourceSharingRecorder final {
+ private:
+  inline static ResourceSharingRecorder* _active = nullptr;
+  PFN_vkCreateBuffer _createBuffer = vkCreateBuffer;
+  PFN_vkCreateImage _createImage = vkCreateImage;
+  const RenderGraph::Device& _device;
+
+  void check(VkSharingMode mode, uint32_t count, const uint32_t* families) {
+    EXPECT_EQ(mode, _device.getResourceSharingMode());
+    ASSERT_NE(families, nullptr);
+    EXPECT_EQ(std::vector<uint32_t>(families, families + count), _device.getResourceQueueFamilies());
+  }
+
+ public:
+  uint32_t buffers = 0, images = 0;
+  explicit ResourceSharingRecorder(const RenderGraph::Device& device) : _device(device) {
+    _active = this;
+    vkCreateBuffer = [](VkDevice device, const VkBufferCreateInfo* info, const VkAllocationCallbacks* callbacks,
+                        VkBuffer* buffer) {
+      auto& recorder = *_active;
+      ++recorder.buffers;
+      recorder.check(info->sharingMode, info->queueFamilyIndexCount, info->pQueueFamilyIndices);
+      return recorder._createBuffer(device, info, callbacks, buffer);
+    };
+    vkCreateImage = [](VkDevice device, const VkImageCreateInfo* info, const VkAllocationCallbacks* callbacks,
+                       VkImage* image) {
+      auto& recorder = *_active;
+      ++recorder.images;
+      recorder.check(info->sharingMode, info->queueFamilyIndexCount, info->pQueueFamilyIndices);
+      return recorder._createImage(device, info, callbacks, image);
+    };
+  }
+  ~ResourceSharingRecorder() {
+    vkCreateBuffer = _createBuffer;
+    vkCreateImage = _createImage;
+    _active = nullptr;
+  }
+};
+
 bool supportsStorageSwapchain(const RenderGraph::Device& device, const RenderGraph::Surface& surface) {
   VkSurfaceCapabilitiesKHR capabilities{};
   if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(device.getPhysicalDevice(), surface.getSurface(), &capabilities) !=
@@ -132,6 +239,12 @@ bool supportsStorageSwapchain(const RenderGraph::Device& device, const RenderGra
       .colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR,
   };
   VkSurfaceFormatKHR selectedFormat = formats.front();
+  for (const VkSurfaceFormatKHR format : formats) {
+    if (format.format == VK_FORMAT_B8G8R8A8_UNORM && format.colorSpace == desiredFormat.colorSpace) {
+      selectedFormat = format;
+      break;
+    }
+  }
   for (const VkSurfaceFormatKHR format : formats) {
     if (format.format == desiredFormat.format && format.colorSpace == desiredFormat.colorSpace) {
       selectedFormat = format;
@@ -366,6 +479,207 @@ std::string joinErrors(const std::vector<std::string>& errors) {
 class ValidationScenarioTest : public testing::TestWithParam<bool> {};
 }  // namespace
 
+TEST(ValidationTest, ReuploadsAllImageMipLevels) {
+  ValidationErrorCollector validationErrors;
+  RenderGraph::Instance instance("MipmapReuploadValidationTest", true);
+  if (!instance.isDebug()) GTEST_SKIP() << "Vulkan validation layers or VK_EXT_debug_utils are unavailable";
+  ValidationMessenger validationMessenger(instance.getInstance().instance, validationErrors);
+  {
+    RenderGraph::Device device(instance);
+    device.initialize();
+    RenderGraph::MemoryAllocator allocator(device, instance);
+    RenderGraph::Image image(allocator, device);
+    image.createImage(VK_FORMAT_R8G8B8A8_UNORM, {4, 4}, 3, 2, VK_IMAGE_ASPECT_COLOR_BIT,
+                      VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+    RenderGraph::ResourceUploader uploader(allocator, device);
+    const std::array<std::byte, 128> pixels{};
+    const std::array<VkDeviceSize, 2> offsets{0, 64};
+    for (int batch = 0; batch < 2; ++batch) {
+      // Exercise both repeated writes in one command buffer and writes across submissions.
+      uploader.upload(image, pixels, offsets);
+      uploader.upload(image, pixels, offsets);
+      uploader.submit();
+    }
+    ASSERT_EQ(vkDeviceWaitIdle(device.getLogicalDevice()), VK_SUCCESS);
+  }
+  const auto errors = validationErrors.getErrors();
+  EXPECT_TRUE(errors.empty()) << joinErrors(errors);
+}
+
+TEST(ValidationTest, ImageViewsRespectSubresourceOffsets) {
+  ValidationErrorCollector validationErrors;
+  RenderGraph::Instance instance("ImageViewSubresourceValidationTest", true);
+  if (!instance.isDebug()) GTEST_SKIP() << "Vulkan validation layers or VK_EXT_debug_utils are unavailable";
+  ValidationMessenger validationMessenger(instance.getInstance().instance, validationErrors);
+  {
+    RenderGraph::Device device(instance);
+    device.initialize();
+    RenderGraph::MemoryAllocator allocator(device, instance);
+    struct ViewCase {
+      VkImageViewType type;
+      int baseLayer;
+      int layers;
+      VkImageCreateFlags flags;
+    };
+    const std::array cases{
+        ViewCase{VK_IMAGE_VIEW_TYPE_2D, 1, 4, 0},
+        ViewCase{VK_IMAGE_VIEW_TYPE_2D_ARRAY, 1, 4, 0},
+        ViewCase{VK_IMAGE_VIEW_TYPE_CUBE, 6, 12, VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT},
+    };
+    for (const auto& test : cases) {
+      SCOPED_TRACE(test.type);
+      auto image = std::make_unique<RenderGraph::Image>(allocator, device);
+      image->createImage(VK_FORMAT_R8G8B8A8_UNORM, {4, 4}, 3, test.layers, VK_IMAGE_ASPECT_COLOR_BIT,
+                         VK_IMAGE_USAGE_SAMPLED_BIT, test.flags);
+      RenderGraph::ImageView view(std::move(image), device);
+      EXPECT_THROW(view.createImageView(test.type, -1, test.baseLayer), std::out_of_range);
+      EXPECT_THROW(view.createImageView(test.type, 3, test.baseLayer), std::out_of_range);
+      EXPECT_THROW(view.createImageView(test.type, 1, -1), std::out_of_range);
+      EXPECT_THROW(view.createImageView(test.type, 1, test.layers), std::out_of_range);
+      view.createImageView(test.type, 1, test.baseLayer);
+      EXPECT_NE(view.getImageView(), VK_NULL_HANDLE);
+    }
+  }
+  EXPECT_TRUE(validationErrors.getErrors().empty()) << joinErrors(validationErrors.getErrors());
+}
+
+TEST(ValidationTest, IntegerMipmapsPreserveUploadedPixels) {
+  ValidationErrorCollector validationErrors;
+  RenderGraph::Instance instance("IntegerMipmapValidationTest", true);
+  if (!instance.isDebug()) GTEST_SKIP() << "Vulkan validation layers or VK_EXT_debug_utils are unavailable";
+  ValidationMessenger validationMessenger(instance.getInstance().instance, validationErrors);
+  {
+    RenderGraph::Device device(instance);
+    device.initialize();
+    constexpr auto format = VK_FORMAT_R8G8B8A8_UINT;
+    if (!device.isFormatFeatureSupported(format, VK_IMAGE_TILING_OPTIMAL, VK_FORMAT_FEATURE_BLIT_SRC_BIT) ||
+        !device.isFormatFeatureSupported(format, VK_IMAGE_TILING_OPTIMAL, VK_FORMAT_FEATURE_BLIT_DST_BIT)) {
+      GTEST_SKIP() << "Integer image blits are unavailable";
+    }
+    RenderGraph::MemoryAllocator allocator(device, instance);
+    RenderGraph::Image image(allocator, device);
+    image.createImage(format, {4, 4}, 3, 1, VK_IMAGE_ASPECT_COLOR_BIT,
+                      VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+    RenderGraph::ResourceUploader uploader(allocator, device);
+    const std::vector<std::byte> pixels(64, std::byte{42});
+    const std::array<VkDeviceSize, 1> offsets{0};
+    uploader.upload(image, pixels, offsets);
+    const auto ticket = uploader.submit();
+
+    RenderGraph::Buffer readback(4, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                 VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+                                 allocator, device);
+    RenderGraph::CommandPool pool(RenderGraph::QueueType::GRAPHICS, device);
+    RenderGraph::CommandBuffer commands(pool, device);
+    commands.beginCommands();
+    RenderGraph::Barrier beforeCopy;
+    beforeCopy.addImage(image.getImage(), VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                        VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_GENERAL,
+                        VK_IMAGE_LAYOUT_GENERAL, {VK_IMAGE_ASPECT_COLOR_BIT, 2, 1, 0, 1});
+    beforeCopy.execute(commands.getCommandBuffer());
+    const VkBufferImageCopy copy{.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 2, 0, 1}, .imageExtent = {1, 1, 1}};
+    vkCmdCopyImageToBuffer(commands.getCommandBuffer(), image.getImage(), VK_IMAGE_LAYOUT_GENERAL, readback.getBuffer(),
+                           1, &copy);
+    RenderGraph::Barrier afterCopy;
+    afterCopy.addBuffer(&readback, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                        VK_PIPELINE_STAGE_2_HOST_BIT, VK_ACCESS_2_HOST_READ_BIT);
+    afterCopy.execute(commands.getCommandBuffer());
+    commands.endCommands();
+    const VkSemaphoreSubmitInfo wait{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+                                     .semaphore = ticket.semaphore,
+                                     .value = ticket.value,
+                                     .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};
+    const VkCommandBufferSubmitInfo commandInfo{.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+                                                .commandBuffer = commands.getCommandBuffer()};
+    const VkSubmitInfo2 submit{.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+                               .waitSemaphoreInfoCount = 1,
+                               .pWaitSemaphoreInfos = &wait,
+                               .commandBufferInfoCount = 1,
+                               .pCommandBufferInfos = &commandInfo};
+    ASSERT_EQ(vkQueueSubmit2(device.getQueue(RenderGraph::QueueType::GRAPHICS), 1, &submit, nullptr), VK_SUCCESS);
+    ASSERT_EQ(vkQueueWaitIdle(device.getQueue(RenderGraph::QueueType::GRAPHICS)), VK_SUCCESS);
+    ASSERT_EQ(vmaInvalidateAllocation(allocator.getAllocator(), readback.getAllocation(), 0, VK_WHOLE_SIZE),
+              VK_SUCCESS);
+    const auto* result = static_cast<const std::byte*>(readback.getAllocationInfo().pMappedData);
+    ASSERT_NE(result, nullptr);
+    EXPECT_EQ(std::vector<std::byte>(result, result + 4), std::vector<std::byte>(4, std::byte{42}));
+  }
+  EXPECT_TRUE(validationErrors.getErrors().empty()) << joinErrors(validationErrors.getErrors());
+}
+
+TEST(ValidationTest, UnsupportedMipmapBlitsAreRejectedBeforeRecording) {
+  ValidationErrorCollector validationErrors;
+  RenderGraph::Instance instance("UnsupportedMipmapValidationTest", true);
+  if (!instance.isDebug()) GTEST_SKIP() << "Vulkan validation layers or VK_EXT_debug_utils are unavailable";
+  ValidationMessenger validationMessenger(instance.getInstance().instance, validationErrors);
+  {
+    RenderGraph::Device device(instance);
+    device.initialize();
+    RenderGraph::MemoryAllocator allocator(device, instance);
+    RenderGraph::Image image(allocator, device);
+    image.createImage(VK_FORMAT_R8G8B8A8_UNORM, {4, 4}, 3, 1, VK_IMAGE_ASPECT_COLOR_BIT,
+                      VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+    RenderGraph::ResourceUploader uploader(allocator, device);
+    struct RestoreFormatProperties {
+      PFN_vkGetPhysicalDeviceFormatProperties original = vkGetPhysicalDeviceFormatProperties;
+      ~RestoreFormatProperties() { vkGetPhysicalDeviceFormatProperties = original; }
+    } restore;
+    vkGetPhysicalDeviceFormatProperties = +[](VkPhysicalDevice, VkFormat, VkFormatProperties* properties) {
+      *properties = {};
+    };
+    const std::array<std::byte, 64> pixels{};
+    const std::array<VkDeviceSize, 1> offsets{0};
+    EXPECT_THROW(uploader.upload(image, pixels, offsets), std::invalid_argument);
+    EXPECT_THROW(uploader.submit(), std::logic_error);
+    EXPECT_EQ(image.getImageLayout(), VK_IMAGE_LAYOUT_UNDEFINED);
+  }
+  EXPECT_TRUE(validationErrors.getErrors().empty()) << joinErrors(validationErrors.getErrors());
+}
+
+TEST(ValidationTest, EmptyGraphRenderIsNoOp) {
+  ValidationErrorCollector validationErrors;
+  RenderGraph::Instance instance("EmptyGraphValidationTest", true);
+  if (!instance.isDebug()) GTEST_SKIP() << "Vulkan validation layers or VK_EXT_debug_utils are unavailable";
+  ValidationMessenger validationMessenger(instance.getInstance().instance, validationErrors);
+  {
+    RenderGraph::Window window({64, 64});
+    window.initialize();
+    RenderGraph::Surface surface(window, instance);
+    RenderGraph::Device device(instance);
+    device.setSurface(surface);
+    device.initialize();
+    RenderGraph::MemoryAllocator allocator(device, instance);
+    RenderGraph::Swapchain swapchain({64, 64}, allocator, device);
+    swapchain.initialize();
+    RenderGraph::Tracer tracer(device);
+    for (bool withSwapchain : {false, true}) {
+      SCOPED_TRACE(withSwapchain);
+      RenderGraph::Graph graph(1, 2, device, tracer);
+      if (withSwapchain) graph.setSwapchain(swapchain);
+      graph.initialize();
+      graph.calculate();
+      for (int frame = 0; frame < swapchain.getImageCount() + 2; ++frame) {
+        ASSERT_FALSE(graph.render());
+        EXPECT_EQ(graph.getFrameInFlight(), 0);
+      }
+      // Empty renders must leave synchronization usable when passes are subsequently added.
+      if (withSwapchain) {
+        graph.getGraphStorage().add(
+            "Swapchain", std::make_unique<RenderGraph::ImageViewHolder>(
+                             swapchain.getImageViews(), [&swapchain] { return swapchain.getSwapchainIndex(); }));
+        graph.createPassGraphic("Draw").addColorTarget("Swapchain");
+      } else {
+        graph.createPassCompute("Compute", false);
+      }
+      graph.calculate();
+      for (int frame = 0; frame < 3; ++frame) ASSERT_FALSE(graph.render());
+      ASSERT_EQ(vkDeviceWaitIdle(device.getLogicalDevice()), VK_SUCCESS);
+    }
+  }
+  const auto errors = validationErrors.getErrors();
+  EXPECT_TRUE(errors.empty()) << joinErrors(errors);
+}
+
 TEST(ValidationTest, DescriptorSetBindsAtNonZeroSet) {
   ValidationErrorCollector validationErrors;
   RenderGraph::Instance instance("DescriptorSetOffsetValidationTest", true);
@@ -385,7 +699,7 @@ TEST(ValidationTest, DescriptorSetBindsAtNonZeroSet) {
   RenderGraph::MemoryAllocator allocator(device, instance);
   RenderGraph::Buffer buffer(256, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                              VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
-                             allocator);
+                             allocator, device);
   RenderGraph::DescriptorPool descriptorPool({}, device);
 
   std::vector<RenderGraph::DescriptorSetLayout> layouts;
@@ -449,7 +763,7 @@ TEST(ValidationTest, DescriptorBufferBindsAtNonZeroSet) {
   RenderGraph::MemoryAllocator allocator(device, instance);
   RenderGraph::Buffer buffer(256, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
                              VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
-                             allocator);
+                             allocator, device);
   std::vector<RenderGraph::DescriptorSetLayout> layouts;
   layouts.reserve(3);
   for (int i = 0; i < 3; ++i) {
@@ -540,7 +854,7 @@ TEST_P(ValidationScenarioTest, FullGraphPipelineHasNoValidationErrorsAcrossReset
     depthImageViews.reserve(framesInFlight);
 
     for (int frameIndex = 0; frameIndex < framesInFlight; ++frameIndex) {
-      auto colorImage = std::make_unique<RenderGraph::Image>(allocator);
+      auto colorImage = std::make_unique<RenderGraph::Image>(allocator, device);
       colorImage->createImage(
           VK_FORMAT_R16G16B16A16_SFLOAT, resolution, 1, 1, VK_IMAGE_ASPECT_COLOR_BIT,
           VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT);
@@ -548,7 +862,7 @@ TEST_P(ValidationScenarioTest, FullGraphPipelineHasNoValidationErrorsAcrossReset
       colorImageView->createImageView(VK_IMAGE_VIEW_TYPE_2D, 0, 0);
       colorImageViews.push_back(std::move(colorImageView));
 
-      auto depthImage = std::make_unique<RenderGraph::Image>(allocator);
+      auto depthImage = std::make_unique<RenderGraph::Image>(allocator, device);
       depthImage->createImage(VK_FORMAT_D32_SFLOAT, resolution, 1, 1, VK_IMAGE_ASPECT_DEPTH_BIT,
                               VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT);
       auto depthImageView = std::make_shared<RenderGraph::ImageView>(std::move(depthImage), device);
@@ -556,16 +870,21 @@ TEST_P(ValidationScenarioTest, FullGraphPipelineHasNoValidationErrorsAcrossReset
       depthImageViews.push_back(std::move(depthImageView));
     }
 
-    graph.getGraphStorage().add("Color", std::make_unique<RenderGraph::ImageViewHolder>(
-                                             colorImageViews, [&graph]() { return graph.getFrameInFlight(); }));
-    graph.getGraphStorage().add("Depth", std::make_unique<RenderGraph::ImageViewHolder>(
-                                             depthImageViews, [&graph]() { return graph.getFrameInFlight(); }));
+    graph.getGraphStorage().add("Color",
+                                std::make_unique<RenderGraph::ImageViewHolder>(
+                                    colorImageViews, [&graph]() { return graph.getFrameInFlight(); }),
+                                RenderGraph::ImageResizePolicy::SWAPCHAIN);
+    graph.getGraphStorage().add("Depth",
+                                std::make_unique<RenderGraph::ImageViewHolder>(
+                                    depthImageViews, [&graph]() { return graph.getFrameInFlight(); }),
+                                RenderGraph::ImageResizePolicy::SWAPCHAIN);
 
     std::vector<std::unique_ptr<RenderGraph::Buffer>> storageBuffers;
     storageBuffers.reserve(framesInFlight);
     for (int frameIndex = 0; frameIndex < framesInFlight; ++frameIndex) {
       storageBuffers.push_back(std::make_unique<RenderGraph::Buffer>(
-          4096, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT, allocator));
+          4096, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT, allocator,
+          device));
     }
     graph.getGraphStorage().add("Data", storageBuffers);
 
@@ -574,7 +893,7 @@ TEST_P(ValidationScenarioTest, FullGraphPipelineHasNoValidationErrorsAcrossReset
     for (int frameIndex = 0; frameIndex < framesInFlight; ++frameIndex) {
       indirectBuffers.push_back(std::make_unique<RenderGraph::Buffer>(
           4096, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
-          VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT, allocator));
+          VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT, allocator, device));
     }
     graph.getGraphStorage().add("IndirectCommands", indirectBuffers);
 
@@ -585,7 +904,7 @@ TEST_P(ValidationScenarioTest, FullGraphPipelineHasNoValidationErrorsAcrossReset
     unsynchronizedPass.registerGraphElement(graphElement);
 
     auto& acquirePass = graph.createPassGraphic("Acquire");
-    acquirePass.addColorTarget("Swapchain", RenderGraph::RenderTargetLoadAction::CLEAR);
+    acquirePass.addColorTarget("Swapchain", RenderGraph::RenderTargetLoadAction::KEEP);
     acquirePass.registerGraphElement(graphElement);
 
     auto& preparePass = graph.createPassCompute("Prepare", false);
@@ -625,6 +944,9 @@ TEST_P(ValidationScenarioTest, FullGraphPipelineHasNoValidationErrorsAcrossReset
     graph.calculate();
     ASSERT_NO_THROW(graph.reset(resolution));
     int totalResetCount = 1;
+    for (const auto& view : swapchain.getImageViews()) {
+      EXPECT_EQ(view->getImage().getImageLayout(), VK_IMAGE_LAYOUT_UNDEFINED);
+    }
 
     constexpr int initialFrameCount = framesInFlight + 2;
     for (int frameIndex = 0; frameIndex < initialFrameCount; ++frameIndex) {
@@ -696,7 +1018,7 @@ TEST_P(ValidationScenarioTest, GpuDrivenIndexedIndirectCountDrawsTriangle) {
       buffers.reserve(framesInFlight);
       for (int frameIndex = 0; frameIndex < framesInFlight; ++frameIndex) {
         buffers.push_back(std::make_unique<RenderGraph::Buffer>(
-            size, usage, VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT, allocator));
+            size, usage, VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT, allocator, device));
       }
       graph.getGraphStorage().add(name, buffers);
     };
@@ -753,6 +1075,113 @@ TEST_P(ValidationScenarioTest, GpuDrivenIndexedIndirectCountDrawsTriangle) {
   EXPECT_TRUE(errors.empty()) << joinErrors(errors);
 }
 
+TEST_P(ValidationScenarioTest, GraphicsStorageBufferBarriersUseDefaultDeviceFeatures) {
+  ValidationErrorCollector validationErrors;
+  RenderGraph::Instance instance("GraphicsStorageBufferValidationTest", true);
+  if (!instance.isDebug()) {
+    GTEST_SKIP() << "Vulkan validation layers or VK_EXT_debug_utils are unavailable";
+  }
+
+  ValidationMessenger validationMessenger(instance.getInstance().instance, validationErrors);
+
+  {
+    constexpr int framesInFlight = 2;
+    RenderGraph::Device device(instance);
+    device.initialize();
+    RenderGraph::MemoryAllocator allocator(device, instance);
+    RenderGraph::Tracer tracer(device);
+    RenderGraph::Graph graph(2, framesInFlight, device, tracer);
+    graph.initialize();
+
+    std::vector<std::unique_ptr<RenderGraph::Buffer>> buffers;
+    std::vector<std::shared_ptr<RenderGraph::ImageView>> colorImageViews;
+    for (int frameIndex = 0; frameIndex < framesInFlight; ++frameIndex) {
+      buffers.push_back(
+          std::make_unique<RenderGraph::Buffer>(16, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 0, allocator, device));
+      auto image = std::make_unique<RenderGraph::Image>(allocator, device);
+      image->createImage(VK_FORMAT_R8G8B8A8_UNORM, {16, 16}, 1, 1, VK_IMAGE_ASPECT_COLOR_BIT,
+                         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
+      auto imageView = std::make_shared<RenderGraph::ImageView>(std::move(image), device);
+      imageView->createImageView(VK_IMAGE_VIEW_TYPE_2D, 0, 0);
+      colorImageViews.push_back(std::move(imageView));
+    }
+    graph.getGraphStorage().add("Data", buffers);
+    graph.getGraphStorage().add("Color", std::make_unique<RenderGraph::ImageViewHolder>(
+                                             colorImageViews, [&graph]() { return graph.getFrameInFlight(); }));
+
+    auto& producer = graph.createPassCompute("Produce", GetParam());
+    producer.addStorageBufferOutput("Data");
+    auto& consumer = graph.createPassGraphic("Draw");
+    consumer.addStorageBufferInput("Data");
+    consumer.addColorTarget("Color");
+    // Exercise the graphics stage mask in both destination and source scopes.
+    auto& rewrite = graph.createPassCompute("Rewrite", GetParam());
+    rewrite.addStorageBufferOutput("Data");
+    graph.calculate();
+
+    for (int frameIndex = 0; frameIndex < framesInFlight + 1; ++frameIndex) {
+      ASSERT_FALSE(graph.render());
+    }
+    ASSERT_EQ(vkDeviceWaitIdle(device.getLogicalDevice()), VK_SUCCESS);
+  }
+
+  const std::vector<std::string> errors = validationErrors.getErrors();
+  EXPECT_TRUE(errors.empty()) << joinErrors(errors);
+}
+
+TEST_P(ValidationScenarioTest, ComputePassesWithoutResourcesRunAcrossFrames) {
+  ValidationErrorCollector validationErrors;
+  RenderGraph::Instance instance("ResourceFreePassValidationTest", true);
+  if (!instance.isDebug()) {
+    GTEST_SKIP() << "Vulkan validation layers or VK_EXT_debug_utils are unavailable";
+  }
+
+  ValidationMessenger validationMessenger(instance.getInstance().instance, validationErrors);
+
+  {
+    constexpr int framesInFlight = 2;
+    constexpr int frameCount = framesInFlight + 1;
+    RenderGraph::Device device(instance);
+    device.initialize();
+    RenderGraph::MemoryAllocator allocator(device, instance);
+    RenderGraph::Tracer tracer(device);
+    RenderGraph::Graph graph(2, framesInFlight, device, tracer);
+    graph.initialize();
+
+    const std::array passes{&graph.createPassCompute("Before", false), &graph.createPassCompute("Middle", GetParam()),
+                            &graph.createPassCompute("After", false)};
+    auto graphElement = std::make_shared<ValidationGraphElement>();
+    for (auto* pass : passes) {
+      pass->registerGraphElement(graphElement);
+    }
+    ASSERT_NO_THROW(graph.calculate());
+    for (int frameIndex = 0; frameIndex < frameCount; ++frameIndex) {
+      ASSERT_FALSE(graph.render());
+    }
+    ASSERT_EQ(vkDeviceWaitIdle(device.getLogicalDevice()), VK_SUCCESS);
+    EXPECT_EQ(graphElement->getDrawCount(), frameCount * 3);
+
+    // Recalculate with an empty pass between a producer and its consumer.
+    std::vector<std::unique_ptr<RenderGraph::Buffer>> buffers;
+    for (int frameIndex = 0; frameIndex < framesInFlight; ++frameIndex) {
+      buffers.push_back(
+          std::make_unique<RenderGraph::Buffer>(16, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 0, allocator, device));
+    }
+    graph.getGraphStorage().add("Data", buffers);
+    passes.front()->addStorageBufferOutput("Data");
+    passes.back()->addStorageBufferInput("Data");
+    ASSERT_NO_THROW(graph.calculate());
+    for (int frameIndex = 0; frameIndex < frameCount; ++frameIndex) {
+      ASSERT_FALSE(graph.render());
+    }
+    ASSERT_EQ(vkDeviceWaitIdle(device.getLogicalDevice()), VK_SUCCESS);
+    EXPECT_EQ(graphElement->getDrawCount(), frameCount * 6);
+  }
+
+  const std::vector<std::string> errors = validationErrors.getErrors();
+  EXPECT_TRUE(errors.empty()) << joinErrors(errors);
+}
+
 TEST(ValidationTest, ComputeGraphRunsWithoutSwapchain) {
   ValidationErrorCollector validationErrors;
   RenderGraph::Instance instance("ValidationComputeGraphTest", true);
@@ -784,7 +1213,8 @@ TEST(ValidationTest, ComputeGraphRunsWithoutSwapchain) {
       for (int frameIndex = 0; frameIndex < framesInFlight; ++frameIndex) {
         buffers.push_back(std::make_unique<RenderGraph::Buffer>(
             size, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-            VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT, allocator));
+            VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT, allocator,
+            device));
       }
       graph.getGraphStorage().add(name, buffers);
     };
@@ -802,7 +1232,7 @@ TEST(ValidationTest, ComputeGraphRunsWithoutSwapchain) {
     std::vector<std::shared_ptr<RenderGraph::ImageView>> storageImageViews;
     storageImageViews.reserve(framesInFlight);
     for (int frameIndex = 0; frameIndex < framesInFlight; ++frameIndex) {
-      auto storageImage = std::make_unique<RenderGraph::Image>(allocator);
+      auto storageImage = std::make_unique<RenderGraph::Image>(allocator, device);
       storageImage->createImage(VK_FORMAT_R8G8B8A8_UNORM, resolution, 1, 1, VK_IMAGE_ASPECT_COLOR_BIT,
                                 VK_IMAGE_USAGE_STORAGE_BIT);
       auto storageImageView = std::make_shared<RenderGraph::ImageView>(std::move(storageImage), device);
@@ -844,6 +1274,533 @@ TEST(ValidationTest, ComputeGraphRunsWithoutSwapchain) {
   EXPECT_TRUE(errors.empty()) << joinErrors(errors);
 }
 
+TEST_P(ValidationScenarioTest, UploadTicketsSynchronizeFirstPassOnEachQueueOnly) {
+  ValidationErrorCollector validationErrors;
+  RenderGraph::Instance instance("ValidationUploadTicketsTest", true);
+  if (!instance.isDebug()) {
+    GTEST_SKIP() << "Vulkan validation layers or VK_EXT_debug_utils are unavailable";
+  }
+  ValidationMessenger validationMessenger(instance.getInstance().instance, validationErrors);
+
+  {
+    RenderGraph::Device device(instance);
+    device.initialize();
+    GraphCommandRecorder recorder;
+    RenderGraph::MemoryAllocator allocator(device, instance);
+    RenderGraph::Tracer tracer(device);
+    RenderGraph::ResourceUploader uploader(allocator, device);
+    RenderGraph::Graph graph(1, 1, device, tracer);
+    graph.initialize();
+    const auto destinationQueueType = GetParam() ? RenderGraph::QueueType::COMPUTE : RenderGraph::QueueType::GRAPHICS;
+
+    const std::array<uint32_t, 2> firstData{11, 22};
+    const std::array<uint32_t, 2> secondData{33, 44};
+    std::vector<RenderGraph::UploadTicket> tickets;
+    for (const auto& [name, data] : {std::pair{"First", firstData}, std::pair{"Second", secondData}}) {
+      std::vector<std::unique_ptr<RenderGraph::Buffer>> buffers;
+      buffers.push_back(std::make_unique<RenderGraph::Buffer>(
+          sizeof(data),
+          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, 0,
+          allocator, device));
+      uploader.upload(*buffers.front(), std::as_bytes(std::span(data)));
+      const auto queueType = std::string_view(name) == "First" ? destinationQueueType
+                                                               : RenderGraph::QueueType::GRAPHICS;
+      tickets.push_back(uploader.submit(queueType));
+      EXPECT_EQ(tickets.back().destinationQueueType, queueType);
+      graph.getGraphStorage().add(name, buffers);
+    }
+
+    RenderGraph::Image image(allocator, device);
+    image.createImage(VK_FORMAT_R8G8B8A8_UNORM, {2, 2}, 2, 1, VK_IMAGE_ASPECT_COLOR_BIT,
+                      VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+    const std::array<std::byte, 16> pixels{
+        std::byte{42}, std::byte{42}, std::byte{42}, std::byte{42}, std::byte{42}, std::byte{42},
+        std::byte{42}, std::byte{42}, std::byte{42}, std::byte{42}, std::byte{42}, std::byte{42},
+        std::byte{42}, std::byte{42}, std::byte{42}, std::byte{42},
+    };
+    const std::array<VkDeviceSize, 1> offsets{0};
+    uploader.upload(image, pixels, offsets);
+    tickets.push_back(uploader.submit(destinationQueueType));
+
+    RenderGraph::Buffer firstReadback(12, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                      VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+                                      allocator, device);
+    RenderGraph::Buffer secondReadback(8, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                       VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+                                       allocator, device);
+    class ReadbackElement final : public RenderGraph::GraphElement {
+     private:
+      VkBuffer _source, _readback;
+      VkImage _image;
+
+     public:
+      ReadbackElement(VkBuffer source, VkBuffer readback, VkImage image = nullptr)
+          : _source(source),
+            _readback(readback),
+            _image(image) {}
+
+      void draw(int currentFrame, const RenderGraph::CommandBuffer& commandBuffer) override {
+        const VkCommandBuffer commands = commandBuffer.getCommandBuffer();
+        const VkBufferCopy bufferCopy{0, 0, 8};
+        vkCmdCopyBuffer(commands, _source, _readback, 1, &bufferCopy);
+        if (_image != nullptr) {
+          const VkBufferImageCopy imageCopy{
+              .bufferOffset = 8,
+              .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 1, 0, 1},
+              .imageExtent = {1, 1, 1},
+          };
+          vkCmdCopyImageToBuffer(commands, _image, VK_IMAGE_LAYOUT_GENERAL, _readback, 1, &imageCopy);
+        }
+        const VkMemoryBarrier2 barrier{
+            .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+            .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+            .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT,
+            .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT,
+        };
+        const VkDependencyInfo dependencyInfo{
+            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+            .memoryBarrierCount = 1,
+            .pMemoryBarriers = &barrier,
+        };
+        vkCmdPipelineBarrier2(commands, &dependencyInfo);
+      }
+
+      void update(int currentFrame, const RenderGraph::CommandBuffer& commandBuffer) override {}
+      void reset(const std::vector<std::shared_ptr<RenderGraph::ImageView>>& swapchain) override {}
+    };
+
+    auto& firstPass = graph.createPassCompute("First readback", GetParam());
+    firstPass.addStorageBufferInput("First");
+    firstPass.registerGraphElement(std::make_shared<ReadbackElement>(
+        graph.getGraphStorage().getBuffer("First").front()->getBuffer(), firstReadback.getBuffer(), image.getImage()));
+    auto& secondPass = graph.createPassCompute("Second readback", false);
+    secondPass.addStorageBufferInput("Second");
+    secondPass.registerGraphElement(std::make_shared<ReadbackElement>(
+        graph.getGraphStorage().getBuffer("Second").front()->getBuffer(), secondReadback.getBuffer()));
+    graph.calculate(tickets);
+    // Recalculation before submission must retain pending uploads; later recalculations must not repeat waits.
+    for (int frame = 0; frame < 3; ++frame) {
+      graph.calculate();
+      ASSERT_FALSE(graph.render());
+      ASSERT_EQ(vkDeviceWaitIdle(device.getLogicalDevice()), VK_SUCCESS);
+      ASSERT_EQ(vmaInvalidateAllocation(allocator.getAllocator(), firstReadback.getAllocation(), 0, VK_WHOLE_SIZE),
+                VK_SUCCESS);
+      ASSERT_EQ(vmaInvalidateAllocation(allocator.getAllocator(), secondReadback.getAllocation(), 0, VK_WHOLE_SIZE),
+                VK_SUCCESS);
+      const auto* firstResult = static_cast<const uint32_t*>(firstReadback.getAllocationInfo().pMappedData);
+      const auto* secondResult = static_cast<const uint32_t*>(secondReadback.getAllocationInfo().pMappedData);
+      ASSERT_NE(firstResult, nullptr);
+      ASSERT_NE(secondResult, nullptr);
+      EXPECT_EQ(firstResult[0], 11u);
+      EXPECT_EQ(firstResult[1], 22u);
+      EXPECT_EQ(firstResult[2], 0x2a2a2a2au);
+      EXPECT_EQ(secondResult[0], 33u);
+      EXPECT_EQ(secondResult[1], 44u);
+      uploader.reclaim();
+    }
+    ASSERT_FALSE(recorder.bufferBarriers.empty());
+    ASSERT_FALSE(recorder.imageBarriers.empty());
+    for (const auto& barrier : recorder.bufferBarriers) {
+      EXPECT_EQ(barrier.srcQueueFamilyIndex, VK_QUEUE_FAMILY_IGNORED);
+      EXPECT_EQ(barrier.dstQueueFamilyIndex, VK_QUEUE_FAMILY_IGNORED);
+    }
+    for (const auto& [command, barrier] : recorder.imageBarriers) {
+      EXPECT_EQ(barrier.srcQueueFamilyIndex, VK_QUEUE_FAMILY_IGNORED);
+      EXPECT_EQ(barrier.dstQueueFamilyIndex, VK_QUEUE_FAMILY_IGNORED);
+    }
+  }
+
+  EXPECT_TRUE(validationErrors.getErrors().empty()) << joinErrors(validationErrors.getErrors());
+}
+
+TEST(ValidationTest, GraphStorageResetPreservesFixedImages) {
+  ValidationErrorCollector validationErrors;
+  RenderGraph::Instance instance("FixedImageResetValidationTest", true);
+  if (!instance.isDebug()) {
+    GTEST_SKIP() << "Vulkan validation layers or VK_EXT_debug_utils are unavailable";
+  }
+  ValidationMessenger validationMessenger(instance.getInstance().instance, validationErrors);
+
+  {
+    RenderGraph::Device device(instance);
+    device.initialize();
+    RenderGraph::MemoryAllocator allocator(device, instance);
+    RenderGraph::GraphStorage storage;
+    auto createImageView = [&](glm::ivec2 resolution) {
+      auto image = std::make_unique<RenderGraph::Image>(allocator, device);
+      image->createImage(VK_FORMAT_R8G8B8A8_UNORM, resolution, 1, 1, VK_IMAGE_ASPECT_COLOR_BIT,
+                         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                             VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+      auto imageView = std::make_shared<RenderGraph::ImageView>(std::move(image), device);
+      imageView->createImageView(VK_IMAGE_VIEW_TYPE_2D, 0, 0);
+      return imageView;
+    };
+
+    const glm::ivec2 fixedResolution(4, 2);
+    const glm::ivec2 initialSwapchainResolution(64, 48);
+    auto fixedView = createImageView(fixedResolution);
+    auto sameSizeView = createImageView(initialSwapchainResolution);
+    auto resizedView = createImageView(initialSwapchainResolution);
+    storage.add("Fixed", std::make_unique<RenderGraph::ImageViewHolder>(std::vector{fixedView}, []() { return 0; }));
+    storage.add("FixedSameSize",
+                std::make_unique<RenderGraph::ImageViewHolder>(std::vector{sameSizeView}, []() { return 0; }));
+    storage.add("Resizable",
+                std::make_unique<RenderGraph::ImageViewHolder>(std::vector{resizedView}, []() { return 0; }),
+                RenderGraph::ImageResizePolicy::SWAPCHAIN);
+    std::vector swapchainViews{createImageView(initialSwapchainResolution)};
+    storage.add("Swapchain", std::make_unique<RenderGraph::ImageViewHolder>(swapchainViews, []() { return 0; }));
+
+    RenderGraph::ResourceUploader uploader(allocator, device);
+    const std::vector<std::byte> pixels(fixedResolution.x * fixedResolution.y * 4, std::byte{0x5a});
+    const std::array<VkDeviceSize, 1> offsets{0};
+    uploader.upload(fixedView->getImage(), pixels, offsets);
+    uploader.submit();
+    ASSERT_EQ(vkQueueWaitIdle(device.getQueue(RenderGraph::QueueType::GRAPHICS)), VK_SUCCESS);
+
+    const VkImage fixedImage = fixedView->getImage().getImage();
+    const VkImageView fixedImageView = fixedView->getImageView();
+    const VkImage sameSizeImage = sameSizeView->getImage().getImage();
+    const VkImageView sameSizeImageView = sameSizeView->getImageView();
+    for (const glm::ivec2 resolution : {glm::ivec2(96, 64), initialSwapchainResolution, initialSwapchainResolution}) {
+      std::vector newSwapchainViews{createImageView(resolution)};
+      storage.reset(swapchainViews, newSwapchainViews);
+      EXPECT_EQ(storage.getImageViewHolder("Swapchain").getImageView().getImageView(),
+                newSwapchainViews.front()->getImageView());
+      ASSERT_EQ(fixedView->getImage().getResolution(), fixedResolution);
+      EXPECT_EQ(fixedView->getImage().getImage(), fixedImage);
+      EXPECT_EQ(fixedView->getImageView(), fixedImageView);
+      EXPECT_EQ(fixedView->getImage().getImageLayout(), VK_IMAGE_LAYOUT_GENERAL);
+      EXPECT_EQ(sameSizeView->getImage().getResolution(), initialSwapchainResolution);
+      EXPECT_EQ(sameSizeView->getImage().getImage(), sameSizeImage);
+      EXPECT_EQ(sameSizeView->getImageView(), sameSizeImageView);
+      EXPECT_EQ(resizedView->getImage().getResolution(), resolution);
+      swapchainViews = std::move(newSwapchainViews);
+    }
+
+    // Replacing a resizable entry with a fixed image must also replace its policy.
+    auto replacementView = createImageView(fixedResolution);
+    const VkImage replacementImage = replacementView->getImage().getImage();
+    storage.add("Resizable",
+                std::make_unique<RenderGraph::ImageViewHolder>(std::vector{replacementView}, []() { return 0; }));
+    std::vector replacementSwapchainViews{createImageView({80, 56})};
+    storage.reset(swapchainViews, replacementSwapchainViews);
+    EXPECT_EQ(replacementView->getImage().getResolution(), fixedResolution);
+    EXPECT_EQ(replacementView->getImage().getImage(), replacementImage);
+
+    RenderGraph::Buffer readback(pixels.size(), VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                 VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+                                 allocator, device);
+    RenderGraph::CommandPool commandPool(RenderGraph::QueueType::GRAPHICS, device);
+    RenderGraph::CommandBuffer commandBuffer(commandPool, device);
+    commandBuffer.beginCommands();
+    RenderGraph::Barrier beforeReadback;
+    beforeReadback.addImage(fixedImage, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                            VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_GENERAL,
+                            VK_IMAGE_LAYOUT_GENERAL, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1});
+    beforeReadback.execute(commandBuffer.getCommandBuffer());
+    const VkBufferImageCopy imageCopy{
+        .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+        .imageExtent = {static_cast<uint32_t>(fixedResolution.x), static_cast<uint32_t>(fixedResolution.y), 1},
+    };
+    vkCmdCopyImageToBuffer(commandBuffer.getCommandBuffer(), fixedImage, VK_IMAGE_LAYOUT_GENERAL, readback.getBuffer(),
+                           1, &imageCopy);
+    const VkMemoryBarrier2 readbackBarrier{
+        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+        .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT,
+        .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT,
+    };
+    const VkDependencyInfo dependencyInfo{
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .memoryBarrierCount = 1,
+        .pMemoryBarriers = &readbackBarrier,
+    };
+    vkCmdPipelineBarrier2(commandBuffer.getCommandBuffer(), &dependencyInfo);
+    commandBuffer.endCommands();
+    const VkCommandBufferSubmitInfo commandBufferInfo{
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+        .commandBuffer = commandBuffer.getCommandBuffer(),
+    };
+    const VkSubmitInfo2 submitInfo{
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+        .commandBufferInfoCount = 1,
+        .pCommandBufferInfos = &commandBufferInfo,
+    };
+    ASSERT_EQ(vkQueueSubmit2(device.getQueue(RenderGraph::QueueType::GRAPHICS), 1, &submitInfo, nullptr), VK_SUCCESS);
+    ASSERT_EQ(vkQueueWaitIdle(device.getQueue(RenderGraph::QueueType::GRAPHICS)), VK_SUCCESS);
+    ASSERT_EQ(vmaInvalidateAllocation(allocator.getAllocator(), readback.getAllocation(), 0, VK_WHOLE_SIZE),
+              VK_SUCCESS);
+    const auto* result = static_cast<const std::byte*>(readback.getAllocationInfo().pMappedData);
+    ASSERT_NE(result, nullptr);
+    EXPECT_EQ(std::vector<std::byte>(result, result + pixels.size()), pixels);
+  }
+
+  const std::vector<std::string> errors = validationErrors.getErrors();
+  EXPECT_TRUE(errors.empty()) << joinErrors(errors);
+}
+
+TEST(ValidationTest, SampledImageLayoutsPreserveUploadedContentsAcrossFrames) {
+  ValidationErrorCollector validationErrors;
+  RenderGraph::Instance instance("SampledImageLayoutValidationTest", true);
+  if (!instance.isDebug()) GTEST_SKIP() << "Vulkan validation layers or VK_EXT_debug_utils are unavailable";
+  ValidationMessenger validationMessenger(instance.getInstance().instance, validationErrors);
+  {
+    constexpr int framesInFlight = 2;
+    const glm::ivec2 resolution(4, 4);
+    RenderGraph::Device device(instance);
+    device.initialize();
+    RenderGraph::MemoryAllocator allocator(device, instance);
+    RenderGraph::Tracer tracer(device);
+    RenderGraph::Graph graph(2, framesInFlight, device, tracer);
+    graph.initialize();
+    auto addImages = [&](std::string_view name, VkImageUsageFlags usage) {
+      std::vector<std::shared_ptr<RenderGraph::ImageView>> views;
+      for (int frame = 0; frame < framesInFlight; ++frame) {
+        auto image = std::make_unique<RenderGraph::Image>(allocator, device);
+        image->createImage(VK_FORMAT_R8G8B8A8_UNORM, resolution, 1, 1, VK_IMAGE_ASPECT_COLOR_BIT, usage);
+        auto view = std::make_shared<RenderGraph::ImageView>(std::move(image), device);
+        view->createImageView(VK_IMAGE_VIEW_TYPE_2D, 0, 0);
+        views.push_back(std::move(view));
+      }
+      graph.getGraphStorage().add(
+          name, std::make_unique<RenderGraph::ImageViewHolder>(views, [&graph]() { return graph.getFrameInFlight(); }));
+      return views;
+    };
+    const auto inputs = addImages("Input", VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                                               VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+    addImages("Color", VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
+    RenderGraph::ResourceUploader uploader(allocator, device);
+    const std::vector<std::byte> pixels(4 * 4 * 4, std::byte{42});
+    const std::array<VkDeviceSize, 1> offsets{0};
+    uploader.upload(inputs[0]->getImage(), pixels, offsets);
+    const auto ticket = uploader.submit();
+    auto& sample = graph.createPassGraphic("Sample");
+    sample.addTextureInput("Input");
+    sample.addColorTarget("Color");
+    auto& keep = graph.createPassGraphic("Keep");
+    keep.addColorTarget("Input", RenderGraph::RenderTargetLoadAction::KEEP);
+    graph.calculate(std::span(&ticket, 1));
+    graph.calculate();
+    EXPECT_EQ(inputs[0]->getImage().getImageLayout(), VK_IMAGE_LAYOUT_GENERAL);
+    EXPECT_EQ(inputs[1]->getImage().getImageLayout(), VK_IMAGE_LAYOUT_UNDEFINED);
+    for (int cycle = 0; cycle < 2; ++cycle) {
+      for (int frame = 0; frame < framesInFlight * 2; ++frame) ASSERT_FALSE(graph.render());
+      ASSERT_EQ(vkDeviceWaitIdle(device.getLogicalDevice()), VK_SUCCESS);
+      graph.calculate();
+    }
+    for (const auto& input : inputs) EXPECT_EQ(input->getImage().getImageLayout(), VK_IMAGE_LAYOUT_GENERAL);
+
+    RenderGraph::Buffer readback(pixels.size(), VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                 VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+                                 allocator, device);
+    RenderGraph::CommandPool pool(RenderGraph::QueueType::GRAPHICS, device);
+    RenderGraph::CommandBuffer commandBuffer(pool, device);
+    commandBuffer.beginCommands();
+    RenderGraph::Barrier beforeCopy;
+    beforeCopy.addImage(inputs[0]->getImage().getImage(), VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                        VK_ACCESS_2_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+                        VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1});
+    beforeCopy.execute(commandBuffer.getCommandBuffer());
+    const VkBufferImageCopy copy{.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {4, 4, 1}};
+    vkCmdCopyImageToBuffer(commandBuffer.getCommandBuffer(), inputs[0]->getImage().getImage(), VK_IMAGE_LAYOUT_GENERAL,
+                           readback.getBuffer(), 1, &copy);
+    RenderGraph::Barrier afterCopy;
+    afterCopy.addBuffer(&readback, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                        VK_PIPELINE_STAGE_2_HOST_BIT, VK_ACCESS_2_HOST_READ_BIT);
+    afterCopy.execute(commandBuffer.getCommandBuffer());
+    commandBuffer.endCommands();
+    const VkCommandBufferSubmitInfo commandBufferInfo{.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+                                                      .commandBuffer = commandBuffer.getCommandBuffer()};
+    const VkSubmitInfo2 submitInfo{.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+                                   .commandBufferInfoCount = 1,
+                                   .pCommandBufferInfos = &commandBufferInfo};
+    ASSERT_EQ(vkQueueSubmit2(device.getQueue(RenderGraph::QueueType::GRAPHICS), 1, &submitInfo, nullptr), VK_SUCCESS);
+    ASSERT_EQ(vkQueueWaitIdle(device.getQueue(RenderGraph::QueueType::GRAPHICS)), VK_SUCCESS);
+    ASSERT_EQ(vmaInvalidateAllocation(allocator.getAllocator(), readback.getAllocation(), 0, VK_WHOLE_SIZE),
+              VK_SUCCESS);
+    const auto* result = static_cast<const std::byte*>(readback.getAllocationInfo().pMappedData);
+    ASSERT_NE(result, nullptr);
+    EXPECT_EQ(std::vector<std::byte>(result, result + pixels.size()), pixels);
+  }
+  const auto errors = validationErrors.getErrors();
+  EXPECT_TRUE(errors.empty()) << joinErrors(errors);
+}
+
+TEST(ValidationTest, ImageUploadAfterCalculationPreservesContents) {
+  ValidationErrorCollector validationErrors;
+  RenderGraph::Instance instance("LateImageUploadValidationTest", true);
+  if (!instance.isDebug()) GTEST_SKIP() << "Vulkan validation layers or VK_EXT_debug_utils are unavailable";
+  ValidationMessenger validationMessenger(instance.getInstance().instance, validationErrors);
+  {
+    RenderGraph::Device device(instance);
+    device.initialize();
+    RenderGraph::MemoryAllocator allocator(device, instance);
+    RenderGraph::Tracer tracer(device);
+    RenderGraph::Graph graph(1, 1, device, tracer);
+    graph.initialize();
+    auto image = std::make_unique<RenderGraph::Image>(allocator, device);
+    image->createImage(
+        VK_FORMAT_R8G8B8A8_UNORM, {4, 4}, 1, 1, VK_IMAGE_ASPECT_COLOR_BIT,
+        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+    auto view = std::make_shared<RenderGraph::ImageView>(std::move(image), device);
+    view->createImageView(VK_IMAGE_VIEW_TYPE_2D, 0, 0);
+    graph.getGraphStorage().add("Input",
+                                std::make_unique<RenderGraph::ImageViewHolder>(std::vector{view}, [] { return 0; }));
+    graph.createPassGraphic("KeepUploadedImage").addColorTarget("Input", RenderGraph::RenderTargetLoadAction::KEEP);
+    graph.calculate();
+    EXPECT_EQ(view->getImage().getImageLayout(), VK_IMAGE_LAYOUT_UNDEFINED);
+
+    RenderGraph::ResourceUploader uploader(allocator, device);
+    const std::vector<std::byte> pixels(4 * 4 * 4, std::byte{42});
+    const std::array<VkDeviceSize, 1> offsets{0};
+    uploader.upload(view->getImage(), pixels, offsets);
+    const auto ticket = uploader.submit();
+    EXPECT_EQ(view->getImage().getImageLayout(), VK_IMAGE_LAYOUT_GENERAL);
+
+    RenderGraph::CommandPool pool(RenderGraph::QueueType::GRAPHICS, device);
+    RenderGraph::CommandBuffer commands(pool, device);
+    const auto submitCommands = [&](std::span<const VkSemaphoreSubmitInfo> waits = {}) {
+      commands.endCommands();
+      const VkCommandBufferSubmitInfo commandInfo{.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+                                                  .commandBuffer = commands.getCommandBuffer()};
+      const VkSubmitInfo2 submit{.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+                                 .waitSemaphoreInfoCount = static_cast<uint32_t>(waits.size()),
+                                 .pWaitSemaphoreInfos = waits.data(),
+                                 .commandBufferInfoCount = 1,
+                                 .pCommandBufferInfos = &commandInfo};
+      return vkQueueSubmit2(device.getQueue(RenderGraph::QueueType::GRAPHICS), 1, &submit, nullptr);
+    };
+    // Synchronize the upload externally so the graph's original plan is used without recalculation.
+    commands.beginCommands();
+    const VkSemaphoreSubmitInfo wait{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+                                     .semaphore = ticket.semaphore,
+                                     .value = ticket.value,
+                                     .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};
+    ASSERT_EQ(submitCommands(std::span(&wait, 1)), VK_SUCCESS);
+    ASSERT_EQ(vkQueueWaitIdle(device.getQueue(RenderGraph::QueueType::GRAPHICS)), VK_SUCCESS);
+
+    {
+      GraphCommandRecorder recorder;
+      ASSERT_FALSE(graph.render());
+      EXPECT_TRUE(recorder.imageBarriers.empty());
+    }
+    ASSERT_EQ(vkQueueWaitIdle(device.getQueue(RenderGraph::QueueType::GRAPHICS)), VK_SUCCESS);
+
+    RenderGraph::Buffer readback(pixels.size(), VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                 VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+                                 allocator, device);
+    commands.beginCommands();
+    RenderGraph::Barrier beforeCopy;
+    beforeCopy.addImage(view->getImage().getImage(), VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT,
+                        VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_GENERAL,
+                        VK_IMAGE_LAYOUT_GENERAL, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1});
+    beforeCopy.execute(commands.getCommandBuffer());
+    const VkBufferImageCopy copy{.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {4, 4, 1}};
+    vkCmdCopyImageToBuffer(commands.getCommandBuffer(), view->getImage().getImage(), VK_IMAGE_LAYOUT_GENERAL,
+                           readback.getBuffer(), 1, &copy);
+    RenderGraph::Barrier afterCopy;
+    afterCopy.addBuffer(&readback, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                        VK_PIPELINE_STAGE_2_HOST_BIT, VK_ACCESS_2_HOST_READ_BIT);
+    afterCopy.execute(commands.getCommandBuffer());
+    ASSERT_EQ(submitCommands(), VK_SUCCESS);
+    ASSERT_EQ(vkQueueWaitIdle(device.getQueue(RenderGraph::QueueType::GRAPHICS)), VK_SUCCESS);
+    ASSERT_EQ(vmaInvalidateAllocation(allocator.getAllocator(), readback.getAllocation(), 0, VK_WHOLE_SIZE),
+              VK_SUCCESS);
+    const auto* result = static_cast<const std::byte*>(readback.getAllocationInfo().pMappedData);
+    ASSERT_NE(result, nullptr);
+    EXPECT_EQ(std::vector<std::byte>(result, result + pixels.size()), pixels);
+    EXPECT_EQ(view->getImage().getImageLayout(), VK_IMAGE_LAYOUT_GENERAL);
+  }
+  EXPECT_TRUE(validationErrors.getErrors().empty()) << joinErrors(validationErrors.getErrors());
+}
+
+TEST(ValidationTest, SharedImagesSurviveResizeAcrossFrames) {
+  ValidationErrorCollector validationErrors;
+  RenderGraph::Instance instance("SharedImageResizeValidationTest", true);
+  if (!instance.isDebug()) {
+    GTEST_SKIP() << "Vulkan validation layers or VK_EXT_debug_utils are unavailable";
+  }
+  ValidationMessenger validationMessenger(instance.getInstance().instance, validationErrors);
+
+  {
+    constexpr int framesInFlight = 2;
+    const glm::ivec2 resolution(64, 64);
+    RenderGraph::Window window(resolution);
+    window.initialize();
+    RenderGraph::Surface surface(window, instance);
+    RenderGraph::Device device(instance);
+    device.setSurface(surface);
+    device.initialize();
+    RenderGraph::MemoryAllocator allocator(device, instance);
+    RenderGraph::Swapchain swapchain(resolution, allocator, device);
+    swapchain.initialize();
+    const auto swapchainResolution = swapchain.getImage(0).getResolution();
+    RenderGraph::Tracer tracer(device);
+    RenderGraph::Graph graph(2, framesInFlight, device, tracer);
+    graph.setSwapchain(swapchain);
+    graph.initialize();
+    graph.getGraphStorage().add(
+        "Swapchain", std::make_unique<RenderGraph::ImageViewHolder>(
+                         swapchain.getImageViews(), [&swapchain]() { return swapchain.getSwapchainIndex(); }));
+
+    auto addImages = [&](std::string_view name, glm::ivec2 size, RenderGraph::ImageResizePolicy policy) {
+      std::vector<std::shared_ptr<RenderGraph::ImageView>> views;
+      for (int frame = 0; frame < framesInFlight; ++frame) {
+        auto image = std::make_unique<RenderGraph::Image>(allocator, device);
+        image->createImage(VK_FORMAT_R8G8B8A8_UNORM, size, 1, 1, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_USAGE_STORAGE_BIT);
+        auto view = std::make_shared<RenderGraph::ImageView>(std::move(image), device);
+        view->createImageView(VK_IMAGE_VIEW_TYPE_2D, 0, 0);
+        views.push_back(std::move(view));
+      }
+      graph.getGraphStorage().add(
+          name, std::make_unique<RenderGraph::ImageViewHolder>(views, [&graph]() { return graph.getFrameInFlight(); }),
+          policy);
+      return views;
+    };
+    const auto resized = addImages("Resized", {4, 4}, RenderGraph::ImageResizePolicy::SWAPCHAIN);
+    const auto fixed = addImages("Fixed", {8, 8}, RenderGraph::ImageResizePolicy::FIXED);
+    const auto sameSize = addImages("SameSize", swapchainResolution, RenderGraph::ImageResizePolicy::SWAPCHAIN);
+    std::vector<std::unique_ptr<RenderGraph::Buffer>> buffers;
+    for (int frame = 0; frame < framesInFlight; ++frame) {
+      buffers.push_back(
+          std::make_unique<RenderGraph::Buffer>(16, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 0, allocator, device));
+    }
+    graph.getGraphStorage().add("State", buffers);
+    auto& compute = graph.createPassCompute("Compute", true);
+    auto& graphics = graph.createPassCompute("ReadOnGraphics", false);
+    compute.addStorageBufferInput("State");
+    compute.addStorageBufferOutput("State");
+    graphics.addStorageBufferInput("State");
+    for (const auto* name : {"Resized", "Fixed", "SameSize"}) {
+      compute.addStorageTextureInput(name);
+      compute.addStorageTextureOutput(name);
+      graphics.addStorageTextureInput(name);
+    }
+    graph.calculate();
+    for (int frame = 0; frame < framesInFlight + 1; ++frame) ASSERT_FALSE(graph.render());
+    ASSERT_EQ(vkDeviceWaitIdle(device.getLogicalDevice()), VK_SUCCESS);
+
+    const VkImage fixedHandle = fixed.front()->getImage().getImage();
+    const VkImage sameSizeHandle = sameSize.front()->getImage().getImage();
+    const VkImage oldResizedHandle = resized.front()->getImage().getImage();
+    for (int cycle = 0; cycle < 2; ++cycle) {
+      ASSERT_NO_THROW(graph.reset(swapchainResolution));
+      if (cycle == 0) RecordProperty("reusedImageHandle", oldResizedHandle == resized.front()->getImage().getImage());
+      EXPECT_EQ(fixed.front()->getImage().getImage(), fixedHandle);
+      EXPECT_EQ(sameSize.front()->getImage().getImage(), sameSizeHandle);
+      EXPECT_EQ(resized.front()->getImage().getResolution(), swapchainResolution);
+      if (cycle == 0) EXPECT_EQ(resized.front()->getImage().getImageLayout(), VK_IMAGE_LAYOUT_UNDEFINED);
+      for (int frame = 0; frame < framesInFlight * 2; ++frame) ASSERT_FALSE(graph.render());
+      EXPECT_EQ(resized.front()->getImage().getImageLayout(), VK_IMAGE_LAYOUT_GENERAL);
+      ASSERT_EQ(vkDeviceWaitIdle(device.getLogicalDevice()), VK_SUCCESS);
+    }
+  }
+  const auto errors = validationErrors.getErrors();
+  EXPECT_TRUE(errors.empty()) << joinErrors(errors);
+}
+
 TEST(ValidationTest, OffscreenComputeGraphPresentsWithoutWritingSwapchain) {
   ValidationErrorCollector validationErrors;
   RenderGraph::Instance instance("ValidationOffscreenGraphTest", true);
@@ -877,7 +1834,8 @@ TEST(ValidationTest, OffscreenComputeGraphPresentsWithoutWritingSwapchain) {
     storageBuffers.reserve(framesInFlight);
     for (int frameIndex = 0; frameIndex < framesInFlight; ++frameIndex) {
       storageBuffers.push_back(std::make_unique<RenderGraph::Buffer>(
-          4096, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT, allocator));
+          4096, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT, allocator,
+          device));
     }
     graph.getGraphStorage().add("Data", storageBuffers);
 
@@ -903,6 +1861,209 @@ TEST(ValidationTest, OffscreenComputeGraphPresentsWithoutWritingSwapchain) {
   }
 
   const std::vector<std::string> errors = validationErrors.getErrors();
+  EXPECT_TRUE(errors.empty()) << joinErrors(errors);
+}
+
+TEST(ValidationTest, ResourceSharingIncludesAllDeviceQueueFamilies) {
+  ValidationErrorCollector validationErrors;
+  RenderGraph::Instance instance("ResourceSharingValidationTest", true);
+  if (!instance.isDebug()) GTEST_SKIP() << "Vulkan validation layers or VK_EXT_debug_utils are unavailable";
+  ValidationMessenger validationMessenger(instance.getInstance().instance, validationErrors);
+  for (bool present : {false, true}) {
+    SCOPED_TRACE(present);
+    RenderGraph::Window window({64, 64});
+    window.initialize();
+    RenderGraph::Surface surface(window, instance);
+    RenderGraph::Device device(instance);
+    if (present) device.setSurface(surface);
+    device.initialize();
+    std::vector<uint32_t> expected;
+    for (auto type :
+         {RenderGraph::QueueType::GRAPHICS, RenderGraph::QueueType::COMPUTE, RenderGraph::QueueType::TRANSFER}) {
+      expected.push_back(static_cast<uint32_t>(device.getQueueIndex(type)));
+    }
+    if (present) expected.push_back(static_cast<uint32_t>(device.getQueueIndex(RenderGraph::QueueType::PRESENT)));
+    std::ranges::sort(expected);
+    expected.erase(std::unique(expected.begin(), expected.end()), expected.end());
+    ASSERT_FALSE(expected.empty());
+    EXPECT_EQ(device.getResourceQueueFamilies(), expected);
+    EXPECT_EQ(device.getResourceSharingMode(),
+              expected.size() > 1 ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE);
+    ResourceSharingRecorder recorder(device);
+    RenderGraph::MemoryAllocator allocator(device, instance);
+    RenderGraph::Buffer buffer(64, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 0, allocator, device);
+    RenderGraph::Image image(allocator, device);
+    image.createImage(VK_FORMAT_R8G8B8A8_UNORM, {4, 4}, 1, 1, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_USAGE_STORAGE_BIT);
+    EXPECT_GT(recorder.buffers, 0u);
+    EXPECT_GT(recorder.images, 0u);
+    if (present) {
+      RenderGraph::Swapchain swapchain({64, 64}, allocator, device);
+      swapchain.initialize();
+      EXPECT_GE(swapchain.getImageCount(), 2);
+      swapchain.reset({96, 64});
+      EXPECT_EQ(device.getQueueIndex(RenderGraph::QueueType::PRESENT),
+                device.getQueueIndex(RenderGraph::QueueType::GRAPHICS));
+    } else {
+      EXPECT_THROW((RenderGraph::Swapchain({64, 64}, allocator, device)), std::runtime_error);
+    }
+  }
+  EXPECT_TRUE(validationErrors.getErrors().empty()) << joinErrors(validationErrors.getErrors());
+}
+
+TEST(ValidationTest, SwapchainLayoutsFollowAcquiredImagesAcrossRecalculationAndReset) {
+  ValidationErrorCollector validationErrors;
+  RenderGraph::Instance instance("SwapchainLayoutValidationTest", true);
+  if (!instance.isDebug()) GTEST_SKIP() << "Vulkan validation layers or VK_EXT_debug_utils are unavailable";
+  ValidationMessenger validationMessenger(instance.getInstance().instance, validationErrors);
+  for (bool useSwapchain : {false, true}) {
+    SCOPED_TRACE(useSwapchain);
+    const glm::ivec2 resolution(64, 64);
+    RenderGraph::Window window(resolution);
+    window.initialize();
+    RenderGraph::Surface surface(window, instance);
+    RenderGraph::Device device(instance);
+    device.setSurface(surface);
+    device.initialize();
+    RenderGraph::MemoryAllocator allocator(device, instance);
+    RenderGraph::Swapchain swapchain(resolution, allocator, device);
+    swapchain.initialize();
+    RenderGraph::Tracer tracer(device);
+    RenderGraph::Graph graph(2, 2, device, tracer);
+    graph.setSwapchain(swapchain);
+    graph.initialize();
+    graph.getGraphStorage().add("Swapchain",
+                                std::make_unique<RenderGraph::ImageViewHolder>(
+                                    swapchain.getImageViews(), [&swapchain] { return swapchain.getSwapchainIndex(); }));
+    graph.createPassCompute("UnrelatedFirstPass", false);
+    RenderGraph::GraphPass* firstUse = nullptr;
+    if (useSwapchain) {
+      auto& draw = graph.createPassGraphic("Draw");
+      draw.addColorTarget("Swapchain", RenderGraph::RenderTargetLoadAction::KEEP);
+      firstUse = &draw;
+    }
+    auto& tail = graph.createPassCompute("UnrelatedFinalPass", false);
+    if (firstUse == nullptr) firstUse = &tail;
+
+    for (int cycle = 0; cycle < 2; ++cycle) {
+      if (cycle != 0) ASSERT_NO_THROW(graph.reset({96, 64}));
+      graph.calculate();
+      graph.calculate();
+      std::vector<VkImageLayout> layouts(swapchain.getImageCount(), VK_IMAGE_LAYOUT_UNDEFINED);
+      for (int frame = 0; frame < swapchain.getImageCount() + 4; ++frame) {
+        SCOPED_TRACE(frame);
+        const auto firstCommand = firstUse->getCommandBuffers()[graph.getFrameInFlight()]->getCommandBuffer();
+        const auto finalCommand = tail.getCommandBuffers()[graph.getFrameInFlight()]->getCommandBuffer();
+        GraphCommandRecorder recorder;
+        ASSERT_FALSE(graph.render());
+        const auto imageIndex = swapchain.getSwapchainIndex();
+        const auto& image = swapchain.getImage(imageIndex);
+        ASSERT_EQ(recorder.imageBarriers.size(), 2);
+        const auto& [acquireCommand, acquire] = recorder.imageBarriers.front();
+        const auto& [presentCommand, present] = recorder.imageBarriers.back();
+        EXPECT_EQ(acquireCommand, firstCommand);
+        EXPECT_EQ(acquire.image, image.getImage());
+        EXPECT_EQ(acquire.oldLayout, layouts[imageIndex]);
+        EXPECT_EQ(acquire.newLayout, VK_IMAGE_LAYOUT_GENERAL);
+        EXPECT_EQ(presentCommand, finalCommand);
+        EXPECT_EQ(present.image, image.getImage());
+        EXPECT_EQ(present.oldLayout, VK_IMAGE_LAYOUT_GENERAL);
+        EXPECT_EQ(present.newLayout, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+        EXPECT_EQ(present.srcQueueFamilyIndex, VK_QUEUE_FAMILY_IGNORED);
+        EXPECT_EQ(present.dstQueueFamilyIndex, VK_QUEUE_FAMILY_IGNORED);
+        EXPECT_EQ(image.getImageLayout(), VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+        ASSERT_EQ(recorder.submissionQueues.size(), 1);
+        EXPECT_EQ(recorder.submissionQueues.front(), device.getQueue(RenderGraph::QueueType::GRAPHICS));
+        ASSERT_EQ(recorder.submissionBuffers.front().size(), useSwapchain ? 3 : 2);
+        EXPECT_EQ(recorder.submissionBuffers.front().back(), finalCommand);
+        layouts[imageIndex] = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        // Rebuilding the plan must not change the acquired-image history.
+        ASSERT_EQ(vkDeviceWaitIdle(device.getLogicalDevice()), VK_SUCCESS);
+        graph.calculate();
+        EXPECT_EQ(image.getImageLayout(), layouts[imageIndex]);
+      }
+    }
+  }
+  const auto errors = validationErrors.getErrors();
+  EXPECT_TRUE(errors.empty()) << joinErrors(errors);
+}
+
+TEST(ValidationTest, SwapchainComputeUseHasNoOwnershipBarriers) {
+  ValidationErrorCollector validationErrors;
+  RenderGraph::Instance instance("SwapchainComputeSharingValidationTest", true);
+  if (!instance.isDebug()) GTEST_SKIP() << "Vulkan validation layers or VK_EXT_debug_utils are unavailable";
+  ValidationMessenger validationMessenger(instance.getInstance().instance, validationErrors);
+  for (bool graphicsFirst : {false, true}) {
+    SCOPED_TRACE(graphicsFirst);
+    const glm::ivec2 resolution(64, 64);
+    RenderGraph::Window window(resolution);
+    window.initialize();
+    RenderGraph::Surface surface(window, instance);
+    RenderGraph::Device device(instance);
+    device.setSurface(surface);
+    device.initialize();
+    if (!supportsStorageSwapchain(device, surface)) GTEST_SKIP() << "Storage swapchain images are unavailable";
+    RenderGraph::MemoryAllocator allocator(device, instance);
+    RenderGraph::Swapchain swapchain(resolution, allocator, device,
+                                     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT);
+    swapchain.initialize();
+    RenderGraph::Tracer tracer(device);
+    RenderGraph::Graph graph(2, 2, device, tracer);
+    graph.setSwapchain(swapchain);
+    graph.initialize();
+    graph.getGraphStorage().add("Swapchain",
+                                std::make_unique<RenderGraph::ImageViewHolder>(
+                                    swapchain.getImageViews(), [&swapchain] { return swapchain.getSwapchainIndex(); }));
+    RenderGraph::GraphPass* firstUse = nullptr;
+    if (graphicsFirst) {
+      auto& draw = graph.createPassGraphic("Draw");
+      draw.addColorTarget("Swapchain");
+      firstUse = &draw;
+    }
+    auto& compute = graph.createPassCompute("Compute", true);
+    if (graphicsFirst) {
+      compute.addStorageTextureInput("Swapchain");
+    } else {
+      compute.addStorageTextureInput("Swapchain");
+      compute.addStorageTextureOutput("Swapchain");
+      firstUse = &compute;
+    }
+    // End on compute after graphics, and on graphics after compute, without extra submissions.
+    auto& tail = graph.createPassCompute("UnrelatedFinalPass", graphicsFirst);
+    graph.calculate();
+    std::vector<VkImageLayout> layouts(swapchain.getImageCount(), VK_IMAGE_LAYOUT_UNDEFINED);
+    for (int frame = 0; frame < swapchain.getImageCount() + 4; ++frame) {
+      SCOPED_TRACE(frame);
+      const auto firstCommand = firstUse->getCommandBuffers()[graph.getFrameInFlight()]->getCommandBuffer();
+      const auto finalCommand = tail.getCommandBuffers()[graph.getFrameInFlight()]->getCommandBuffer();
+      GraphCommandRecorder recorder;
+      ASSERT_FALSE(graph.render());
+      const auto imageIndex = swapchain.getSwapchainIndex();
+      const auto& image = swapchain.getImage(imageIndex);
+      ASSERT_EQ(recorder.imageBarriers.size(), 2);
+      const auto& [acquireCommand, acquire] = recorder.imageBarriers.front();
+      const auto& [presentCommand, present] = recorder.imageBarriers.back();
+      EXPECT_EQ(acquireCommand, firstCommand);
+      EXPECT_EQ(acquire.oldLayout, layouts[imageIndex]);
+      EXPECT_EQ(acquire.newLayout, VK_IMAGE_LAYOUT_GENERAL);
+      EXPECT_EQ(presentCommand, finalCommand);
+      EXPECT_EQ(present.oldLayout, VK_IMAGE_LAYOUT_GENERAL);
+      EXPECT_EQ(present.newLayout, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+      for (const auto& [command, barrier] : recorder.imageBarriers) {
+        EXPECT_EQ(barrier.image, image.getImage());
+        EXPECT_EQ(barrier.srcQueueFamilyIndex, VK_QUEUE_FAMILY_IGNORED);
+        EXPECT_EQ(barrier.dstQueueFamilyIndex, VK_QUEUE_FAMILY_IGNORED);
+      }
+      // QueueType changes retain two submissions even if the actual queues alias.
+      ASSERT_EQ(recorder.submissionQueues.size(), 2);
+      EXPECT_EQ(recorder.submissionQueues.back(),
+                device.getQueue(graphicsFirst ? RenderGraph::QueueType::COMPUTE : RenderGraph::QueueType::GRAPHICS));
+      EXPECT_EQ(recorder.submissionBuffers.back().back(), finalCommand);
+      EXPECT_EQ(image.getImageLayout(), VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+      layouts[imageIndex] = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    }
+    ASSERT_EQ(vkDeviceWaitIdle(device.getLogicalDevice()), VK_SUCCESS);
+  }
+  const auto errors = validationErrors.getErrors();
   EXPECT_TRUE(errors.empty()) << joinErrors(errors);
 }
 

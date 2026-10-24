@@ -1,5 +1,7 @@
 module;
 
+#include <stdexcept>
+
 #if defined(__ANDROID__)
 #include <android/native_window.h>
 #else
@@ -59,13 +61,19 @@ void Window::setFullScreen(bool fullScreen) {
 }
 
 void Window::initialize() {
-  glfwInit();
+  if (_window) throw std::logic_error("Window is already initialized");
+  if (!glfwInit()) throw std::runtime_error("Failed to initialize GLFW");
   glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
   _window = glfwCreateWindow(_resolution.x, _resolution.y, "Vulkan", nullptr, nullptr);
+  if (!_window) {
+    glfwTerminate();
+    throw std::runtime_error("Failed to create GLFW window");
+  }
 }
 
 Window::~Window() {
-  if (_window) glfwDestroyWindow(_window);
+  if (!_window) return;
+  glfwDestroyWindow(_window);
   glfwTerminate();
 }
 #endif

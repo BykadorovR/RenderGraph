@@ -18,7 +18,9 @@ module Texture;
 
 using namespace RenderGraph;
 
-Image::Image(const MemoryAllocator& memoryAllocator) : _memoryAllocator(&memoryAllocator) {}
+Image::Image(const MemoryAllocator& memoryAllocator, const Device& device)
+    : _memoryAllocator(&memoryAllocator),
+      _device(&device) {}
 
 void Image::createImage(VkFormat format,
                         glm::ivec2 resolution,
@@ -35,6 +37,7 @@ void Image::createImage(VkFormat format,
   _usageFlags = usage;
   _createFlags = createFlags;
   _imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  const auto& queueFamilies = _device->getResourceQueueFamilies();
 
   VkImageCreateInfo imageInfo{.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
                               .flags = createFlags,
@@ -48,7 +51,9 @@ void Image::createImage(VkFormat format,
                               .samples = VK_SAMPLE_COUNT_1_BIT,
                               .tiling = VK_IMAGE_TILING_OPTIMAL,
                               .usage = usage,
-                              .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+                              .sharingMode = _device->getResourceSharingMode(),
+                              .queueFamilyIndexCount = static_cast<uint32_t>(queueFamilies.size()),
+                              .pQueueFamilyIndices = queueFamilies.data(),
                               .initialLayout = _imageLayout};
 
   VmaAllocationCreateInfo allocCreateInfo = {};
@@ -82,35 +87,7 @@ VkImageUsageFlags Image::getUsageFlags() const noexcept { return _usageFlags; }
 
 VkImageCreateFlags Image::getCreateFlags() const noexcept { return _createFlags; }
 
-void Image::changeLayout(VkImageLayout oldLayout,
-                         VkImageLayout newLayout,
-                         VkPipelineStageFlags2 srcStageMask,
-                         VkAccessFlags2 srcAccessMask,
-                         VkPipelineStageFlags2 dstStageMask,
-                         VkAccessFlags2 dstAccessMask,
-                         const CommandBuffer& commandBuffer) {
-  _imageLayout = newLayout;
-  VkImageMemoryBarrier2 barrier{.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-                                .srcStageMask = srcStageMask,
-                                .srcAccessMask = srcAccessMask,
-                                .dstStageMask = dstStageMask,
-                                .dstAccessMask = dstAccessMask,
-                                .oldLayout = oldLayout,
-                                .newLayout = newLayout,
-                                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                                .image = _image,
-                                .subresourceRange = {.aspectMask = _aspectMask,
-                                                     .baseMipLevel = 0,
-                                                     .levelCount = static_cast<uint32_t>(_mipMapNumber),
-                                                     .baseArrayLayer = 0,
-                                                     .layerCount = static_cast<uint32_t>(_layerNumber)}};
-  VkDependencyInfo dependencyInfo{.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-                                  .imageMemoryBarrierCount = 1,
-                                  .pImageMemoryBarriers = &barrier};
-
-  vkCmdPipelineBarrier2(commandBuffer.getCommandBuffer(), &dependencyInfo);
-}
+void Image::setImageLayout(VkImageLayout layout) noexcept { _imageLayout = layout; }
 
 glm::ivec2 Image::getResolution() const noexcept { return _resolution; }
 
@@ -139,6 +116,17 @@ ImageView::ImageView(std::unique_ptr<Image> image, const Device& device) noexcep
       _device(&device) {}
 
 void ImageView::createImageView(VkImageViewType type, int baseMipMap, int baseArrayLayer) {
+  if (baseMipMap < 0 || baseMipMap >= _image->getMipMapNumber() || baseArrayLayer < 0 ||
+      baseArrayLayer >= _image->getLayerNumber()) {
+    throw std::out_of_range("Image view subresource range is out of bounds");
+  }
+  uint32_t layerCount = static_cast<uint32_t>(_image->getLayerNumber() - baseArrayLayer);
+  if (type == VK_IMAGE_VIEW_TYPE_1D || type == VK_IMAGE_VIEW_TYPE_2D || type == VK_IMAGE_VIEW_TYPE_3D) {
+    layerCount = 1;
+  } else if (type == VK_IMAGE_VIEW_TYPE_CUBE) {
+    if (layerCount < 6) throw std::out_of_range("Cube image view requires six layers");
+    layerCount = 6;
+  }
   _type = type;
   _baseMipMap = baseMipMap;
   _baseArrayLayer = baseArrayLayer;
@@ -154,9 +142,9 @@ void ImageView::createImageView(VkImageViewType type, int baseMipMap, int baseAr
                                  .subresourceRange = {
                                      .aspectMask = _image->getAspectMask(),
                                      .baseMipLevel = static_cast<uint32_t>(baseMipMap),
-                                     .levelCount = static_cast<uint32_t>(_image->getMipMapNumber()),
+                                     .levelCount = static_cast<uint32_t>(_image->getMipMapNumber() - baseMipMap),
                                      .baseArrayLayer = static_cast<uint32_t>(baseArrayLayer),
-                                     .layerCount = static_cast<uint32_t>(_image->getLayerNumber()),
+                                     .layerCount = layerCount,
                                  }};
 
   if (vkCreateImageView(_device->getLogicalDevice(), &viewInfo, nullptr, &_imageView) != VK_SUCCESS) {

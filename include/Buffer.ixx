@@ -23,7 +23,8 @@ class Buffer final {
   Buffer(VkDeviceSize size,
          VkBufferUsageFlags usage,
          VmaAllocationCreateFlags flags,
-         const MemoryAllocator& memoryAllocator);
+         const MemoryAllocator& memoryAllocator,
+         const Device& device);
   Buffer(const Buffer&) = delete;
   Buffer& operator=(const Buffer&) = delete;
   Buffer(Buffer&&) = delete;

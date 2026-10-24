@@ -28,6 +28,10 @@ class Window final {
 #else
   Window(glm::ivec2 resolution) noexcept;
 #endif
+  Window(const Window&) = delete;
+  Window& operator=(const Window&) = delete;
+  Window(Window&&) = delete;
+  Window& operator=(Window&&) = delete;
   glm::ivec2 getResolution() const noexcept;
   void initialize();
 #if defined(__ANDROID__)

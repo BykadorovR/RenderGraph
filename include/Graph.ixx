@@ -6,12 +6,14 @@ module;
 #include <functional>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
+#include <volk.h>
 
 export module Graph;
 
@@ -24,12 +26,14 @@ import CommandPool;
 import Buffer;
 import Device;
 import Instrumentation;
+import ResourceUploader;
 import glm;
 
 // Keep GoogleTest-generated classes in the global module
 extern "C++" {
 class ScenarioTest_GraphSeparateQueues_Test;
-class ScenarioTest_BufferOwnershipTransferUsesLastResourceOwner_Test;
+class ScenarioTest_BufferQueueChangesUseSemaphores_Test;
+class ScenarioTest_BufferQueueChangesSurviveFrameSlotReuse_Test;
 class ScenarioTest_ComputePassIndirectBufferInput_Test;
 class ScenarioTest_GraphicsPassBufferInputs_Test;
 class ScenarioTest_GraphOneQueue_Test;
@@ -38,9 +42,15 @@ class ScenarioTest_TraversalDiamondGraph_Test;
 }
 
 export namespace RenderGraph {
+enum class ImageResizePolicy { FIXED, SWAPCHAIN };
+
 class GraphStorage final {
  private:
-  std::unordered_map<std::string, std::unique_ptr<ImageViewHolder>> _imageViewHolders;
+  struct ImageResource {
+    std::unique_ptr<ImageViewHolder> imageViewHolder;
+    ImageResizePolicy resizePolicy;
+  };
+  std::unordered_map<std::string, ImageResource> _images;
   std::unordered_map<std::string, std::vector<std::unique_ptr<Buffer>>> _buffers;
 
  public:
@@ -50,7 +60,10 @@ class GraphStorage final {
   GraphStorage(GraphStorage&&) = delete;
   GraphStorage& operator=(GraphStorage&&) = delete;
 
-  void add(std::string_view name, std::unique_ptr<ImageViewHolder> imageViewHolder);
+  // Non-swapchain images retain their size and contents by default when the swapchain is reset.
+  void add(std::string_view name,
+           std::unique_ptr<ImageViewHolder> imageViewHolder,
+           ImageResizePolicy resizePolicy = ImageResizePolicy::FIXED);
   // not const because will do std::move
   void add(std::string_view name, std::vector<std::unique_ptr<Buffer>>& buffers);
   void reset(std::vector<std::shared_ptr<ImageView>> oldSwapchain,
@@ -74,6 +87,8 @@ class GraphElement {
 enum class GraphPassType { GRAPHIC, COMPUTE };
 
 enum class RenderTargetLoadAction { CLEAR, KEEP, DONT_CARE };
+
+enum class RenderTargetStoreAction { STORE, DONT_CARE };
 
 class GraphPass {
  protected:
@@ -103,10 +118,16 @@ class GraphPass {
 
 class GraphPassGraphic final : public GraphPass {
  private:
+  struct RenderTargetSettings {
+    RenderTargetLoadAction loadAction;
+    RenderTargetStoreAction storeAction;
+    VkClearValue clearValue;
+  };
+
   std::vector<std::string> _colorTargets, _textureInputs, _vertexBufferInputs, _indexBufferInputs;
   std::vector<std::string> _storageBufferInputs, _indirectBufferInputs;
   std::optional<std::string> _depthTarget;
-  std::unordered_map<std::string, RenderTargetLoadAction> _targetLoadActions;
+  std::unordered_map<std::string, RenderTargetSettings> _targetSettings;
 
   std::unique_ptr<PipelineGraphic> _pipelineGraphic;
   const Device* _device;
@@ -122,8 +143,14 @@ class GraphPassGraphic final : public GraphPass {
   GraphPassGraphic& operator=(GraphPassGraphic&&) = delete;
 
   // handle attachments
-  void addColorTarget(std::string_view name, RenderTargetLoadAction loadAction);
-  void setDepthTarget(std::string_view name, RenderTargetLoadAction loadAction);
+  void addColorTarget(std::string_view name,
+                      RenderTargetLoadAction loadAction = RenderTargetLoadAction::CLEAR,
+                      RenderTargetStoreAction storeAction = RenderTargetStoreAction::STORE,
+                      VkClearValue clearValue = {.color = {{0.0f, 0.0f, 0.0f, 1.0f}}});
+  void setDepthTarget(std::string_view name,
+                      RenderTargetLoadAction loadAction = RenderTargetLoadAction::CLEAR,
+                      RenderTargetStoreAction storeAction = RenderTargetStoreAction::STORE,
+                      VkClearValue clearValue = {.depthStencil = {1.0f, 0}});
   // handle input to shaders
   void addTextureInput(std::string_view name);
   void addVertexBufferInput(std::string_view name);
@@ -183,7 +210,8 @@ class GraphPassCompute final : public GraphPass {
 class Graph final {
  private:
   friend class ::ScenarioTest_GraphSeparateQueues_Test;
-  friend class ::ScenarioTest_BufferOwnershipTransferUsesLastResourceOwner_Test;
+  friend class ::ScenarioTest_BufferQueueChangesUseSemaphores_Test;
+  friend class ::ScenarioTest_BufferQueueChangesSurviveFrameSlotReuse_Test;
   friend class ::ScenarioTest_ComputePassIndirectBufferInput_Test;
   friend class ::ScenarioTest_GraphicsPassBufferInputs_Test;
   friend class ::ScenarioTest_GraphOneQueue_Test;
@@ -237,21 +265,26 @@ class Graph final {
     // same semaphore is wait and signal, so can't be unique
     std::vector<std::pair<std::vector<std::shared_ptr<Semaphore>>, std::function<int()>>> _waitSemaphores,
         _signalSemaphores;
-    std::vector<std::pair<std::vector<Barrier>, std::function<int()>>> _barriersBefore, _barriersAfter;
+    std::vector<std::pair<std::vector<Barrier>, std::function<int()>>> _barriers;
 
    public:
     Sync() = default;
     void addSignalSemaphore(std::vector<std::shared_ptr<Semaphore>>& signalSemaphore, std::function<int()> index);
     void addWaitSemaphore(std::vector<std::shared_ptr<Semaphore>>& waitSemaphore, std::function<int()> index);
-    void addBarrierBefore(std::vector<Barrier>& barriers, std::function<int()> index);
-    void addBarrierAfter(std::vector<Barrier>& barriers, std::function<int()> index);
+    void addBarrier(std::vector<Barrier>& barriers, std::function<int()> index);
 
     std::vector<Semaphore*> getWaitSemaphores() const;
     std::vector<Semaphore*> getSignalSemaphores() const;
-    std::vector<const Barrier*> getBarriersBefore() const;
-    std::vector<const Barrier*> getBarriersAfter() const;
+    std::vector<const Barrier*> getBarriers() const;
   };
+
   std::unordered_map<GraphPass*, Sync> _sync;
+  // Each queue consumes its upload waits once, at its first pass.
+  std::unordered_map<GraphPass*, std::vector<UploadTicket>> _uploadTickets;
+  std::unordered_map<GraphPass*, std::vector<std::pair<Image*, Barrier>>> _initialImageBarriers;
+  GraphPass* _swapchainFirstPass = nullptr;
+  VkPipelineStageFlags2 _swapchainFirstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+  VkAccessFlags2 _swapchainFirstAccessMask = 0;
 
   void _setResourceNames();
   bool _usesSeparateQueue(GraphPass* pass);
@@ -272,8 +305,10 @@ class Graph final {
   GraphStorage& getGraphStorage() const noexcept;
   int getFrameInFlight() const noexcept;
 
-  void calculate();
-  // true -> need to call reset
+  // Keep ResourceUploader alive until the GPU finishes the frame waiting on its tickets (first frame-slot reuse).
+  // Keep uploaded Buffer/Image objects alive until their last GPU use completes; tickets are copied here.
+  void calculate(std::span<const UploadTicket> uploadTickets = {});
+  // true -> need to call reset; an empty graph returns false without submitting work.
   bool render();
   void reset(glm::ivec2 resolution);
 

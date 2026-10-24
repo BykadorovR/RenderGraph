@@ -87,16 +87,15 @@ void ResourceUploader::upload(Buffer& destination, std::span<const std::byte> da
       throw std::runtime_error("Can't upload data to host-visible buffer: " + std::to_string(result));
     }
 
-    const VkCommandBuffer commandBuffer = _getRecordingBatch()._commandBuffer->getCommandBuffer();
-    _recordBufferBarrier(commandBuffer, destination.getBuffer(), offset, dataSize, VK_PIPELINE_STAGE_2_HOST_BIT,
-                         VK_ACCESS_2_HOST_WRITE_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-                         VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
+    // Create a batch and begin its command buffer for the subsequent submit().
+    _getRecordingBatch();
     return;
   }
 
   auto stagingBuffer = std::make_unique<Buffer>(
       dataSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-      VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT, *_memoryAllocator);
+      VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT, *_memoryAllocator,
+      *_device);
   const VkResult copyResult = vmaCopyMemoryToAllocation(_memoryAllocator->getAllocator(), data.data(),
                                                         stagingBuffer->getAllocation(), 0, data.size());
   if (copyResult != VK_SUCCESS) {
@@ -118,13 +117,10 @@ void ResourceUploader::upload(Buffer& destination, std::span<const std::byte> da
   };
   vkCmdCopyBuffer(commandBuffer, stagingBuffer->getBuffer(), destination.getBuffer(), 1, &copyRegion);
 
-  _recordBufferBarrier(commandBuffer, destination.getBuffer(), offset, dataSize, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                       VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-                       VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
   batch._stagingBuffers.push_back(std::move(stagingBuffer));
 }
 
-void ResourceUploader::_generateMipmaps(Image& image, VkCommandBuffer commandBuffer) {
+void ResourceUploader::_generateMipmaps(Image& image, VkCommandBuffer commandBuffer, VkFilter filter) {
   VkImageMemoryBarrier2 barrier{
       .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
       .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -175,26 +171,11 @@ void ResourceUploader::_generateMipmaps(Image& image, VkCommandBuffer commandBuf
         .dstOffsets = {{0, 0, 0}, {mipWidth > 1 ? mipWidth / 2 : 1, mipHeight > 1 ? mipHeight / 2 : 1, 1}},
     };
     vkCmdBlitImage(commandBuffer, image.getImage(), VK_IMAGE_LAYOUT_GENERAL, image.getImage(), VK_IMAGE_LAYOUT_GENERAL,
-                   1, &blit, VK_FILTER_LINEAR);
-
-    barrier.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-    barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
-    barrier.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-    barrier.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
-    vkCmdPipelineBarrier2(commandBuffer, &dependencyInfo);
+                   1, &blit, filter);
 
     mipWidth = mipWidth > 1 ? mipWidth / 2 : 1;
     mipHeight = mipHeight > 1 ? mipHeight / 2 : 1;
   }
-
-  barrier.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-  barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-  barrier.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-  barrier.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
-  barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-  barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-  barrier.subresourceRange.baseMipLevel = static_cast<uint32_t>(image.getMipMapNumber() - 1);
-  vkCmdPipelineBarrier2(commandBuffer, &dependencyInfo);
 }
 
 void ResourceUploader::upload(Image& destination,
@@ -209,14 +190,27 @@ void ResourceUploader::upload(Image& destination,
       (destination.getUsageFlags() & VK_IMAGE_USAGE_TRANSFER_DST_BIT) == 0) {
     throw std::invalid_argument("Invalid image upload");
   }
-  if (destination.getMipMapNumber() > 1 && (destination.getAspectMask() != VK_IMAGE_ASPECT_COLOR_BIT ||
-                                            (destination.getUsageFlags() & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) == 0)) {
-    throw std::invalid_argument("Image does not support mipmap generation");
+  VkFilter mipmapFilter = VK_FILTER_LINEAR;
+  if (destination.getMipMapNumber() > 1) {
+    if (destination.getAspectMask() != VK_IMAGE_ASPECT_COLOR_BIT ||
+        (destination.getUsageFlags() & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) == 0) {
+      throw std::invalid_argument("Image does not support mipmap generation");
+    }
+    VkFormatProperties properties{};
+    vkGetPhysicalDeviceFormatProperties(_device->getPhysicalDevice(), destination.getFormat(), &properties);
+    const auto blitFeatures = VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT;
+    if ((properties.optimalTilingFeatures & blitFeatures) != blitFeatures) {
+      throw std::invalid_argument("Image format does not support mipmap blits");
+    }
+    if ((properties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) == 0) {
+      mipmapFilter = VK_FILTER_NEAREST;
+    }
   }
 
   auto stagingBuffer = std::make_unique<Buffer>(
       static_cast<VkDeviceSize>(data.size()), VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-      VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT, *_memoryAllocator);
+      VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT, *_memoryAllocator,
+      *_device);
   const VkResult copyResult = vmaCopyMemoryToAllocation(_memoryAllocator->getAllocator(), data.data(),
                                                         stagingBuffer->getAllocation(), 0, data.size());
   if (copyResult != VK_SUCCESS) {
@@ -230,8 +224,13 @@ void ResourceUploader::upload(Image& destination,
                        VK_ACCESS_2_TRANSFER_READ_BIT);
 
   if (destination.getImageLayout() != VK_IMAGE_LAYOUT_GENERAL) {
-    destination.changeLayout(destination.getImageLayout(), VK_IMAGE_LAYOUT_GENERAL, 0, 0,
-                             VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, *batch._commandBuffer);
+    Barrier transition;
+    transition.addImage(destination.getImage(), 0, 0, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                        destination.getImageLayout(), VK_IMAGE_LAYOUT_GENERAL,
+                        {destination.getAspectMask(), 0, static_cast<uint32_t>(destination.getMipMapNumber()), 0,
+                         static_cast<uint32_t>(destination.getLayerNumber())});
+    transition.execute(commandBuffer);
+    destination.setImageLayout(VK_IMAGE_LAYOUT_GENERAL);
   } else {
     const VkImageMemoryBarrier2 beforeCopyBarrier{
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
@@ -248,7 +247,7 @@ void ResourceUploader::upload(Image& destination,
             {
                 .aspectMask = destination.getAspectMask(),
                 .baseMipLevel = 0,
-                .levelCount = 1,
+                .levelCount = static_cast<uint32_t>(destination.getMipMapNumber()),
                 .baseArrayLayer = 0,
                 .layerCount = static_cast<uint32_t>(destination.getLayerNumber()),
             },
@@ -289,39 +288,12 @@ void ResourceUploader::upload(Image& destination,
                          static_cast<uint32_t>(copyRegions.size()), copyRegions.data());
 
   if (destination.getMipMapNumber() > 1) {
-    _generateMipmaps(destination, commandBuffer);
-  } else {
-    const VkImageMemoryBarrier2 afterCopyBarrier{
-        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-        .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-        .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-        .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-        .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
-        .oldLayout = VK_IMAGE_LAYOUT_GENERAL,
-        .newLayout = VK_IMAGE_LAYOUT_GENERAL,
-        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .image = destination.getImage(),
-        .subresourceRange =
-            {
-                .aspectMask = destination.getAspectMask(),
-                .baseMipLevel = 0,
-                .levelCount = 1,
-                .baseArrayLayer = 0,
-                .layerCount = static_cast<uint32_t>(destination.getLayerNumber()),
-            },
-    };
-    const VkDependencyInfo dependencyInfo{
-        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-        .imageMemoryBarrierCount = 1,
-        .pImageMemoryBarriers = &afterCopyBarrier,
-    };
-    vkCmdPipelineBarrier2(commandBuffer, &dependencyInfo);
+    _generateMipmaps(destination, commandBuffer, mipmapFilter);
   }
   batch._stagingBuffers.push_back(std::move(stagingBuffer));
 }
 
-UploadTicket ResourceUploader::submit() {
+UploadTicket ResourceUploader::submit(QueueType destinationQueueType) {
   if (_recordingBatch == nullptr) {
     throw std::logic_error("Can't submit an empty upload batch");
   }
@@ -356,6 +328,7 @@ UploadTicket ResourceUploader::submit() {
   return {
       .semaphore = _timelineSemaphore.getSemaphore(),
       .value = completionValue,
+      .destinationQueueType = destinationQueueType,
   };
 }
 

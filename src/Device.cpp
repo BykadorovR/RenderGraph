@@ -152,10 +152,33 @@ void Device::initialize(const DeviceRequirements& requirements) {
   _initialized = true;
   volkLoadDevice(_device.device);
 
+  if (_surface != nullptr) {
+    VkBool32 presentSupported = VK_FALSE;
+    const auto graphicsFamily = static_cast<uint32_t>(getQueueIndex(QueueType::GRAPHICS));
+    if (vkGetPhysicalDeviceSurfaceSupportKHR(getPhysicalDevice(), graphicsFamily, _device.surface, &presentSupported) !=
+            VK_SUCCESS ||
+        !presentSupported) {
+      throw std::runtime_error("Presentation requires surface support on the graphics queue family");
+    }
+  }
+
   uint32_t queueFamilyCount = 0;
   vkGetPhysicalDeviceQueueFamilyProperties(getPhysicalDevice(), &queueFamilyCount, nullptr);
   _queueFamilyProperties.resize(queueFamilyCount);
   vkGetPhysicalDeviceQueueFamilyProperties(getPhysicalDevice(), &queueFamilyCount, _queueFamilyProperties.data());
+  for (QueueType type : {QueueType::GRAPHICS, QueueType::COMPUTE, QueueType::TRANSFER}) {
+    _resourceQueueFamilies.push_back(static_cast<uint32_t>(getQueueIndex(type)));
+  }
+  std::ranges::sort(_resourceQueueFamilies);
+  const auto duplicates = std::ranges::unique(_resourceQueueFamilies);
+  _resourceQueueFamilies.erase(duplicates.begin(), duplicates.end());
+}
+
+const std::vector<uint32_t>& Device::getResourceQueueFamilies() const noexcept { return _resourceQueueFamilies; }
+
+VkSharingMode Device::getResourceSharingMode() const noexcept {
+  // Vulkan requires at least two distinct families for CONCURRENT sharing.
+  return _resourceQueueFamilies.size() > 1 ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE;
 }
 
 const VkQueueFamilyProperties& Device::getQueueFamilyProperties(QueueType type) const {
@@ -195,8 +218,6 @@ const VkQueue Device::getQueue(QueueType type) const {
   vkb::QueueType bootstrapType;
   switch (type) {
     case QueueType::PRESENT:
-      bootstrapType = vkb::QueueType::present;
-      break;
     case QueueType::GRAPHICS:
       bootstrapType = vkb::QueueType::graphics;
       break;
@@ -223,8 +244,6 @@ int Device::getQueueIndex(QueueType type) const {
   vkb::QueueType bootstrapType;
   switch (type) {
     case QueueType::PRESENT:
-      bootstrapType = vkb::QueueType::present;
-      break;
     case QueueType::GRAPHICS:
       bootstrapType = vkb::QueueType::graphics;
       break;

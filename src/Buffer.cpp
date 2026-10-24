@@ -15,14 +15,18 @@ using namespace RenderGraph;
 Buffer::Buffer(VkDeviceSize size,
                VkBufferUsageFlags usage,
                VmaAllocationCreateFlags flags,
-               const MemoryAllocator& memoryAllocator)
+               const MemoryAllocator& memoryAllocator,
+               const Device& device)
     : _memoryAllocator(&memoryAllocator) {
   _size = size;
+  const auto& queueFamilies = device.getResourceQueueFamilies();
 
   VkBufferCreateInfo bufferInfo{.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
                                 .size = size,
                                 .usage = usage | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                                .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+                                .sharingMode = device.getResourceSharingMode(),
+                                .queueFamilyIndexCount = static_cast<uint32_t>(queueFamilies.size()),
+                                .pQueueFamilyIndices = queueFamilies.data()};
   VmaAllocationCreateInfo allocCreateInfo = {.flags = flags, .usage = VMA_MEMORY_USAGE_AUTO};
 
   auto result = vmaCreateBuffer(_memoryAllocator->getAllocator(), &bufferInfo, &allocCreateInfo, &_buffer, &_allocation,
