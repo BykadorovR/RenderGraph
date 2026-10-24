@@ -60,12 +60,12 @@ Tracer::Tracer(const Device& device) : _device(device.getLogicalDevice()) {
     return TracyVkContext(device.getPhysicalDevice(), _device, device.getQueue(type), commandBuffer.getCommandBuffer());
   };
 
-  TracyVkCtx graphicsContext = createContext(QueueType::GRAPHICS);
+  TracyVkCtx graphicsContext = createContext(QueueType::GENERAL);
   TracyVkContextName(graphicsContext, "Graphics", 8);
 
   TracyVkCtx computeContext = nullptr;
   try {
-    const VkQueue graphicsQueue = device.getQueue(QueueType::GRAPHICS);
+    const VkQueue graphicsQueue = device.getQueue(QueueType::GENERAL);
     const VkQueue computeQueue = device.getQueue(QueueType::COMPUTE);
     if (graphicsQueue == computeQueue) {
       computeContext = graphicsContext;
@@ -78,7 +78,7 @@ Tracer::Tracer(const Device& device) : _device(device.getLogicalDevice()) {
     throw;
   }
 
-  _contexts.emplace(QueueType::GRAPHICS, graphicsContext);
+  _contexts.emplace(QueueType::GENERAL, graphicsContext);
   _contexts.emplace(QueueType::COMPUTE, computeContext);
 }
 
@@ -121,7 +121,7 @@ void Tracer::collect(QueueType type, const CommandBuffer& commandBuffer) {
 }
 
 Tracer::~Tracer() {
-  const auto graphicsContext = _contexts.at(QueueType::GRAPHICS);
+  const auto graphicsContext = _contexts.at(QueueType::GENERAL);
   const auto computeContext = _contexts.at(QueueType::COMPUTE);
 
   if (computeContext != graphicsContext) {

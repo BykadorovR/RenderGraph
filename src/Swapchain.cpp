@@ -17,7 +17,7 @@ using namespace RenderGraph;
 vkb::SwapchainBuilder Swapchain::_createBuilder() const {
   const auto& device = _device->getDevice();
   if (device.surface == VK_NULL_HANDLE) throw std::runtime_error("Swapchain requires a surface");
-  const auto graphicsFamily = static_cast<uint32_t>(_device->getQueueIndex(QueueType::GRAPHICS));
+  const auto graphicsFamily = static_cast<uint32_t>(_device->getQueueIndex(QueueType::GENERAL));
   auto sharingFamily = static_cast<uint32_t>(_device->getQueueIndex(QueueType::COMPUTE));
   if (sharingFamily == graphicsFamily) {
     // Still select CONCURRENT when another device family exists (e.g. transfer).

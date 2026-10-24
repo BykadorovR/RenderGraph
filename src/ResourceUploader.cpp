@@ -25,7 +25,7 @@ using namespace RenderGraph;
 ResourceUploader::ResourceUploader(const MemoryAllocator& memoryAllocator, const Device& device)
     : _memoryAllocator(&memoryAllocator),
       _device(&device),
-      _commandPool(QueueType::GRAPHICS, device),
+      _commandPool(QueueType::GENERAL, device),
       _timelineSemaphore(VK_SEMAPHORE_TYPE_TIMELINE, device) {}
 
 ResourceUploader::UploadBatch& ResourceUploader::_getRecordingBatch() {
@@ -318,7 +318,7 @@ UploadTicket ResourceUploader::submit(QueueType destinationQueueType) {
       .pSignalSemaphoreInfos = &signalSemaphoreInfo,
   };
 
-  const VkResult result = vkQueueSubmit2(_device->getQueue(QueueType::GRAPHICS), 1, &submitInfo, nullptr);
+  const VkResult result = vkQueueSubmit2(_device->getQueue(QueueType::GENERAL), 1, &submitInfo, nullptr);
   if (result != VK_SUCCESS) {
     throw std::runtime_error("Resource upload submission failed: " + std::to_string(result));
   }

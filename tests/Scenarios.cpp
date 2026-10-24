@@ -49,6 +49,30 @@ class GraphElementMock : public RenderGraph::GraphElement {
   int getResetCount() const noexcept { return _resetCount; }
 };
 
+TEST(ScenarioTest, ComputePassQueueTypes) {
+  RenderGraph::Instance instance("ComputeQueueTest", false);
+  RenderGraph::Device device(instance);
+  device.initialize();
+  RenderGraph::Tracer tracer(device);
+  RenderGraph::Graph graph(1, 1, device, tracer);
+
+  for (const auto invalidQueue : {RenderGraph::QueueType::TRANSFER, static_cast<RenderGraph::QueueType>(-1)}) {
+    SCOPED_TRACE(static_cast<int>(invalidQueue));
+    EXPECT_THROW(graph.createPassCompute("Compute", invalidQueue), std::invalid_argument);
+    EXPECT_EQ(graph.getPassCompute("Compute"), nullptr);
+    EXPECT_THROW(RenderGraph::GraphPassCompute("Compute", 1, invalidQueue, graph.getGraphStorage(), device),
+                 std::invalid_argument);
+  }
+
+  const RenderGraph::GraphPass& computePass = graph.createPassCompute("Compute", RenderGraph::QueueType::COMPUTE);
+  const RenderGraph::GraphPass& generalComputePass = graph.createPassCompute("ComputeOnGeneral",
+                                                                             RenderGraph::QueueType::GENERAL);
+  const RenderGraph::GraphPass& graphicsPass = graph.createPassGraphic("Draw");
+  EXPECT_EQ(computePass.getQueueType(), RenderGraph::QueueType::COMPUTE);
+  EXPECT_EQ(generalComputePass.getQueueType(), RenderGraph::QueueType::GENERAL);
+  EXPECT_EQ(graphicsPass.getQueueType(), RenderGraph::QueueType::GENERAL);
+}
+
 TEST(ScenarioTest, GraphOneQueue) {
   glm::ivec2 resolution(1920, 1080);
   RenderGraph::Instance instance("TestApp", false);
@@ -65,7 +89,7 @@ TEST(ScenarioTest, GraphOneQueue) {
   RenderGraph::Tracer tracer(device);
   RenderGraph::Graph graph(4, framesInFlight, device, tracer);
 
-  auto commandPool = std::make_shared<RenderGraph::CommandPool>(RenderGraph::QueueType::GRAPHICS, device);
+  auto commandPool = std::make_shared<RenderGraph::CommandPool>(RenderGraph::QueueType::GENERAL, device);
   std::vector<RenderGraph::CommandBuffer> commandBuffer;
   commandBuffer.reserve(framesInFlight);
   for (int i = 0; i < framesInFlight; i++) {
@@ -110,7 +134,7 @@ TEST(ScenarioTest, GraphOneQueue) {
   EXPECT_EQ(graph.getPassCompute("Render"), nullptr);
 
   EXPECT_THROW(graph.createPassGraphic("Render"), std::logic_error);
-  EXPECT_THROW(graph.createPassCompute("Render", false), std::logic_error);
+  EXPECT_THROW(graph.createPassCompute("Render", RenderGraph::QueueType::GENERAL), std::logic_error);
 
   EXPECT_EQ(renderPass.getCommandBuffers().size(), framesInFlight);
   for (int i = 1; i < framesInFlight; i++) {
@@ -130,7 +154,7 @@ TEST(ScenarioTest, GraphOneQueue) {
   EXPECT_TRUE(renderPass.getStorageBufferInputs().empty());
   EXPECT_TRUE(renderPass.getIndirectBufferInputs().empty());
 
-  auto& postprocessingPass = graph.createPassCompute("Postprocessing", false);
+  auto& postprocessingPass = graph.createPassCompute("Postprocessing", RenderGraph::QueueType::GENERAL);
   postprocessingPass.registerGraphElement(elementMock);
   postprocessingPass.addStorageTextureInput("Swapchain");
   postprocessingPass.addStorageTextureOutput("Swapchain");
@@ -215,7 +239,7 @@ TEST(ScenarioTest, GraphOneQueue) {
                            .pCommandBufferInfos = &commandBufferInfo,
                            .signalSemaphoreInfoCount = 1,
                            .pSignalSemaphoreInfos = &signalSemaphoreInfo};
-  vkQueueSubmit2(device.getQueue(RenderGraph::QueueType::GRAPHICS), 1, &submitInfo, nullptr);
+  vkQueueSubmit2(device.getQueue(RenderGraph::QueueType::GENERAL), 1, &submitInfo, nullptr);
 
   VkSemaphoreWaitInfo waitInfo = {
       .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
@@ -276,7 +300,7 @@ TEST(ScenarioTest, GraphSeparateQueues) {
   RenderGraph::Tracer tracer(device);
   RenderGraph::Graph graph(4, framesInFlight, device, tracer);
 
-  auto commandPool = std::make_shared<RenderGraph::CommandPool>(RenderGraph::QueueType::GRAPHICS, device);
+  auto commandPool = std::make_shared<RenderGraph::CommandPool>(RenderGraph::QueueType::GENERAL, device);
   std::vector<RenderGraph::CommandBuffer> commandBuffer;
   commandBuffer.reserve(framesInFlight);
   for (int i = 0; i < framesInFlight; i++) {
@@ -325,8 +349,8 @@ TEST(ScenarioTest, GraphSeparateQueues) {
   EXPECT_EQ(renderPass.getPipelineGraphic(graph.getGraphStorage()).getColorAttachments().size(), 2);
   EXPECT_EQ(renderPass.getDepthTarget(), std::nullopt);
 
-  // separate queue
-  auto& postprocessingPass = graph.createPassCompute("Postprocessing", true);
+  // compute queue
+  auto& postprocessingPass = graph.createPassCompute("Postprocessing", RenderGraph::QueueType::COMPUTE);
   postprocessingPass.registerGraphElement(elementMock);
   postprocessingPass.addStorageTextureInput("Swapchain");
   postprocessingPass.addStorageTextureOutput("Swapchain");
@@ -382,7 +406,7 @@ TEST(ScenarioTest, GraphSeparateQueues) {
                            .pCommandBufferInfos = &commandBufferInfo,
                            .signalSemaphoreInfoCount = 1,
                            .pSignalSemaphoreInfos = &signalSemaphoreInfo};
-  vkQueueSubmit2(device.getQueue(RenderGraph::QueueType::GRAPHICS), 1, &submitInfo, nullptr);
+  vkQueueSubmit2(device.getQueue(RenderGraph::QueueType::GENERAL), 1, &submitInfo, nullptr);
 
   VkSemaphoreWaitInfo waitInfo = {
       .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
@@ -469,15 +493,15 @@ TEST(ScenarioTest, BufferQueueChangesUseSemaphores) {
    * Link stays on the graphics queue and requires a memory barrier.
    */
 
-  auto& firstPass = graph.createPassCompute("First", false);
+  auto& firstPass = graph.createPassCompute("First", RenderGraph::QueueType::GENERAL);
   firstPass.addStorageBufferOutput("X");
   firstPass.addStorageBufferOutput("Link");
 
-  auto& middlePass = graph.createPassCompute("Middle", false);
+  auto& middlePass = graph.createPassCompute("Middle", RenderGraph::QueueType::GENERAL);
   middlePass.addStorageBufferInput("Link");
   middlePass.addStorageBufferOutput("Y");
 
-  auto& lastPass = graph.createPassCompute("Last", true);
+  auto& lastPass = graph.createPassCompute("Last", RenderGraph::QueueType::COMPUTE);
 
   // Preserve the First -> Middle -> Last dependency traversal.
   lastPass.addStorageBufferInput("Y");
@@ -520,11 +544,11 @@ TEST(ScenarioTest, BufferQueueChangesSurviveFrameSlotReuse) {
   }
   graph.getGraphStorage().add("State", buffers);
 
-  auto& computePass = graph.createPassCompute("UpdateState", true);
+  auto& computePass = graph.createPassCompute("UpdateState", RenderGraph::QueueType::COMPUTE);
   computePass.addStorageBufferInput("State");
   computePass.addStorageBufferOutput("State");
   // This compute pass uses the graphics queue.
-  auto& graphicsPass = graph.createPassCompute("ReadStateOnGraphics", false);
+  auto& graphicsPass = graph.createPassCompute("ReadStateOnGraphics", RenderGraph::QueueType::GENERAL);
   graphicsPass.addStorageBufferInput("State");
   graph.calculate();
 
@@ -570,7 +594,7 @@ TEST(ScenarioTest, SwapchainGraphCanEndOnCompute) {
   }
   graph.getGraphStorage().add("Data", buffers);
 
-  auto& computePass = graph.createPassCompute("Compute", true);
+  auto& computePass = graph.createPassCompute("Compute", RenderGraph::QueueType::COMPUTE);
   computePass.addStorageBufferOutput("Data");
 
   graph.calculate();
@@ -615,7 +639,7 @@ TEST(ScenarioTest, GraphicsPassBufferInputs) {
   addBuffers("Vertices", VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
   addBuffers("Indices", VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
 
-  auto& cullPass = graph.createPassCompute("Cull", false);
+  auto& cullPass = graph.createPassCompute("Cull", RenderGraph::QueueType::GENERAL);
   cullPass.addStorageBufferOutput("VisibleObjects");
   cullPass.addStorageBufferOutput("IndirectCommands");
   cullPass.addStorageBufferOutput("Vertices");
@@ -719,20 +743,20 @@ TEST(ScenarioTest, ComputePassIndirectBufferInput) {
   }
   graph.getGraphStorage().add("DispatchCommands", indirectBuffers);
 
-  auto& generatePass = graph.createPassCompute("GenerateDispatch", false);
+  auto& generatePass = graph.createPassCompute("GenerateDispatch", RenderGraph::QueueType::GENERAL);
   generatePass.addStorageBufferOutput("DispatchCommands");
 
-  auto& dispatchPass = graph.createPassCompute("DispatchIndirect", false);
+  auto& dispatchPass = graph.createPassCompute("DispatchIndirect", RenderGraph::QueueType::GENERAL);
   dispatchPass.addIndirectBufferInput("DispatchCommands");
 
-  auto& inspectPass = graph.createPassCompute("InspectDispatch", false);
+  auto& inspectPass = graph.createPassCompute("InspectDispatch", RenderGraph::QueueType::GENERAL);
   inspectPass.addStorageBufferInput("DispatchCommands");
 
-  auto& rewritePass = graph.createPassCompute("RewriteDispatch", false);
+  auto& rewritePass = graph.createPassCompute("RewriteDispatch", RenderGraph::QueueType::GENERAL);
   rewritePass.addStorageBufferInput("DispatchCommands");
   rewritePass.addStorageBufferOutput("DispatchCommands");
 
-  auto& inspectRewritePass = graph.createPassCompute("InspectRewrittenDispatch", false);
+  auto& inspectRewritePass = graph.createPassCompute("InspectRewrittenDispatch", RenderGraph::QueueType::GENERAL);
   inspectRewritePass.addStorageBufferInput("DispatchCommands");
 
   graph.calculate();
@@ -807,7 +831,7 @@ TEST(ScenarioTest, GraphReset) {
   RenderGraph::Tracer tracer(device);
   RenderGraph::Graph graph(4, framesInFlight, device, tracer);
 
-  auto commandPool = std::make_shared<RenderGraph::CommandPool>(RenderGraph::QueueType::GRAPHICS, device);
+  auto commandPool = std::make_shared<RenderGraph::CommandPool>(RenderGraph::QueueType::GENERAL, device);
   std::vector<RenderGraph::CommandBuffer> commandBuffer;
   commandBuffer.reserve(framesInFlight);
   for (int i = 0; i < framesInFlight; i++) {
@@ -846,8 +870,8 @@ TEST(ScenarioTest, GraphReset) {
   renderPass.addColorTarget("Target", RenderGraph::RenderTargetLoadAction::CLEAR);
   renderPass.registerGraphElement(elementMock);
 
-  // separate queue
-  auto& postprocessingPass = graph.createPassCompute("Postprocessing", true);
+  // compute queue
+  auto& postprocessingPass = graph.createPassCompute("Postprocessing", RenderGraph::QueueType::COMPUTE);
   postprocessingPass.registerGraphElement(elementMock);
   postprocessingPass.addStorageTextureInput("Swapchain");
   postprocessingPass.addStorageTextureOutput("Swapchain");
@@ -874,7 +898,7 @@ TEST(ScenarioTest, GraphReset) {
                            .pCommandBufferInfos = &commandBufferInfo,
                            .signalSemaphoreInfoCount = 1,
                            .pSignalSemaphoreInfos = &signalSemaphoreInfo};
-  vkQueueSubmit2(device.getQueue(RenderGraph::QueueType::GRAPHICS), 1, &submitInfo, nullptr);
+  vkQueueSubmit2(device.getQueue(RenderGraph::QueueType::GENERAL), 1, &submitInfo, nullptr);
 
   VkSemaphoreWaitInfo waitInfo = {
       .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
@@ -960,7 +984,7 @@ TEST(ScenarioTest, DepthExistance) {
   RenderGraph::Tracer tracer(device);
   RenderGraph::Graph graph(4, framesInFlight, device, tracer);
 
-  auto commandPool = std::make_shared<RenderGraph::CommandPool>(RenderGraph::QueueType::GRAPHICS, device);
+  auto commandPool = std::make_shared<RenderGraph::CommandPool>(RenderGraph::QueueType::GENERAL, device);
   std::vector<RenderGraph::CommandBuffer> commandBuffer;
   commandBuffer.reserve(framesInFlight);
   for (int i = 0; i < framesInFlight; i++) {
@@ -1014,7 +1038,7 @@ TEST(ScenarioTest, DepthExistance) {
                            .pCommandBufferInfos = &commandBufferInfo,
                            .signalSemaphoreInfoCount = 1,
                            .pSignalSemaphoreInfos = &signalSemaphoreInfo};
-  vkQueueSubmit2(device.getQueue(RenderGraph::QueueType::GRAPHICS), 1, &submitInfo, nullptr);
+  vkQueueSubmit2(device.getQueue(RenderGraph::QueueType::GENERAL), 1, &submitInfo, nullptr);
 
   VkSemaphoreWaitInfo waitInfo = {
       .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
@@ -1076,19 +1100,19 @@ TEST(ScenarioTest, TraversalKeepsTransitiveProducerBeforeConsumer) {
   addStorageBuffers("Y");
 
   // First produces X.
-  auto& firstPass = graph.createPassCompute("First", false);
+  auto& firstPass = graph.createPassCompute("First", RenderGraph::QueueType::GENERAL);
 
   firstPass.addStorageBufferOutput("X");
 
   // Middle depends on First through X and produces Y.
-  auto& middlePass = graph.createPassCompute("Middle", false);
+  auto& middlePass = graph.createPassCompute("Middle", RenderGraph::QueueType::GENERAL);
 
   middlePass.addStorageBufferInput("X");
   middlePass.addStorageBufferOutput("Y");
 
   // Last depends directly on First through X
   // and transitively on First through Middle -> Y.
-  auto& lastPass = graph.createPassCompute("Last", false);
+  auto& lastPass = graph.createPassCompute("Last", RenderGraph::QueueType::GENERAL);
 
   /*
    * This input order exposes the current traversal bug:
@@ -1185,21 +1209,21 @@ TEST(ScenarioTest, TraversalDiamondGraph) {
   addStorageBuffers("Y");
   addStorageBuffers("Z");
 
-  auto& sourcePass = graph.createPassCompute("Source", false);
+  auto& sourcePass = graph.createPassCompute("Source", RenderGraph::QueueType::GENERAL);
 
   sourcePass.addStorageBufferOutput("X");
 
-  auto& leftPass = graph.createPassCompute("Left", false);
+  auto& leftPass = graph.createPassCompute("Left", RenderGraph::QueueType::GENERAL);
 
   leftPass.addStorageBufferInput("X");
   leftPass.addStorageBufferOutput("Y");
 
-  auto& rightPass = graph.createPassCompute("Right", false);
+  auto& rightPass = graph.createPassCompute("Right", RenderGraph::QueueType::GENERAL);
 
   rightPass.addStorageBufferInput("X");
   rightPass.addStorageBufferOutput("Z");
 
-  auto& joinPass = graph.createPassCompute("Join", false);
+  auto& joinPass = graph.createPassCompute("Join", RenderGraph::QueueType::GENERAL);
 
   joinPass.addStorageBufferInput("Y");
   joinPass.addStorageBufferInput("Z");
@@ -1246,15 +1270,15 @@ TEST(ScenarioTest, TraversalDiamondGraph) {
 
   auto& initialGraphicsReader = imageGraph.createPassGraphic("InitialSample");
   initialGraphicsReader.addTextureInput("Image");
-  auto& initialComputeReader = imageGraph.createPassCompute("InitialRead", false);
+  auto& initialComputeReader = imageGraph.createPassCompute("InitialRead", RenderGraph::QueueType::GENERAL);
   initialComputeReader.addStorageTextureInput("Image");
-  auto& imageWriter = imageGraph.createPassCompute("WriteImage", false);
+  auto& imageWriter = imageGraph.createPassCompute("WriteImage", RenderGraph::QueueType::GENERAL);
   imageWriter.addStorageTextureOutput("Image");
   auto& graphicsReader = imageGraph.createPassGraphic("SampleImage");
   graphicsReader.addTextureInput("Image");
-  auto& computeReader = imageGraph.createPassCompute("ReadImage", false);
+  auto& computeReader = imageGraph.createPassCompute("ReadImage", RenderGraph::QueueType::GENERAL);
   computeReader.addStorageTextureInput("Image");
-  auto& imageRewrite = imageGraph.createPassCompute("RewriteImage", false);
+  auto& imageRewrite = imageGraph.createPassCompute("RewriteImage", RenderGraph::QueueType::GENERAL);
   imageRewrite.addStorageTextureOutput("Image");
   auto& sampleRewrite = imageGraph.createPassGraphic("SampleRewrittenImage");
   sampleRewrite.addTextureInput("Image");

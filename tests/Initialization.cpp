@@ -106,9 +106,7 @@ TEST(DeviceTest, Create) {
   EXPECT_NE(device.getPhysicalDevice(), nullptr);
   EXPECT_NE(device.getDevice(), nullptr);
   EXPECT_NE(device.getLogicalDevice(), nullptr);
-  EXPECT_EQ(device.getQueueIndex(RenderGraph::QueueType::PRESENT),
-            device.getQueueIndex(RenderGraph::QueueType::GRAPHICS));
-  EXPECT_EQ(device.getQueue(RenderGraph::QueueType::PRESENT), device.getQueue(RenderGraph::QueueType::GRAPHICS));
+  EXPECT_NE(device.getQueue(RenderGraph::QueueType::GENERAL), VK_NULL_HANDLE);
 }
 
 TEST(DeviceTest, PresentationRequiresGraphicsSurfaceSupport) {
@@ -207,7 +205,7 @@ TEST(DeviceTest, QueueFamilyProperties) {
   RenderGraph::Device device(instance);
   device.setSurface(surface);
   device.initialize();
-  auto properties = device.getQueueFamilyProperties(RenderGraph::QueueType::GRAPHICS);
+  auto properties = device.getQueueFamilyProperties(RenderGraph::QueueType::GENERAL);
   EXPECT_GT(properties.queueCount, 0);
 }
 
@@ -260,7 +258,7 @@ TEST(CommandTest, Create) {
   device.setSurface(surface);
   device.initialize();
   RenderGraph::MemoryAllocator allocator(device, instance);
-  RenderGraph::CommandPool commandPool(RenderGraph::QueueType::GRAPHICS, device);
+  RenderGraph::CommandPool commandPool(RenderGraph::QueueType::GENERAL, device);
   EXPECT_NO_THROW(RenderGraph::CommandBuffer commandBuffer(commandPool, device));
 }
 
@@ -273,7 +271,7 @@ TEST(CommandTest, BeginEnd) {
   device.setSurface(surface);
   device.initialize();
   RenderGraph::MemoryAllocator allocator(device, instance);
-  RenderGraph::CommandPool commandPool(RenderGraph::QueueType::GRAPHICS, device);
+  RenderGraph::CommandPool commandPool(RenderGraph::QueueType::GENERAL, device);
   RenderGraph::CommandBuffer commandBuffer(commandPool, device);
   commandBuffer.beginCommands();
   EXPECT_TRUE(commandBuffer.getActive());
@@ -297,7 +295,7 @@ TEST(ResourceUploaderTest, UploadToHostVisibleBuffer) {
   std::vector<std::byte> data(512, std::byte{1});
   EXPECT_NO_THROW(resourceUploader.upload(buffer, data));
   EXPECT_NO_THROW(resourceUploader.submit());
-  ASSERT_EQ(vkQueueWaitIdle(device.getQueue(RenderGraph::QueueType::GRAPHICS)), VK_SUCCESS);
+  ASSERT_EQ(vkQueueWaitIdle(device.getQueue(RenderGraph::QueueType::GENERAL)), VK_SUCCESS);
   EXPECT_NO_THROW(resourceUploader.reclaim());
 }
 
@@ -318,7 +316,7 @@ TEST(ResourceUploaderTest, UploadToHostVisibleBufferWithOffset) {
   std::vector<std::byte> data(128, std::byte{2});
   EXPECT_NO_THROW(resourceUploader.upload(buffer, data, offset));
   EXPECT_NO_THROW(resourceUploader.submit());
-  ASSERT_EQ(vkQueueWaitIdle(device.getQueue(RenderGraph::QueueType::GRAPHICS)), VK_SUCCESS);
+  ASSERT_EQ(vkQueueWaitIdle(device.getQueue(RenderGraph::QueueType::GENERAL)), VK_SUCCESS);
   EXPECT_NO_THROW(resourceUploader.reclaim());
   const auto* bufferData = static_cast<const std::byte*>(buffer.getAllocationInfo().pMappedData);
   EXPECT_TRUE(std::equal(data.begin(), data.end(), bufferData + offset));
@@ -360,7 +358,7 @@ TEST(ResourceUploaderTest, UploadsMultipleChunksInOneBatch) {
   EXPECT_NO_THROW(resourceUploader.upload(buffer, firstChunk, 0));
   EXPECT_NO_THROW(resourceUploader.upload(buffer, secondChunk, 512));
   EXPECT_NO_THROW(resourceUploader.submit());
-  ASSERT_EQ(vkQueueWaitIdle(device.getQueue(RenderGraph::QueueType::GRAPHICS)), VK_SUCCESS);
+  ASSERT_EQ(vkQueueWaitIdle(device.getQueue(RenderGraph::QueueType::GENERAL)), VK_SUCCESS);
   EXPECT_NO_THROW(resourceUploader.reclaim());
 }
 
@@ -494,7 +492,7 @@ TEST(DescriptorSetTest, Update) {
   VkDescriptorBufferInfo bufferInfo{.buffer = buffer.getBuffer(), .offset = 0, .range = buffer.getSize()};
   descriptorSet.add({&buffer});
   EXPECT_EQ(descriptorSet._resources.size(), 1);
-  RenderGraph::CommandPool commandPool(RenderGraph::QueueType::GRAPHICS, device);
+  RenderGraph::CommandPool commandPool(RenderGraph::QueueType::GENERAL, device);
   RenderGraph::CommandBuffer commandBuffer(commandPool, device);
   commandBuffer.beginCommands();
   descriptorSet.initialize(commandBuffer);
@@ -589,7 +587,7 @@ TEST(DescriptorBufferTest, Create) {
                                                          .pImmutableSamplers = nullptr}};
   layout.createCustom(layoutColor);
   RenderGraph::DescriptorBuffer descriptorBuffer({&layout}, allocator, device);
-  RenderGraph::CommandPool commandPool(RenderGraph::QueueType::GRAPHICS, device);
+  RenderGraph::CommandPool commandPool(RenderGraph::QueueType::GENERAL, device);
   RenderGraph::CommandBuffer commandBuffer(commandPool, device);
   commandBuffer.beginCommands();
   EXPECT_THROW(descriptorBuffer.initialize(commandBuffer), std::runtime_error);
@@ -617,7 +615,7 @@ TEST(DescriptorBufferTest, BigDescriptorCount) {
                                                          .pImmutableSamplers = nullptr}};
   layout.createCustom(layoutColor);
   RenderGraph::DescriptorBuffer descriptorBuffer({&layout}, allocator, device);
-  RenderGraph::CommandPool commandPool(RenderGraph::QueueType::GRAPHICS, device);
+  RenderGraph::CommandPool commandPool(RenderGraph::QueueType::GENERAL, device);
   RenderGraph::CommandBuffer commandBuffer(commandPool, device);
   commandBuffer.beginCommands();
   EXPECT_THROW(descriptorBuffer.initialize(commandBuffer), std::runtime_error);
@@ -701,7 +699,7 @@ TEST(DescriptorBufferTest, DifferentSets) {
   descriptorBuffer.add({&buffer});
   descriptorBuffer.add({&buffer});
   descriptorBuffer.add({&buffer});
-  RenderGraph::CommandPool commandPool(RenderGraph::QueueType::GRAPHICS, device);
+  RenderGraph::CommandPool commandPool(RenderGraph::QueueType::GENERAL, device);
   RenderGraph::CommandBuffer commandBuffer(commandPool, device);
   commandBuffer.beginCommands();
   descriptorBuffer.initialize(commandBuffer);
@@ -745,7 +743,7 @@ TEST(DescriptorBufferTest, Update) {
   layout.createCustom(layoutColor);
   RenderGraph::DescriptorBuffer descriptorBuffer({&layout}, allocator, device);
   descriptorBuffer.add({&buffer});
-  RenderGraph::CommandPool commandPool(RenderGraph::QueueType::GRAPHICS, device);
+  RenderGraph::CommandPool commandPool(RenderGraph::QueueType::GENERAL, device);
   RenderGraph::CommandBuffer commandBuffer(commandPool, device);
   commandBuffer.beginCommands();
   descriptorBuffer.initialize(commandBuffer);
@@ -948,7 +946,7 @@ TEST(SwapchainTest, CreateWithInitialization) {
   device.initialize();
   RenderGraph::MemoryAllocator allocator(device, instance);
   RenderGraph::Swapchain swapchain(resolution, allocator, device);
-  RenderGraph::CommandPool commandPool(RenderGraph::QueueType::GRAPHICS, device);
+  RenderGraph::CommandPool commandPool(RenderGraph::QueueType::GENERAL, device);
   RenderGraph::CommandBuffer commandBuffer(commandPool, device);
   commandBuffer.beginCommands();
   swapchain.initialize();
@@ -1033,7 +1031,7 @@ TEST(ResourceUploaderTest, UploadsImage) {
   const std::vector<VkDeviceSize> bufferOffsets{0};
   EXPECT_NO_THROW(resourceUploader.upload(image, pixels, bufferOffsets));
   EXPECT_NO_THROW(resourceUploader.submit());
-  ASSERT_EQ(vkQueueWaitIdle(device.getQueue(RenderGraph::QueueType::GRAPHICS)), VK_SUCCESS);
+  ASSERT_EQ(vkQueueWaitIdle(device.getQueue(RenderGraph::QueueType::GENERAL)), VK_SUCCESS);
   EXPECT_NO_THROW(resourceUploader.reclaim());
   EXPECT_EQ(image.getImageLayout(), VK_IMAGE_LAYOUT_GENERAL);
 }

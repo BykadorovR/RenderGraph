@@ -12,7 +12,8 @@ import Instance;
 import Surface;
 
 export namespace RenderGraph {
-enum class QueueType { PRESENT, GRAPHICS, COMPUTE, TRANSFER };
+// GENERAL is the main graphics-capable queue; COMPUTE prefers a separate queue with fallback to GENERAL.
+enum class QueueType { GENERAL, COMPUTE, TRANSFER };
 
 struct DeviceRequirements {
   VkPhysicalDeviceFeatures features{};
@@ -56,7 +57,7 @@ class Device final {
   bool isFormatFeatureSupported(VkFormat format, VkImageTiling tiling, VkFormatFeatureFlagBits featureFlagBit) const;
   const VkDevice getLogicalDevice() const noexcept;
   const VkPhysicalDevice getPhysicalDevice() const noexcept;
-  // PRESENT uses the graphics family; initialize() checks its surface support.
+  // GENERAL also handles presentation; initialize() checks its support when a surface is set.
   const VkQueue getQueue(QueueType type) const;
   int getQueueIndex(QueueType type) const;
   const std::vector<uint32_t>& getResourceQueueFamilies() const noexcept;

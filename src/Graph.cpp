@@ -103,6 +103,8 @@ void GraphPass::reset(const std::vector<std::shared_ptr<RenderGraph::ImageView>>
 
 GraphPassType GraphPass::getGraphPassType() const noexcept { return _graphPassType; }
 
+QueueType GraphPass::getQueueType() const noexcept { return _commandPool->getType(); }
+
 std::vector<CommandBuffer*> GraphPass::getCommandBuffers() const {
   return _commandBuffers | std::views::transform([](auto& p) { return p.get(); }) | std::ranges::to<std::vector>();
 }
@@ -113,7 +115,7 @@ GraphPassGraphic::GraphPassGraphic(std::string_view name,
                                    const Device& device)
     : GraphPass(name, GraphPassType::GRAPHIC, graphStorage) {
   _device = &device;
-  _commandPool = std::make_unique<CommandPool>(QueueType::GRAPHICS, device);
+  _commandPool = std::make_unique<CommandPool>(QueueType::GENERAL, device);
   _commandBuffers.resize(maxFramesInFlight);
   std::ranges::generate(_commandBuffers, [&] { return std::make_unique<CommandBuffer>(*_commandPool, device); });
   _pipelineGraphic = std::make_unique<PipelineGraphic>();
@@ -270,15 +272,15 @@ void GraphPassGraphic::execute(int currentFrame, const CommandBuffer& commandBuf
 
 GraphPassCompute::GraphPassCompute(std::string_view name,
                                    int maxFramesInFlight,
-                                   bool separate,
+                                   QueueType queueType,
                                    const GraphStorage& graphStorage,
                                    const Device& device)
     : GraphPass(name, GraphPassType::COMPUTE, graphStorage) {
+  if (queueType != QueueType::GENERAL && queueType != QueueType::COMPUTE) {
+    throw std::invalid_argument("Compute pass requires a GENERAL or COMPUTE queue: " + std::string(name));
+  }
   _device = &device;
-  _separate = separate;
 
-  auto queueType = QueueType::GRAPHICS;
-  if (separate) queueType = QueueType::COMPUTE;
   _commandPool = std::make_unique<CommandPool>(queueType, device);
   _commandBuffers.resize(maxFramesInFlight);
   std::ranges::generate(_commandBuffers, [&] { return std::make_unique<CommandBuffer>(*_commandPool, device); });
@@ -314,8 +316,6 @@ const std::vector<std::string>& GraphPassCompute::getIndirectBufferInputs() cons
   return _indirectBufferInputs;
 }
 
-bool GraphPassCompute::isSeparate() const noexcept { return _separate; }
-
 void GraphPassCompute::execute(int currentFrame, const CommandBuffer& commandBuffer) {
   for (auto&& graphElement : _graphElements) {
     graphElement->update(currentFrame, commandBuffer);
@@ -346,10 +346,6 @@ void Graph::_setResourceNames() {
     }
   }
 }
-
-bool Graph::_usesSeparateQueue(GraphPass* pass) {
-  return pass->getGraphPassType() == GraphPassType::COMPUTE && static_cast<GraphPassCompute*>(pass)->isSeparate();
-};
 
 Graph::Graph(int threadsNumber, int maxFramesInFlight, const Device& device, Tracer& tracer)
     : _device(&device),
@@ -391,14 +387,14 @@ GraphPassGraphic& Graph::createPassGraphic(std::string_view name) {
   return static_cast<GraphPassGraphic&>(*_passes.back());
 }
 
-GraphPassCompute& Graph::createPassCompute(std::string_view name, bool separate) {
+GraphPassCompute& Graph::createPassCompute(std::string_view name, QueueType queueType) {
   auto it = std::find_if(_passes.begin(), _passes.end(),
                          [name = name](std::unique_ptr<GraphPass>& graphPass) { return graphPass->getName() == name; });
   if (it != _passes.end()) {
     throw std::logic_error("Pass name is already in use: " + std::string(name));
   }
 
-  _passes.push_back(std::make_unique<GraphPassCompute>(name, _maxFramesInFlight, separate, *_graphStorage, *_device));
+  _passes.push_back(std::make_unique<GraphPassCompute>(name, _maxFramesInFlight, queueType, *_graphStorage, *_device));
   return static_cast<GraphPassCompute&>(*_passes.back());
 }
 
@@ -648,10 +644,7 @@ void Graph::print() const {
     std::cout << "Name: " << value->getName()
               << ", Stage: " << (value->getGraphPassType() == GraphPassType::GRAPHIC ? "GRAPHIC" : "COMPUTE")
               << std::endl;
-    if (value->getGraphPassType() == GraphPassType::COMPUTE) {
-      const auto* computePass = static_cast<GraphPassCompute*>(value);
-      std::cout << " separate: " << (computePass->isSeparate() ? "true" : "false") << std::endl;
-    }
+    std::cout << " queue: " << (value->getQueueType() == QueueType::COMPUTE ? "COMPUTE" : "GENERAL") << std::endl;
     const auto syncIt = _sync.find(value);
     if (syncIt != _sync.end()) {
       const auto& sync = syncIt->second;
@@ -979,7 +972,7 @@ void Graph::calculate(std::span<const UploadTicket> uploadTickets) {
   std::unordered_set<VkQueue> collectionQueues;
   GraphPass* previousPass = nullptr;
   for (auto&& pass : _passesOrdered) {
-    const QueueType queueType = _usesSeparateQueue(pass) ? QueueType::COMPUTE : QueueType::GRAPHICS;
+    const QueueType queueType = pass->getQueueType();
     _passQueueTypes.emplace(pass, queueType);
     if (collectionQueues.insert(_device->getQueue(queueType)).second) {
       _collectionPasses.insert(pass);
@@ -1308,7 +1301,7 @@ bool Graph::render() {
         .pSwapchains = swapChains,
         .pImageIndices = &swapchainIndex,
     };
-    auto result = vkQueuePresentKHR(_device->getQueue(QueueType::PRESENT), &presentInfo);
+    auto result = vkQueuePresentKHR(_device->getQueue(QueueType::GENERAL), &presentInfo);
 
     if (result == VK_ERROR_OUT_OF_DATE_KHR) {
       return true;

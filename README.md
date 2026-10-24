@@ -63,8 +63,8 @@ import Instrumentation;
 
 void buildGraph(RenderGraph::Graph& graph) {
   graph.initialize();
-  // Adds a compute pass to the graphics queue instead of a separate queue.
-  graph.createPassCompute("Compute", false);
+  // GENERAL shares the graphics queue; COMPUTE prefers a separate compute queue with fallback to GENERAL.
+  graph.createPassCompute("Compute", RenderGraph::QueueType::GENERAL);
   // Custom uploads from ResourceUploader can be included via graph.calculate(uploadTickets).
   graph.calculate();
 }

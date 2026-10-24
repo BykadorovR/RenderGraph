@@ -26,7 +26,7 @@ export namespace RenderGraph {
 struct UploadTicket {
   VkSemaphore semaphore = nullptr;
   uint64_t value = 0;
-  QueueType destinationQueueType = QueueType::GRAPHICS;
+  QueueType destinationQueueType = QueueType::GENERAL;
 };
 
 class ResourceUploader final {
@@ -67,7 +67,7 @@ class ResourceUploader final {
   // Mipmaps use linear filtering when supported, otherwise nearest filtering.
   void upload(Image& destination, std::span<const std::byte> data, std::span<const VkDeviceSize> bufferOffsets);
   // Wait on every returned ticket before using an upload on its destination queue.
-  UploadTicket submit(QueueType destinationQueueType = QueueType::GRAPHICS);
+  UploadTicket submit(QueueType destinationQueueType = QueueType::GENERAL);
   void reclaim();
 
   ~ResourceUploader();

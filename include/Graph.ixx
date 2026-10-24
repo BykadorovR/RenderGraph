@@ -109,6 +109,7 @@ class GraphPass {
   void registerGraphElement(std::shared_ptr<GraphElement> graphElement);
   // NVRO
   GraphPassType getGraphPassType() const noexcept;
+  QueueType getQueueType() const noexcept;
   std::vector<CommandBuffer*> getCommandBuffers() const;
   std::string getName() const;
   virtual void execute(int currentFrame, const CommandBuffer& commandBuffer) = 0;
@@ -175,13 +176,12 @@ class GraphPassCompute final : public GraphPass {
  private:
   std::vector<std::string> _storageBufferInputs, _storageBufferOutputs, _indirectBufferInputs;
   std::vector<std::string> _storageTextureInputs, _storageTextureOutputs;
-  bool _separate = false;
   const Device* _device;
 
  public:
   GraphPassCompute(std::string_view name,
                    int maxFramesInFlight,
-                   bool separate,
+                   QueueType queueType,
                    const GraphStorage& graphStorage,
                    const Device& device);
   GraphPassCompute(const GraphPassCompute&) = delete;
@@ -203,7 +203,6 @@ class GraphPassCompute final : public GraphPass {
   const std::vector<std::string>& getStorageTextureInputs() const noexcept;
   const std::vector<std::string>& getStorageTextureOutputs() const noexcept;
   const std::vector<std::string>& getIndirectBufferInputs() const noexcept;
-  bool isSeparate() const noexcept;
   void execute(int currentFrame, const CommandBuffer& commandBuffer) override;
 };
 
@@ -287,7 +286,6 @@ class Graph final {
   VkAccessFlags2 _swapchainFirstAccessMask = 0;
 
   void _setResourceNames();
-  bool _usesSeparateQueue(GraphPass* pass);
 
  public:
   Graph(int threadsNumber, int maxFramesInFlight, const Device& device, Tracer& tracer);
@@ -299,7 +297,8 @@ class Graph final {
   void setSwapchain(Swapchain& swapchain);
   void initialize();
   GraphPassGraphic& createPassGraphic(std::string_view name);
-  GraphPassCompute& createPassCompute(std::string_view name, bool separate);
+  // Only GENERAL and COMPUTE queues are supported; other values throw std::invalid_argument.
+  GraphPassCompute& createPassCompute(std::string_view name, QueueType queueType);
   GraphPassGraphic* getPassGraphic(std::string_view name) const;
   GraphPassCompute* getPassCompute(std::string_view name) const;
   GraphStorage& getGraphStorage() const noexcept;
