@@ -23,18 +23,14 @@ import Sync;
 import Texture;
 
 export namespace RenderGraph {
-struct UploadTicket {
-  VkSemaphore semaphore = nullptr;
-  uint64_t value = 0;
-  QueueType destinationQueueType = QueueType::GENERAL;
-};
-
 class ResourceUploader final {
  private:
   struct UploadBatch {
     std::unique_ptr<CommandBuffer> _commandBuffer;
     std::vector<std::unique_ptr<Buffer>> _stagingBuffers;
     uint64_t _completionValue = 0;
+
+    UploadBatch(const CommandPool& commandPool, const Device& device);
   };
 
   const MemoryAllocator* _memoryAllocator;
@@ -46,7 +42,6 @@ class ResourceUploader final {
   uint64_t _nextCompletionValue = 1;
 
   UploadBatch& _getRecordingBatch();
-  void _generateMipmaps(Image& image, VkCommandBuffer commandBuffer, VkFilter filter);
   void _recordBufferBarrier(VkCommandBuffer commandBuffer,
                             VkBuffer buffer,
                             VkDeviceSize offset,
@@ -57,17 +52,20 @@ class ResourceUploader final {
                             VkAccessFlags2 destinationAccessMask);
 
  public:
-  ResourceUploader(const MemoryAllocator& memoryAllocator, const Device& device);
+  // queueType selects the execution queue; Device falls back to GENERAL when a separate queue is unavailable.
+  ResourceUploader(const MemoryAllocator& memoryAllocator,
+                   const Device& device,
+                   QueueType queueType = QueueType::GENERAL);
   ResourceUploader(const ResourceUploader&) = delete;
   ResourceUploader& operator=(const ResourceUploader&) = delete;
   ResourceUploader(ResourceUploader&&) = delete;
   ResourceUploader& operator=(ResourceUploader&&) = delete;
 
   void upload(Buffer& destination, std::span<const std::byte> data, VkDeviceSize offset = 0);
-  // Mipmaps use linear filtering when supported, otherwise nearest filtering.
+  // Upload the base level for every layer; mipmaps are generated separately.
   void upload(Image& destination, std::span<const std::byte> data, std::span<const VkDeviceSize> bufferOffsets);
-  // Wait on every returned ticket before using an upload on its destination queue.
-  UploadTicket submit(QueueType destinationQueueType = QueueType::GENERAL);
+  // The returned ticket covers this batch's uploads on the selected queue.
+  GpuTicket submit();
   void reclaim();
 
   ~ResourceUploader();

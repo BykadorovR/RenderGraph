@@ -694,8 +694,17 @@ void Graph::print() const {
   std::cout << "========================================" << std::endl;
 }
 
-void Graph::calculate(std::span<const UploadTicket> uploadTickets) {
+void Graph::calculate(std::span<const GpuTicket> tickets) {
   const auto cpuTrace = _tracer->traceCPU("Graph.calculate");
+  // Tickets from one producer share a timeline semaphore; its highest value covers all its earlier batches.
+  for (const auto& ticket : tickets) {
+    const auto pending = std::ranges::find(_pendingTickets, ticket.semaphore, &GpuTicket::semaphore);
+    if (pending == _pendingTickets.end()) {
+      _pendingTickets.push_back(ticket);
+    } else {
+      pending->value = std::max(pending->value, ticket.value);
+    }
+  }
   // store resources in a convinient way
   _resources.clear();
   _passesOrdered.clear();
@@ -1060,25 +1069,6 @@ void Graph::calculate(std::span<const UploadTicket> uploadTickets) {
                                     {VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0}, layout.usage));
     }
   }
-
-  // Collect all upload tickets and reassign them to the first pass using their destination queue.
-  // This ensures uploads are synchronized before the queue starts executing graph passes.
-  std::vector<UploadTicket> pendingUploads(uploadTickets.begin(), uploadTickets.end());
-  for (auto& [pass, tickets] : _uploadTickets) {
-    pendingUploads.insert(pendingUploads.end(), std::make_move_iterator(tickets.begin()),
-                          std::make_move_iterator(tickets.end()));
-  }
-  _uploadTickets.clear();
-  for (auto& ticket : pendingUploads) {
-    const VkQueue destinationQueue = _device->getQueue(ticket.destinationQueueType);
-    const auto passIt = std::ranges::find_if(_passesOrdered, [this, destinationQueue](GraphPass* pass) {
-      return _device->getQueue(_passQueueTypes.at(pass)) == destinationQueue;
-    });
-    if (passIt == _passesOrdered.end()) {
-      throw std::logic_error("Upload ticket destination queue is not used by the graph");
-    }
-    _uploadTickets[*passIt].push_back(std::move(ticket));
-  }
 }
 
 bool Graph::render() {
@@ -1214,6 +1204,12 @@ bool Graph::render() {
   std::vector<CommandBuffer*> commandBufferSubmit;
   std::vector<VkSemaphore> signalSemaphores;
   std::vector<VkSemaphoreSubmitInfo> waitSemaphores;
+  for (const auto& ticket : _pendingTickets) {
+    waitSemaphores.push_back({.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+                              .semaphore = ticket.semaphore,
+                              .value = ticket.value,
+                              .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT});
+  }
   GraphPass* previousPass = nullptr;
   for (auto&& [pass, futureTask] : std::views::zip(_passesOrdered, futureTasks)) {
     if (futureTask.valid()) {
@@ -1232,23 +1228,6 @@ bool Graph::render() {
 
     previousPass = pass;
     commandBufferSubmit.push_back(pass->getCommandBuffers()[_frameInFlight]);
-    if (const auto uploadIt = _uploadTickets.find(pass); uploadIt != _uploadTickets.end()) {
-      for (const auto& ticket : uploadIt->second) {
-        // One uploader shares a timeline semaphore across its tickets; waiting for the largest value covers them all.
-        // A submit's wait list must not contain the same semaphore more than once.
-        const auto waitIt = std::ranges::find(waitSemaphores, ticket.semaphore, &VkSemaphoreSubmitInfo::semaphore);
-        if (waitIt != waitSemaphores.end()) {
-          waitIt->value = std::max(waitIt->value, ticket.value);
-        } else {
-          waitSemaphores.push_back({
-              .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
-              .semaphore = ticket.semaphore,
-              .value = ticket.value,
-              .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-          });
-        }
-      }
-    }
     if (const auto syncIt = _sync.find(pass); syncIt != _sync.end()) {
       for (Semaphore* semaphore : syncIt->second.getWaitSemaphores()) {
         waitSemaphores.push_back({
@@ -1282,7 +1261,7 @@ bool Graph::render() {
   signalSemaphores.push_back(_semaphoreInFlight->getSemaphore());
 
   submitPassToQueue(_passesOrdered.back(), commandBufferSubmit, waitSemaphores, signalSemaphores, signalValues);
-  _uploadTickets.clear();
+  _pendingTickets.clear();
 
   ++_valueSemaphoreInFlight;
 

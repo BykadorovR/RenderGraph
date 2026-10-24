@@ -308,18 +308,25 @@ TEST(ResourceUploaderTest, UploadToHostVisibleBufferWithOffset) {
   device.setSurface(surface);
   device.initialize();
   RenderGraph::MemoryAllocator allocator(device, instance);
-  RenderGraph::Buffer buffer(1024, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-                             VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
-                             allocator, device);
-  RenderGraph::ResourceUploader resourceUploader(allocator, device);
-  constexpr VkDeviceSize offset = 256;
-  std::vector<std::byte> data(128, std::byte{2});
-  EXPECT_NO_THROW(resourceUploader.upload(buffer, data, offset));
-  EXPECT_NO_THROW(resourceUploader.submit());
-  ASSERT_EQ(vkQueueWaitIdle(device.getQueue(RenderGraph::QueueType::GENERAL)), VK_SUCCESS);
-  EXPECT_NO_THROW(resourceUploader.reclaim());
-  const auto* bufferData = static_cast<const std::byte*>(buffer.getAllocationInfo().pMappedData);
-  EXPECT_TRUE(std::equal(data.begin(), data.end(), bufferData + offset));
+  for (const auto queueType :
+       {RenderGraph::QueueType::GENERAL, RenderGraph::QueueType::COMPUTE, RenderGraph::QueueType::TRANSFER}) {
+    SCOPED_TRACE(static_cast<int>(queueType));
+    RenderGraph::Buffer buffer(
+        1024, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+        VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT, allocator, device);
+    RenderGraph::ResourceUploader resourceUploader(allocator, device, queueType);
+    constexpr VkDeviceSize offset = 256;
+    const std::vector<std::byte> data(128, std::byte{2});
+    auto* bufferData = static_cast<std::byte*>(buffer.getAllocationInfo().pMappedData);
+    ASSERT_NE(bufferData, nullptr);
+    std::fill_n(bufferData + offset, data.size(), std::byte{0});
+    EXPECT_NO_THROW(resourceUploader.upload(buffer, data, offset));
+    // Mapped memory is written by the CPU, so the bytes must be present before any GPU submission.
+    EXPECT_TRUE(std::equal(data.begin(), data.end(), bufferData + offset));
+    EXPECT_NO_THROW(resourceUploader.submit());
+    ASSERT_EQ(vkQueueWaitIdle(device.getQueue(queueType)), VK_SUCCESS);
+    EXPECT_NO_THROW(resourceUploader.reclaim());
+  }
 }
 
 TEST(ResourceUploaderTest, RejectsOutOfBoundsBufferRange) {
@@ -1024,7 +1031,7 @@ TEST(ResourceUploaderTest, UploadsImage) {
   RenderGraph::MemoryAllocator allocator(device, instance);
   RenderGraph::Image image(allocator, device);
   image.createImage(VK_FORMAT_R8G8B8A8_UNORM, {2, 2}, 2, 1, VK_IMAGE_ASPECT_COLOR_BIT,
-                    VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+                    VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
 
   RenderGraph::ResourceUploader resourceUploader(allocator, device);
   const std::vector<std::byte> pixels(2 * 2 * 4, std::byte{42});
@@ -1034,28 +1041,6 @@ TEST(ResourceUploaderTest, UploadsImage) {
   ASSERT_EQ(vkQueueWaitIdle(device.getQueue(RenderGraph::QueueType::GENERAL)), VK_SUCCESS);
   EXPECT_NO_THROW(resourceUploader.reclaim());
   EXPECT_EQ(image.getImageLayout(), VK_IMAGE_LAYOUT_GENERAL);
-}
-
-TEST(ResourceUploaderTest, RejectsInvalidMipmapUploadBeforeCreatingBatch) {
-  RenderGraph::Instance instance("TestApp", false);
-  RenderGraph::Window window({1920, 1080});
-  window.initialize();
-  RenderGraph::Surface surface(window, instance);
-  RenderGraph::Device device(instance);
-  device.setSurface(surface);
-  device.initialize();
-  RenderGraph::MemoryAllocator allocator(device, instance);
-  RenderGraph::Image image(allocator, device);
-  image.createImage(VK_FORMAT_R8G8B8A8_UNORM, {2, 2}, 2, 1, VK_IMAGE_ASPECT_COLOR_BIT,
-                    VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
-
-  RenderGraph::ResourceUploader resourceUploader(allocator, device);
-  const std::vector<std::byte> pixels(2 * 2 * 4, std::byte{42});
-  const std::vector<VkDeviceSize> bufferOffsets{0};
-
-  EXPECT_THROW(resourceUploader.upload(image, pixels, bufferOffsets), std::invalid_argument);
-  EXPECT_EQ(image.getImageLayout(), VK_IMAGE_LAYOUT_UNDEFINED);
-  EXPECT_THROW(resourceUploader.submit(), std::logic_error);
 }
 
 TEST(ImageViewTest, Create) {

@@ -226,6 +226,8 @@ const VkQueue Device::getQueue(QueueType type) const {
     case QueueType::TRANSFER:
       bootstrapType = vkb::QueueType::transfer;
       break;
+    default:
+      throw std::invalid_argument("Invalid queue type");
   }
   auto queueResult = _device.get_dedicated_queue(bootstrapType);
   if (!queueResult) {
@@ -251,6 +253,8 @@ int Device::getQueueIndex(QueueType type) const {
     case QueueType::TRANSFER:
       bootstrapType = vkb::QueueType::transfer;
       break;
+    default:
+      throw std::invalid_argument("Invalid queue type");
   }
   auto queueResult = _device.get_dedicated_queue_index(bootstrapType);
   if (!queueResult) {
