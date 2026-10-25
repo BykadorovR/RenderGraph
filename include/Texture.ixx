@@ -88,7 +88,7 @@ class Image final {
                  VkImageUsageFlags usage);
 
   void setImageLayout(VkImageLayout layout) noexcept;
-  glm::ivec2 getResolution() const noexcept;
+  glm::ivec2 getResolution(int mipLevel = 0) const noexcept;
   VkImage getImage() const noexcept;
   VkFormat getFormat() const noexcept;
   VkImageLayout getImageLayout() const noexcept;
@@ -108,7 +108,8 @@ class ImageView final {
   std::unique_ptr<Image> _image;
   VkImageView _imageView{};
   VkImageViewType _type;
-  int _baseMipMap, _baseArrayLayer;
+  int _baseMipMap = 0;
+  int _baseArrayLayer = 0;
 
  public:
   ImageView(std::unique_ptr<Image> image, const Device& device) noexcept;

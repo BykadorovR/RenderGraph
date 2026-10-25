@@ -745,6 +745,54 @@ TEST(ValidationTest, ImageViewsRespectSubresourceOffsets) {
   EXPECT_TRUE(validationErrors.getErrors().empty()) << joinErrors(validationErrors.getErrors());
 }
 
+TEST(ValidationTest, GraphicPassRenderAreaFitsAttachmentMipLevels) {
+  ValidationErrorCollector validationErrors;
+  RenderGraph::Instance instance("RenderAreaMipValidationTest", true);
+  if (!instance.isDebug()) GTEST_SKIP() << "Vulkan validation layers or VK_EXT_debug_utils are unavailable";
+  ValidationMessenger validationMessenger(instance.getInstance().instance, validationErrors);
+  {
+    RenderGraph::Device device(instance);
+    device.initialize();
+    RenderGraph::MemoryAllocator allocator(device, instance);
+    RenderGraph::Tracer tracer(device);
+    for (int attachmentCase = 0; attachmentCase < 3; ++attachmentCase) {
+      SCOPED_TRACE(attachmentCase);
+      RenderGraph::Graph graph(1, 1, device, tracer);
+      graph.initialize();
+      const auto addTarget = [&](std::string_view name, VkFormat format, glm::ivec2 size, int levels, int mip,
+                                 VkImageAspectFlags aspect, VkImageUsageFlags usage) {
+        auto image = std::make_unique<RenderGraph::Image>(allocator, device);
+        image->createImage(format, size, levels, 1, aspect, usage);
+        auto view = std::make_shared<RenderGraph::ImageView>(std::move(image), device);
+        view->createImageView(VK_IMAGE_VIEW_TYPE_2D, mip, 0);
+        graph.getGraphStorage().add(name,
+                                    std::make_unique<RenderGraph::ImageViewHolder>(
+                                        std::vector<std::shared_ptr<RenderGraph::ImageView>>{view}, [] { return 0; }));
+      };
+
+      auto& pass = graph.createPassGraphic("ClearAttachments");
+      // Exercise color-only, depth-only, and mixed attachments with different effective extents.
+      if (attachmentCase != 1) {
+        addTarget("FullSizeColor", VK_FORMAT_R8G8B8A8_UNORM, {32, 32}, 1, 0, VK_IMAGE_ASPECT_COLOR_BIT,
+                  VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
+        addTarget("ColorMip", VK_FORMAT_R8G8B8A8_UNORM, {64, 32}, 3, 2, VK_IMAGE_ASPECT_COLOR_BIT,
+                  VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
+        pass.addColorTarget("FullSizeColor");
+        pass.addColorTarget("ColorMip");
+      }
+      if (attachmentCase != 0) {
+        addTarget("DepthMip", VK_FORMAT_D32_SFLOAT, {32, 64}, 3, 2, VK_IMAGE_ASPECT_DEPTH_BIT,
+                  VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT);
+        pass.setDepthTarget("DepthMip");
+      }
+      graph.calculate();
+      ASSERT_FALSE(graph.render());
+      ASSERT_EQ(vkDeviceWaitIdle(device.getLogicalDevice()), VK_SUCCESS);
+    }
+  }
+  EXPECT_TRUE(validationErrors.getErrors().empty()) << joinErrors(validationErrors.getErrors());
+}
+
 TEST_P(UploadQueueTest, IntegerMipmapsPreserveUploadedPixels) {
   ValidationErrorCollector validationErrors;
   RenderGraph::Instance instance("IntegerMipmapValidationTest", true);

@@ -250,13 +250,17 @@ void GraphPassGraphic::execute(int currentFrame, const CommandBuffer& commandBuf
   VkRenderingInfo renderingInfo = {};
   renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
   renderingInfo.renderArea.offset = {0, 0};
-  glm::ivec2 resolution;
-  if (!_colorTargets.empty()) {
-    resolution = _graphStorage->getImageViewHolder(_colorTargets.front()).getImageView().getImage().getResolution();
-  } else if (_depthTarget) {
-    resolution = _graphStorage->getImageViewHolder(*_depthTarget).getImageView().getImage().getResolution();
-  } else {
+  if (_colorTargets.empty() && !_depthTarget) {
     throw std::logic_error("Graphic pass has no attachments: " + _name);
+  }
+  glm::ivec2 resolution(std::numeric_limits<int>::max());
+  for (const auto& target : _colorTargets) {
+    const auto& view = _graphStorage->getImageViewHolder(target).getImageView();
+    resolution = glm::min(resolution, view.getImage().getResolution(view.getBaseMipMap()));
+  }
+  if (_depthTarget) {
+    const auto& view = _graphStorage->getImageViewHolder(*_depthTarget).getImageView();
+    resolution = glm::min(resolution, view.getImage().getResolution(view.getBaseMipMap()));
   }
   renderingInfo.renderArea.extent = VkExtent2D(resolution.x, resolution.y);
   renderingInfo.layerCount = 1;
