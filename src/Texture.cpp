@@ -89,7 +89,9 @@ VkImageCreateFlags Image::getCreateFlags() const noexcept { return _createFlags;
 
 void Image::setImageLayout(VkImageLayout layout) noexcept { _imageLayout = layout; }
 
-glm::ivec2 Image::getResolution() const noexcept { return _resolution; }
+glm::ivec2 Image::getResolution(int mipLevel) const noexcept {
+  return {std::max(1, _resolution.x >> mipLevel), std::max(1, _resolution.y >> mipLevel)};
+}
 
 VkImage Image::getImage() const noexcept { return _image; }
 

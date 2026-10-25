@@ -1,5 +1,6 @@
 module;
 
+#include <cstdint>
 #include <vector>
 #include <volk.h>
 
@@ -9,6 +10,11 @@ import Device;
 import Buffer;
 
 export namespace RenderGraph {
+struct GpuTicket {
+  VkSemaphore semaphore = nullptr;
+  uint64_t value = 0;
+};
+
 class Semaphore final {
  private:
   const Device* _device;

@@ -154,7 +154,7 @@ void Device::initialize(const DeviceRequirements& requirements) {
 
   if (_surface != nullptr) {
     VkBool32 presentSupported = VK_FALSE;
-    const auto graphicsFamily = static_cast<uint32_t>(getQueueIndex(QueueType::GRAPHICS));
+    const auto graphicsFamily = static_cast<uint32_t>(getQueueIndex(QueueType::GENERAL));
     if (vkGetPhysicalDeviceSurfaceSupportKHR(getPhysicalDevice(), graphicsFamily, _device.surface, &presentSupported) !=
             VK_SUCCESS ||
         !presentSupported) {
@@ -166,7 +166,7 @@ void Device::initialize(const DeviceRequirements& requirements) {
   vkGetPhysicalDeviceQueueFamilyProperties(getPhysicalDevice(), &queueFamilyCount, nullptr);
   _queueFamilyProperties.resize(queueFamilyCount);
   vkGetPhysicalDeviceQueueFamilyProperties(getPhysicalDevice(), &queueFamilyCount, _queueFamilyProperties.data());
-  for (QueueType type : {QueueType::GRAPHICS, QueueType::COMPUTE, QueueType::TRANSFER}) {
+  for (QueueType type : {QueueType::GENERAL, QueueType::COMPUTE, QueueType::TRANSFER}) {
     _resourceQueueFamilies.push_back(static_cast<uint32_t>(getQueueIndex(type)));
   }
   std::ranges::sort(_resourceQueueFamilies);
@@ -217,8 +217,7 @@ const vkb::Device& Device::getDevice() const noexcept { return _device; }
 const VkQueue Device::getQueue(QueueType type) const {
   vkb::QueueType bootstrapType;
   switch (type) {
-    case QueueType::PRESENT:
-    case QueueType::GRAPHICS:
+    case QueueType::GENERAL:
       bootstrapType = vkb::QueueType::graphics;
       break;
     case QueueType::COMPUTE:
@@ -227,6 +226,8 @@ const VkQueue Device::getQueue(QueueType type) const {
     case QueueType::TRANSFER:
       bootstrapType = vkb::QueueType::transfer;
       break;
+    default:
+      throw std::invalid_argument("Invalid queue type");
   }
   auto queueResult = _device.get_dedicated_queue(bootstrapType);
   if (!queueResult) {
@@ -243,8 +244,7 @@ const VkQueue Device::getQueue(QueueType type) const {
 int Device::getQueueIndex(QueueType type) const {
   vkb::QueueType bootstrapType;
   switch (type) {
-    case QueueType::PRESENT:
-    case QueueType::GRAPHICS:
+    case QueueType::GENERAL:
       bootstrapType = vkb::QueueType::graphics;
       break;
     case QueueType::COMPUTE:
@@ -253,6 +253,8 @@ int Device::getQueueIndex(QueueType type) const {
     case QueueType::TRANSFER:
       bootstrapType = vkb::QueueType::transfer;
       break;
+    default:
+      throw std::invalid_argument("Invalid queue type");
   }
   auto queueResult = _device.get_dedicated_queue_index(bootstrapType);
   if (!queueResult) {

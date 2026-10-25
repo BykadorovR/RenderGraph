@@ -76,9 +76,11 @@ class DescriptorHandler {
                       std::vector<Buffer*> buffers,
                       std::uint32_t frame = 0,
                       std::uint32_t set = 0) = 0;
+  // Select the frame slot explicitly; repeated binds do not advance it. Use 0 for shared descriptors.
   virtual void bind(VkPipelineBindPoint bindPoint,
                     const VkPipelineLayout& pipelineLayout,
-                    const CommandBuffer& commandBuffer) = 0;
+                    const CommandBuffer& commandBuffer,
+                    std::uint32_t frame) = 0;
   virtual ~DescriptorHandler() = default;
 };
 
@@ -105,7 +107,6 @@ class DescriptorBuffer final : public DescriptorHandler {
   std::pair<int, int> _binding = {0, 0};
   int _set = 0;
   int _frame = 0;
-  int _currentBind = 0;
   int _getDescriptorSize(VkDescriptorType descriptorType);
   VkBufferUsageFlags _usage = VK_BUFFER_USAGE_SAMPLER_DESCRIPTOR_BUFFER_BIT_EXT |
                               VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT |
@@ -134,7 +135,8 @@ class DescriptorBuffer final : public DescriptorHandler {
               std::uint32_t set = 0) override;
   void bind(VkPipelineBindPoint bindPoint,
             const VkPipelineLayout& pipelineLayout,
-            const CommandBuffer& commandBuffer) override;
+            const CommandBuffer& commandBuffer,
+            std::uint32_t frame) override;
 };
 
 struct DescriptorPoolSize {
@@ -185,7 +187,6 @@ class DescriptorSet final : public DescriptorHandler {
   int _bindingNumber = 0;
   int _frame = 0;
   int _number = 0;
-  int _currentBind = 0;
 
   int _calculateDescriptorSetIndex();
   void _allocateDescriptorSetsForNextFrame();
@@ -212,7 +213,8 @@ class DescriptorSet final : public DescriptorHandler {
               std::uint32_t set = 0) override;
   void bind(VkPipelineBindPoint bindPoint,
             const VkPipelineLayout& pipelineLayout,
-            const CommandBuffer& commandBuffer) override;
+            const CommandBuffer& commandBuffer,
+            std::uint32_t frame) override;
 
   ~DescriptorSet();
 };

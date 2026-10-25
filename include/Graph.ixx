@@ -26,7 +26,6 @@ import CommandPool;
 import Buffer;
 import Device;
 import Instrumentation;
-import ResourceUploader;
 import glm;
 
 // Keep GoogleTest-generated classes in the global module
@@ -109,6 +108,7 @@ class GraphPass {
   void registerGraphElement(std::shared_ptr<GraphElement> graphElement);
   // NVRO
   GraphPassType getGraphPassType() const noexcept;
+  QueueType getQueueType() const noexcept;
   std::vector<CommandBuffer*> getCommandBuffers() const;
   std::string getName() const;
   virtual void execute(int currentFrame, const CommandBuffer& commandBuffer) = 0;
@@ -175,13 +175,12 @@ class GraphPassCompute final : public GraphPass {
  private:
   std::vector<std::string> _storageBufferInputs, _storageBufferOutputs, _indirectBufferInputs;
   std::vector<std::string> _storageTextureInputs, _storageTextureOutputs;
-  bool _separate = false;
   const Device* _device;
 
  public:
   GraphPassCompute(std::string_view name,
                    int maxFramesInFlight,
-                   bool separate,
+                   QueueType queueType,
                    const GraphStorage& graphStorage,
                    const Device& device);
   GraphPassCompute(const GraphPassCompute&) = delete;
@@ -203,7 +202,6 @@ class GraphPassCompute final : public GraphPass {
   const std::vector<std::string>& getStorageTextureInputs() const noexcept;
   const std::vector<std::string>& getStorageTextureOutputs() const noexcept;
   const std::vector<std::string>& getIndirectBufferInputs() const noexcept;
-  bool isSeparate() const noexcept;
   void execute(int currentFrame, const CommandBuffer& commandBuffer) override;
 };
 
@@ -279,15 +277,14 @@ class Graph final {
   };
 
   std::unordered_map<GraphPass*, Sync> _sync;
-  // Each queue consumes its upload waits once, at its first pass.
-  std::unordered_map<GraphPass*, std::vector<UploadTicket>> _uploadTickets;
+  // The first submission waits for external GPU work; subsequent queues depend on that submission.
+  std::vector<GpuTicket> _pendingTickets;
   std::unordered_map<GraphPass*, std::vector<std::pair<Image*, Barrier>>> _initialImageBarriers;
   GraphPass* _swapchainFirstPass = nullptr;
   VkPipelineStageFlags2 _swapchainFirstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
   VkAccessFlags2 _swapchainFirstAccessMask = 0;
 
   void _setResourceNames();
-  bool _usesSeparateQueue(GraphPass* pass);
 
  public:
   Graph(int threadsNumber, int maxFramesInFlight, const Device& device, Tracer& tracer);
@@ -299,15 +296,15 @@ class Graph final {
   void setSwapchain(Swapchain& swapchain);
   void initialize();
   GraphPassGraphic& createPassGraphic(std::string_view name);
-  GraphPassCompute& createPassCompute(std::string_view name, bool separate);
+  // Only GENERAL and COMPUTE queues are supported; other values throw std::invalid_argument.
+  GraphPassCompute& createPassCompute(std::string_view name, QueueType queueType);
   GraphPassGraphic* getPassGraphic(std::string_view name) const;
   GraphPassCompute* getPassCompute(std::string_view name) const;
   GraphStorage& getGraphStorage() const noexcept;
   int getFrameInFlight() const noexcept;
 
-  // Keep ResourceUploader alive until the GPU finishes the frame waiting on its tickets (first frame-slot reuse).
-  // Keep uploaded Buffer/Image objects alive until their last GPU use completes; tickets are copied here.
-  void calculate(std::span<const UploadTicket> uploadTickets = {});
+  // Keep ticket producers and Buffer/Image objects alive until their last GPU use completes; tickets are copied here.
+  void calculate(std::span<const GpuTicket> tickets = {});
   // true -> need to call reset; an empty graph returns false without submitting work.
   bool render();
   void reset(glm::ivec2 resolution);

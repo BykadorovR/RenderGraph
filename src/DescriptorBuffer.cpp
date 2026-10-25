@@ -396,14 +396,17 @@ void DescriptorBuffer::update(std::uint32_t binding,
 
 void DescriptorBuffer::bind(VkPipelineBindPoint bindPoint,
                             const VkPipelineLayout& pipelineLayout,
-                            const CommandBuffer& commandBuffer) {
+                            const CommandBuffer& commandBuffer,
+                            std::uint32_t frame) {
+  if (_descriptorBuffer == nullptr) throw std::runtime_error("Descriptor buffer is not initialized");
+  if (frame >= static_cast<std::uint32_t>(_frame)) throw std::out_of_range("Descriptor frame is out of range");
+
   auto bufferBinding = VkDescriptorBufferBindingInfoEXT{VK_STRUCTURE_TYPE_DESCRIPTOR_BUFFER_BINDING_INFO_EXT, nullptr,
                                                         _descriptorBuffer->getDeviceAddress(*_device), _usage};
   std::vector<VkDeviceSize> offsets(_layoutSize.size());
   auto setSize = std::reduce(_layoutSize.begin(), _layoutSize.end());
   std::exclusive_scan(_layoutSize.begin(), _layoutSize.end(), offsets.begin(), VkDeviceSize{0});
-  for (auto&& offset : offsets) offset += setSize * (_currentBind % _frame);
-  _currentBind++;
+  for (auto&& offset : offsets) offset += setSize * frame;
 
   std::vector<uint32_t> bufIndex(_layoutSize.size(), 0);
   // we use 1 buffer for the whole shader
@@ -661,11 +664,12 @@ void DescriptorSet::update(std::uint32_t binding,
 
 void DescriptorSet::bind(VkPipelineBindPoint bindPoint,
                          const VkPipelineLayout& pipelineLayout,
-                         const CommandBuffer& commandBuffer) {
-  auto&& descriptorSet = _descriptorSet[_currentBind % (_frame + 1)];
+                         const CommandBuffer& commandBuffer,
+                         std::uint32_t frame) {
+  if (frame >= _descriptorSet.size()) throw std::out_of_range("Descriptor frame is out of range");
+  const auto& descriptorSet = _descriptorSet[frame];
   vkCmdBindDescriptorSets(commandBuffer.getCommandBuffer(), bindPoint, pipelineLayout, _firstSet, descriptorSet.size(),
                           descriptorSet.data(), 0, nullptr);
-  _currentBind++;
 }
 
 DescriptorSet::~DescriptorSet() {

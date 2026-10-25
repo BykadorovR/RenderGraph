@@ -103,6 +103,8 @@ void GraphPass::reset(const std::vector<std::shared_ptr<RenderGraph::ImageView>>
 
 GraphPassType GraphPass::getGraphPassType() const noexcept { return _graphPassType; }
 
+QueueType GraphPass::getQueueType() const noexcept { return _commandPool->getType(); }
+
 std::vector<CommandBuffer*> GraphPass::getCommandBuffers() const {
   return _commandBuffers | std::views::transform([](auto& p) { return p.get(); }) | std::ranges::to<std::vector>();
 }
@@ -113,7 +115,7 @@ GraphPassGraphic::GraphPassGraphic(std::string_view name,
                                    const Device& device)
     : GraphPass(name, GraphPassType::GRAPHIC, graphStorage) {
   _device = &device;
-  _commandPool = std::make_unique<CommandPool>(QueueType::GRAPHICS, device);
+  _commandPool = std::make_unique<CommandPool>(QueueType::GENERAL, device);
   _commandBuffers.resize(maxFramesInFlight);
   std::ranges::generate(_commandBuffers, [&] { return std::make_unique<CommandBuffer>(*_commandPool, device); });
   _pipelineGraphic = std::make_unique<PipelineGraphic>();
@@ -248,13 +250,17 @@ void GraphPassGraphic::execute(int currentFrame, const CommandBuffer& commandBuf
   VkRenderingInfo renderingInfo = {};
   renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
   renderingInfo.renderArea.offset = {0, 0};
-  glm::ivec2 resolution;
-  if (!_colorTargets.empty()) {
-    resolution = _graphStorage->getImageViewHolder(_colorTargets.front()).getImageView().getImage().getResolution();
-  } else if (_depthTarget) {
-    resolution = _graphStorage->getImageViewHolder(*_depthTarget).getImageView().getImage().getResolution();
-  } else {
+  if (_colorTargets.empty() && !_depthTarget) {
     throw std::logic_error("Graphic pass has no attachments: " + _name);
+  }
+  glm::ivec2 resolution(std::numeric_limits<int>::max());
+  for (const auto& target : _colorTargets) {
+    const auto& view = _graphStorage->getImageViewHolder(target).getImageView();
+    resolution = glm::min(resolution, view.getImage().getResolution(view.getBaseMipMap()));
+  }
+  if (_depthTarget) {
+    const auto& view = _graphStorage->getImageViewHolder(*_depthTarget).getImageView();
+    resolution = glm::min(resolution, view.getImage().getResolution(view.getBaseMipMap()));
   }
   renderingInfo.renderArea.extent = VkExtent2D(resolution.x, resolution.y);
   renderingInfo.layerCount = 1;
@@ -270,15 +276,15 @@ void GraphPassGraphic::execute(int currentFrame, const CommandBuffer& commandBuf
 
 GraphPassCompute::GraphPassCompute(std::string_view name,
                                    int maxFramesInFlight,
-                                   bool separate,
+                                   QueueType queueType,
                                    const GraphStorage& graphStorage,
                                    const Device& device)
     : GraphPass(name, GraphPassType::COMPUTE, graphStorage) {
+  if (queueType != QueueType::GENERAL && queueType != QueueType::COMPUTE) {
+    throw std::invalid_argument("Compute pass requires a GENERAL or COMPUTE queue: " + std::string(name));
+  }
   _device = &device;
-  _separate = separate;
 
-  auto queueType = QueueType::GRAPHICS;
-  if (separate) queueType = QueueType::COMPUTE;
   _commandPool = std::make_unique<CommandPool>(queueType, device);
   _commandBuffers.resize(maxFramesInFlight);
   std::ranges::generate(_commandBuffers, [&] { return std::make_unique<CommandBuffer>(*_commandPool, device); });
@@ -314,8 +320,6 @@ const std::vector<std::string>& GraphPassCompute::getIndirectBufferInputs() cons
   return _indirectBufferInputs;
 }
 
-bool GraphPassCompute::isSeparate() const noexcept { return _separate; }
-
 void GraphPassCompute::execute(int currentFrame, const CommandBuffer& commandBuffer) {
   for (auto&& graphElement : _graphElements) {
     graphElement->update(currentFrame, commandBuffer);
@@ -346,10 +350,6 @@ void Graph::_setResourceNames() {
     }
   }
 }
-
-bool Graph::_usesSeparateQueue(GraphPass* pass) {
-  return pass->getGraphPassType() == GraphPassType::COMPUTE && static_cast<GraphPassCompute*>(pass)->isSeparate();
-};
 
 Graph::Graph(int threadsNumber, int maxFramesInFlight, const Device& device, Tracer& tracer)
     : _device(&device),
@@ -391,14 +391,14 @@ GraphPassGraphic& Graph::createPassGraphic(std::string_view name) {
   return static_cast<GraphPassGraphic&>(*_passes.back());
 }
 
-GraphPassCompute& Graph::createPassCompute(std::string_view name, bool separate) {
+GraphPassCompute& Graph::createPassCompute(std::string_view name, QueueType queueType) {
   auto it = std::find_if(_passes.begin(), _passes.end(),
                          [name = name](std::unique_ptr<GraphPass>& graphPass) { return graphPass->getName() == name; });
   if (it != _passes.end()) {
     throw std::logic_error("Pass name is already in use: " + std::string(name));
   }
 
-  _passes.push_back(std::make_unique<GraphPassCompute>(name, _maxFramesInFlight, separate, *_graphStorage, *_device));
+  _passes.push_back(std::make_unique<GraphPassCompute>(name, _maxFramesInFlight, queueType, *_graphStorage, *_device));
   return static_cast<GraphPassCompute&>(*_passes.back());
 }
 
@@ -648,10 +648,7 @@ void Graph::print() const {
     std::cout << "Name: " << value->getName()
               << ", Stage: " << (value->getGraphPassType() == GraphPassType::GRAPHIC ? "GRAPHIC" : "COMPUTE")
               << std::endl;
-    if (value->getGraphPassType() == GraphPassType::COMPUTE) {
-      const auto* computePass = static_cast<GraphPassCompute*>(value);
-      std::cout << " separate: " << (computePass->isSeparate() ? "true" : "false") << std::endl;
-    }
+    std::cout << " queue: " << (value->getQueueType() == QueueType::COMPUTE ? "COMPUTE" : "GENERAL") << std::endl;
     const auto syncIt = _sync.find(value);
     if (syncIt != _sync.end()) {
       const auto& sync = syncIt->second;
@@ -701,8 +698,17 @@ void Graph::print() const {
   std::cout << "========================================" << std::endl;
 }
 
-void Graph::calculate(std::span<const UploadTicket> uploadTickets) {
+void Graph::calculate(std::span<const GpuTicket> tickets) {
   const auto cpuTrace = _tracer->traceCPU("Graph.calculate");
+  // Tickets from one producer share a timeline semaphore; its highest value covers all its earlier batches.
+  for (const auto& ticket : tickets) {
+    const auto pending = std::ranges::find(_pendingTickets, ticket.semaphore, &GpuTicket::semaphore);
+    if (pending == _pendingTickets.end()) {
+      _pendingTickets.push_back(ticket);
+    } else {
+      pending->value = std::max(pending->value, ticket.value);
+    }
+  }
   // store resources in a convinient way
   _resources.clear();
   _passesOrdered.clear();
@@ -979,7 +985,7 @@ void Graph::calculate(std::span<const UploadTicket> uploadTickets) {
   std::unordered_set<VkQueue> collectionQueues;
   GraphPass* previousPass = nullptr;
   for (auto&& pass : _passesOrdered) {
-    const QueueType queueType = _usesSeparateQueue(pass) ? QueueType::COMPUTE : QueueType::GRAPHICS;
+    const QueueType queueType = pass->getQueueType();
     _passQueueTypes.emplace(pass, queueType);
     if (collectionQueues.insert(_device->getQueue(queueType)).second) {
       _collectionPasses.insert(pass);
@@ -1066,25 +1072,6 @@ void Graph::calculate(std::span<const UploadTicket> uploadTickets) {
           &image, makeLayoutBarrier(image, image.getImageLayout(), VK_IMAGE_LAYOUT_GENERAL,
                                     {VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0}, layout.usage));
     }
-  }
-
-  // Collect all upload tickets and reassign them to the first pass using their destination queue.
-  // This ensures uploads are synchronized before the queue starts executing graph passes.
-  std::vector<UploadTicket> pendingUploads(uploadTickets.begin(), uploadTickets.end());
-  for (auto& [pass, tickets] : _uploadTickets) {
-    pendingUploads.insert(pendingUploads.end(), std::make_move_iterator(tickets.begin()),
-                          std::make_move_iterator(tickets.end()));
-  }
-  _uploadTickets.clear();
-  for (auto& ticket : pendingUploads) {
-    const VkQueue destinationQueue = _device->getQueue(ticket.destinationQueueType);
-    const auto passIt = std::ranges::find_if(_passesOrdered, [this, destinationQueue](GraphPass* pass) {
-      return _device->getQueue(_passQueueTypes.at(pass)) == destinationQueue;
-    });
-    if (passIt == _passesOrdered.end()) {
-      throw std::logic_error("Upload ticket destination queue is not used by the graph");
-    }
-    _uploadTickets[*passIt].push_back(std::move(ticket));
   }
 }
 
@@ -1221,6 +1208,12 @@ bool Graph::render() {
   std::vector<CommandBuffer*> commandBufferSubmit;
   std::vector<VkSemaphore> signalSemaphores;
   std::vector<VkSemaphoreSubmitInfo> waitSemaphores;
+  for (const auto& ticket : _pendingTickets) {
+    waitSemaphores.push_back({.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+                              .semaphore = ticket.semaphore,
+                              .value = ticket.value,
+                              .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT});
+  }
   GraphPass* previousPass = nullptr;
   for (auto&& [pass, futureTask] : std::views::zip(_passesOrdered, futureTasks)) {
     if (futureTask.valid()) {
@@ -1239,23 +1232,6 @@ bool Graph::render() {
 
     previousPass = pass;
     commandBufferSubmit.push_back(pass->getCommandBuffers()[_frameInFlight]);
-    if (const auto uploadIt = _uploadTickets.find(pass); uploadIt != _uploadTickets.end()) {
-      for (const auto& ticket : uploadIt->second) {
-        // One uploader shares a timeline semaphore across its tickets; waiting for the largest value covers them all.
-        // A submit's wait list must not contain the same semaphore more than once.
-        const auto waitIt = std::ranges::find(waitSemaphores, ticket.semaphore, &VkSemaphoreSubmitInfo::semaphore);
-        if (waitIt != waitSemaphores.end()) {
-          waitIt->value = std::max(waitIt->value, ticket.value);
-        } else {
-          waitSemaphores.push_back({
-              .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
-              .semaphore = ticket.semaphore,
-              .value = ticket.value,
-              .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-          });
-        }
-      }
-    }
     if (const auto syncIt = _sync.find(pass); syncIt != _sync.end()) {
       for (Semaphore* semaphore : syncIt->second.getWaitSemaphores()) {
         waitSemaphores.push_back({
@@ -1289,7 +1265,7 @@ bool Graph::render() {
   signalSemaphores.push_back(_semaphoreInFlight->getSemaphore());
 
   submitPassToQueue(_passesOrdered.back(), commandBufferSubmit, waitSemaphores, signalSemaphores, signalValues);
-  _uploadTickets.clear();
+  _pendingTickets.clear();
 
   ++_valueSemaphoreInFlight;
 
@@ -1308,7 +1284,7 @@ bool Graph::render() {
         .pSwapchains = swapChains,
         .pImageIndices = &swapchainIndex,
     };
-    auto result = vkQueuePresentKHR(_device->getQueue(QueueType::PRESENT), &presentInfo);
+    auto result = vkQueuePresentKHR(_device->getQueue(QueueType::GENERAL), &presentInfo);
 
     if (result == VK_ERROR_OUT_OF_DATE_KHR) {
       return true;
