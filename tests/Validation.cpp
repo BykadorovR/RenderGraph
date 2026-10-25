@@ -339,7 +339,7 @@ class GpuDrivenComputeElement final : public RenderGraph::GraphElement {
 
   void draw(int currentFrame, const RenderGraph::CommandBuffer& commandBuffer) override {
     vkCmdBindPipeline(commandBuffer.getCommandBuffer(), VK_PIPELINE_BIND_POINT_COMPUTE, _pipeline.getPipeline());
-    _descriptorSet->bind(VK_PIPELINE_BIND_POINT_COMPUTE, _pipeline.getPipelineLayout(), commandBuffer);
+    _descriptorSet->bind(VK_PIPELINE_BIND_POINT_COMPUTE, _pipeline.getPipelineLayout(), commandBuffer, currentFrame);
     vkCmdDispatch(commandBuffer.getCommandBuffer(), 1, 1, 1);
   }
 
@@ -419,7 +419,7 @@ class GpuDrivenGraphicElement final : public RenderGraph::GraphElement {
   void draw(int currentFrame, const RenderGraph::CommandBuffer& commandBuffer) override {
     const VkCommandBuffer vkCommandBuffer = commandBuffer.getCommandBuffer();
     vkCmdBindPipeline(vkCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, _pipeline.getPipeline());
-    _descriptorSet->bind(VK_PIPELINE_BIND_POINT_GRAPHICS, _pipeline.getPipelineLayout(), commandBuffer);
+    _descriptorSet->bind(VK_PIPELINE_BIND_POINT_GRAPHICS, _pipeline.getPipelineLayout(), commandBuffer, currentFrame);
 
     const VkViewport viewport{
         .x = 0.0f,
@@ -939,7 +939,7 @@ TEST(ValidationTest, DescriptorSetBindsAtNonZeroSet) {
     descriptorSet.add({&buffer});
     commandBuffer.beginCommands();
     descriptorSet.initialize(commandBuffer);
-    descriptorSet.bind(VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, commandBuffer);
+    descriptorSet.bind(VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, commandBuffer, 0);
     commandBuffer.endCommands();
   }
 
@@ -1001,7 +1001,7 @@ TEST(ValidationTest, DescriptorBufferBindsAtNonZeroSet) {
     descriptorBuffer.add({&buffer});
     commandBuffer.beginCommands();
     descriptorBuffer.initialize(commandBuffer);
-    descriptorBuffer.bind(VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, commandBuffer);
+    descriptorBuffer.bind(VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, commandBuffer, 0);
     commandBuffer.endCommands();
   }
 
