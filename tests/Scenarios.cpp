@@ -475,7 +475,8 @@ TEST(ScenarioTest, BufferQueueChangesUseSemaphores) {
                                                               allocator, device));
     }
 
-    graph.getGraphStorage().add(name, buffers);
+    graph.getGraphStorage().add(name, std::make_unique<RenderGraph::BufferHandler>(
+                                          std::move(buffers), [&graph] { return graph.getFrameInFlight(); }));
   };
 
   addStorageBuffers("X");
@@ -542,7 +543,8 @@ TEST(ScenarioTest, BufferQueueChangesSurviveFrameSlotReuse) {
     buffers.push_back(
         std::make_unique<RenderGraph::Buffer>(16, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 0, allocator, device));
   }
-  graph.getGraphStorage().add("State", buffers);
+  graph.getGraphStorage().add("State", std::make_unique<RenderGraph::BufferHandler>(
+                                           std::move(buffers), [&graph] { return graph.getFrameInFlight(); }));
 
   auto& computePass = graph.createPassCompute("UpdateState", RenderGraph::QueueType::COMPUTE);
   computePass.addStorageBufferInput("State");
@@ -592,7 +594,8 @@ TEST(ScenarioTest, SwapchainGraphCanEndOnCompute) {
                                                             VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
                                                             allocator, device));
   }
-  graph.getGraphStorage().add("Data", buffers);
+  graph.getGraphStorage().add("Data", std::make_unique<RenderGraph::BufferHandler>(
+                                          std::move(buffers), [&graph] { return graph.getFrameInFlight(); }));
 
   auto& computePass = graph.createPassCompute("Compute", RenderGraph::QueueType::COMPUTE);
   computePass.addStorageBufferOutput("Data");
@@ -631,7 +634,8 @@ TEST(ScenarioTest, GraphicsPassBufferInputs) {
       buffers.push_back(std::make_unique<RenderGraph::Buffer>(
           1024, usage, VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT, allocator, device));
     }
-    graph.getGraphStorage().add(name, buffers);
+    graph.getGraphStorage().add(name, std::make_unique<RenderGraph::BufferHandler>(
+                                          std::move(buffers), [&graph] { return graph.getFrameInFlight(); }));
   };
 
   addBuffers("VisibleObjects", VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
@@ -673,10 +677,12 @@ TEST(ScenarioTest, GraphicsPassBufferInputs) {
   const auto barriers = graph._sync.at(&drawPass).getBarriers();
   ASSERT_EQ(barriers.size(), 4);
 
-  const VkBuffer visibleObjectsBuffer = graph.getGraphStorage().getBuffer("VisibleObjects")[0]->getBuffer();
-  const VkBuffer indirectCommandsBuffer = graph.getGraphStorage().getBuffer("IndirectCommands")[0]->getBuffer();
-  const VkBuffer vertexBuffer = graph.getGraphStorage().getBuffer("Vertices")[0]->getBuffer();
-  const VkBuffer indexBuffer = graph.getGraphStorage().getBuffer("Indices")[0]->getBuffer();
+  const VkBuffer visibleObjectsBuffer =
+      graph.getGraphStorage().getBufferHandler("VisibleObjects").getBuffer().getBuffer();
+  const VkBuffer indirectCommandsBuffer =
+      graph.getGraphStorage().getBufferHandler("IndirectCommands").getBuffer().getBuffer();
+  const VkBuffer vertexBuffer = graph.getGraphStorage().getBufferHandler("Vertices").getBuffer().getBuffer();
+  const VkBuffer indexBuffer = graph.getGraphStorage().getBufferHandler("Indices").getBuffer().getBuffer();
 
   bool foundStorageBarrier = false;
   bool foundIndirectBarrier = false;
@@ -728,20 +734,22 @@ TEST(ScenarioTest, ComputePassIndirectBufferInput) {
   RenderGraph::Swapchain swapchain(resolution, allocator, device);
   swapchain.initialize();
 
-  constexpr int framesInFlight = 2;
+  constexpr int framesInFlight = 3;
   RenderGraph::Tracer tracer(device);
   RenderGraph::Graph graph(2, framesInFlight, device, tracer);
   graph.setSwapchain(swapchain);
   graph.initialize();
 
   std::vector<std::unique_ptr<RenderGraph::Buffer>> indirectBuffers;
-  indirectBuffers.reserve(framesInFlight);
-  for (int frameIndex = 0; frameIndex < framesInFlight; ++frameIndex) {
+  for (int bufferIndex = 0; bufferIndex < 2; ++bufferIndex) {
     indirectBuffers.push_back(std::make_unique<RenderGraph::Buffer>(
         sizeof(VkDispatchIndirectCommand), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
         VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT, allocator, device));
   }
-  graph.getGraphStorage().add("DispatchCommands", indirectBuffers);
+  int selectedBuffer = 1;
+  graph.getGraphStorage().add(
+      "DispatchCommands", std::make_unique<RenderGraph::BufferHandler>(std::move(indirectBuffers),
+                                                                       [&selectedBuffer] { return selectedBuffer; }));
 
   auto& generatePass = graph.createPassCompute("GenerateDispatch", RenderGraph::QueueType::GENERAL);
   generatePass.addStorageBufferOutput("DispatchCommands");
@@ -774,6 +782,9 @@ TEST(ScenarioTest, ComputePassIndirectBufferInput) {
   ASSERT_EQ(barriers.front()->getBufferBarriers().size(), 1);
 
   const auto& bufferBarrier = barriers.front()->getBufferBarriers().front();
+  const auto& bufferHandler = graph.getGraphStorage().getBufferHandler("DispatchCommands");
+  EXPECT_EQ(bufferBarrier.buffer, bufferHandler.getBuffer().getBuffer());
+  EXPECT_NE(bufferBarrier.buffer, bufferHandler.getBuffers().front()->getBuffer());
   EXPECT_EQ(bufferBarrier.srcStageMask, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
   EXPECT_EQ(bufferBarrier.srcAccessMask, VK_ACCESS_2_SHADER_WRITE_BIT);
   EXPECT_EQ(bufferBarrier.dstStageMask, VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT);
@@ -812,6 +823,15 @@ TEST(ScenarioTest, ComputePassIndirectBufferInput) {
   EXPECT_EQ(inspectRewriteBarrier.srcAccessMask, VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT);
   EXPECT_EQ(inspectRewriteBarrier.dstStageMask, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
   EXPECT_EQ(inspectRewriteBarrier.dstAccessMask, VK_ACCESS_2_SHADER_READ_BIT);
+
+  for (const int index : {0, 1, 0}) {
+    selectedBuffer = index;
+    EXPECT_EQ(&bufferHandler.getBuffer(), bufferHandler.getBuffers()[index]);
+    for (auto* pass : {&dispatchPass, &inspectPass, &rewritePass, &inspectRewritePass}) {
+      const auto* barrier = graph._sync.at(pass).getBarriers().front();
+      EXPECT_EQ(barrier->getBufferBarriers().front().buffer, bufferHandler.getBuffer().getBuffer());
+    }
+  }
 }
 
 TEST(ScenarioTest, GraphReset) {
@@ -1093,7 +1113,8 @@ TEST(ScenarioTest, TraversalKeepsTransitiveProducerBeforeConsumer) {
                                                               allocator, device));
     }
 
-    graph.getGraphStorage().add(name, buffers);
+    graph.getGraphStorage().add(name, std::make_unique<RenderGraph::BufferHandler>(
+                                          std::move(buffers), [&graph] { return graph.getFrameInFlight(); }));
   };
 
   addStorageBuffers("X");
@@ -1202,7 +1223,8 @@ TEST(ScenarioTest, TraversalDiamondGraph) {
                                                               allocator, device));
     }
 
-    graph.getGraphStorage().add(name, buffers);
+    graph.getGraphStorage().add(name, std::make_unique<RenderGraph::BufferHandler>(
+                                          std::move(buffers), [&graph] { return graph.getFrameInFlight(); }));
   };
 
   addStorageBuffers("X");

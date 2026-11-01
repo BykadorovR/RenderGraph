@@ -34,8 +34,8 @@ void GraphStorage::add(std::string_view name,
   _images[std::string(name)] = {.imageViewHolder = std::move(imageHolder), .resizePolicy = resizePolicy};
 }
 
-void GraphStorage::add(std::string_view name, std::vector<std::unique_ptr<Buffer>>& buffers) {
-  _buffers[std::string(name)] = std::move(buffers);
+void GraphStorage::add(std::string_view name, std::unique_ptr<BufferHandler> bufferHandler) {
+  _buffers[std::string(name)] = std::move(bufferHandler);
 }
 
 void GraphStorage::reset(std::vector<std::shared_ptr<ImageView>> oldSwapchain,
@@ -76,12 +76,10 @@ const ImageViewHolder& GraphStorage::getImageViewHolder(std::string_view name) c
   return *_images.at(std::string(name)).imageViewHolder;
 }
 
-bool GraphStorage::containsBuffer(std::string_view name) const { return _buffers.contains(std::string(name)); }
+bool GraphStorage::containsBufferHandler(std::string_view name) const { return _buffers.contains(std::string(name)); }
 
-std::vector<Buffer*> GraphStorage::getBuffer(std::string_view name) const {
-  // std::ranges::to makes vector by itself
-  return _buffers.at(std::string(name)) | std::views::transform([](auto& p) { return p.get(); }) |
-         std::ranges::to<std::vector>();
+const BufferHandler& GraphStorage::getBufferHandler(std::string_view name) const {
+  return *_buffers.at(std::string(name));
 }
 
 GraphPass::GraphPass(std::string_view name, GraphPassType graphPassType, const GraphStorage& graphStorage)
@@ -331,7 +329,7 @@ void Graph::_setResourceNames() {
   for (const auto& resourceEntry : _resources) {
     for (const Resource& resource : resourceEntry.second.getResources()) {
       if (resource.type == Resource::Type::BUFFER) {
-        const auto buffers = _graphStorage->getBuffer(resource.name);
+        const auto buffers = _graphStorage->getBufferHandler(resource.name).getBuffers();
         for (std::size_t index = 0; index < buffers.size(); ++index) {
           _tracer->setObjectName(VK_OBJECT_TYPE_BUFFER, std::bit_cast<uint64_t>(buffers[index]->getBuffer()),
                                  resource.name + ".buffer[" + std::to_string(index) + "]");
@@ -378,7 +376,9 @@ void Graph::initialize() { _semaphoreInFlight = std::make_unique<Semaphore>(VK_S
 
 GraphStorage& Graph::getGraphStorage() const noexcept { return *_graphStorage; }
 
-int Graph::getFrameInFlight() const noexcept { return _frameInFlight; }
+int Graph::getFrameInFlight() const noexcept { return static_cast<int>(getFrameNumber() % _maxFramesInFlight); }
+
+uint64_t Graph::getFrameNumber() const noexcept { return _frameNumber; }
 
 GraphPassGraphic& Graph::createPassGraphic(std::string_view name) {
   auto it = std::find_if(_passes.begin(), _passes.end(),
@@ -512,10 +512,10 @@ void Graph::print() const {
         if (resource.type != Resource::Type::BUFFER) {
           continue;
         }
-        if (!_graphStorage->containsBuffer(resource.name)) {
+        if (!_graphStorage->containsBufferHandler(resource.name)) {
           continue;
         }
-        for (const auto* buffer : _graphStorage->getBuffer(resource.name)) {
+        for (const auto* buffer : _graphStorage->getBufferHandler(resource.name).getBuffers()) {
           if (buffer->getBuffer() == targetBuffer) {
             return resource.name;
           }
@@ -564,11 +564,11 @@ void Graph::print() const {
   auto printBuffers = [this](const auto& keys, std::string_view keyTag) {
     for (const auto& name : keys) {
       std::cout << keyTag << name << "; ";
-      if (!_graphStorage->containsBuffer(name)) {
+      if (!_graphStorage->containsBufferHandler(name)) {
         std::cout << "<not registered>" << std::endl;
         continue;
       }
-      const auto buffers = _graphStorage->getBuffer(name);
+      const auto buffers = _graphStorage->getBufferHandler(name).getBuffers();
       if (buffers.empty()) {
         std::cout << "<empty>" << std::endl;
         continue;
@@ -615,7 +615,7 @@ void Graph::print() const {
 
     for (const auto& bufferBarrier : barrier->getBufferBarriers()) {
       std::cout << "  [" << barrierIndex << "] "
-                << "buffer " << findBufferName(bufferBarrier.buffer) << "[frame " << _frameInFlight << "] ("
+                << "buffer " << findBufferName(bufferBarrier.buffer) << "[frame " << getFrameInFlight() << "] ("
                 << bufferBarrier.buffer << ") memory " << accessToString(bufferBarrier.srcAccessMask) << " -> "
                 << accessToString(bufferBarrier.dstAccessMask) << std::endl;
     }
@@ -919,14 +919,15 @@ void Graph::calculate(std::span<const GpuTicket> tickets) {
                                 VkPipelineStageFlags2 srcStageMask, VkAccessFlags2 srcAccessMask,
                                 VkPipelineStageFlags2 dstStageMask, VkAccessFlags2 dstAccessMask) {
     if (resourceType == Resource::Type::BUFFER) {
-      const auto buffers = _graphStorage->getBuffer(resourceName);
-      std::vector<Barrier> barriers(_maxFramesInFlight);
-      for (int frameIndex = 0; frameIndex < _maxFramesInFlight; ++frameIndex) {
-        barriers[frameIndex].addBuffer(buffers[frameIndex], srcStageMask, srcAccessMask, dstStageMask, dstAccessMask, 0,
-                                       buffers[frameIndex]->getSize());
+      const auto& bufferHandler = _graphStorage->getBufferHandler(resourceName);
+      const auto buffers = bufferHandler.getBuffers();
+      std::vector<Barrier> barriers(buffers.size());
+      for (std::size_t bufferIndex = 0; bufferIndex < buffers.size(); ++bufferIndex) {
+        barriers[bufferIndex].addBuffer(buffers[bufferIndex], srcStageMask, srcAccessMask, dstStageMask, dstAccessMask,
+                                        0, buffers[bufferIndex]->getSize());
       }
 
-      _sync[barrierPass].addBarrier(barriers, [this]() { return _frameInFlight; });
+      _sync[barrierPass].addBarrier(barriers, bufferHandler.getIndexFunction());
 
       return;
     }
@@ -970,7 +971,7 @@ void Graph::calculate(std::span<const GpuTicket> tickets) {
       });
     });
     _swapchainFirstPass = acquireWaitIt != _passesOrdered.end() ? *acquireWaitIt : root;
-    _sync[_swapchainFirstPass].addWaitSemaphore(_semaphoreImageAvailable, [this]() { return _frameInFlight; });
+    _sync[_swapchainFirstPass].addWaitSemaphore(_semaphoreImageAvailable, [this]() { return getFrameInFlight(); });
   }
 
   // Track resource hazards across passes.
@@ -998,8 +999,8 @@ void Graph::calculate(std::span<const GpuTicket> tickets) {
       std::vector<std::shared_ptr<Semaphore>> semaphoreQueueType(_maxFramesInFlight);
       std::ranges::generate(semaphoreQueueType,
                             [&] { return std::make_shared<Semaphore>(VK_SEMAPHORE_TYPE_BINARY, *_device); });
-      _sync[pass].addWaitSemaphore(semaphoreQueueType, [this]() { return _frameInFlight; });
-      _sync[previousPass].addSignalSemaphore(semaphoreQueueType, [this]() { return _frameInFlight; });
+      _sync[pass].addWaitSemaphore(semaphoreQueueType, [this]() { return getFrameInFlight(); });
+      _sync[previousPass].addSignalSemaphore(semaphoreQueueType, [this]() { return getFrameInFlight(); });
 
       // clear all barriers because of semaphore
       imageHistory.clear();
@@ -1083,9 +1084,9 @@ bool Graph::render() {
   _tracer->markFrame();
   const auto cpuTrace = _tracer->traceCPU("Graph.render");
   // timeline semaphore instead of fence
-  if (_valueSemaphoreInFlight > _maxFramesInFlight) {
+  if (_frameNumber >= _maxFramesInFlight) {
     const auto waitCpuTrace = _tracer->traceCPU("Graph.waitForFrame");
-    uint64_t waitValue = _valueSemaphoreInFlight - _maxFramesInFlight;
+    uint64_t waitValue = _frameNumber - _maxFramesInFlight + 1;
     auto semaphoreInFlight = _semaphoreInFlight->getSemaphore();
 
     VkSemaphoreWaitInfo waitInfo{
@@ -1103,7 +1104,7 @@ bool Graph::render() {
 
   uint32_t swapchainIndex = 0;
   if (_swapchain != nullptr) {
-    auto status = _swapchain->acquireNextImage(*_semaphoreImageAvailable[_frameInFlight]);
+    auto status = _swapchain->acquireNextImage(*_semaphoreImageAvailable[getFrameInFlight()]);
     if (status == VK_ERROR_OUT_OF_DATE_KHR) {
       return true;
     }
@@ -1117,7 +1118,7 @@ bool Graph::render() {
   const Sync emptySync;
   std::vector<std::future<void>> futureTasks =
       _passesOrdered | std::views::transform([this, &emptySync, swapchainIndex](GraphPass* pass) {
-        auto commandBuffer = pass->getCommandBuffers()[_frameInFlight];
+        auto commandBuffer = pass->getCommandBuffers()[getFrameInFlight()];
         if (!commandBuffer->getActive()) {
           commandBuffer->beginCommands();
         }
@@ -1157,7 +1158,7 @@ bool Graph::render() {
           for (const Barrier* barrier : sync.getBarriers()) {
             barrier->execute(commandBuffer->getCommandBuffer());
           }
-          pass->execute(_frameInFlight, *commandBuffer);
+          pass->execute(getFrameInFlight(), *commandBuffer);
         });
       }) |
       std::ranges::to<std::vector<std::future<void>>>();
@@ -1231,7 +1232,7 @@ bool Graph::render() {
     }
 
     previousPass = pass;
-    commandBufferSubmit.push_back(pass->getCommandBuffers()[_frameInFlight]);
+    commandBufferSubmit.push_back(pass->getCommandBuffers()[getFrameInFlight()]);
     if (const auto syncIt = _sync.find(pass); syncIt != _sync.end()) {
       for (Semaphore* semaphore : syncIt->second.getWaitSemaphores()) {
         waitSemaphores.push_back({
@@ -1261,15 +1262,13 @@ bool Graph::render() {
   }
 
   std::vector<uint64_t> signalValues(signalSemaphores.size() + 1, 0);
-  signalValues[signalSemaphores.size()] = _valueSemaphoreInFlight;
+  signalValues[signalSemaphores.size()] = _frameNumber + 1;
   signalSemaphores.push_back(_semaphoreInFlight->getSemaphore());
 
   submitPassToQueue(_passesOrdered.back(), commandBufferSubmit, waitSemaphores, signalSemaphores, signalValues);
   _pendingTickets.clear();
 
-  ++_valueSemaphoreInFlight;
-
-  _frameInFlight = (_valueSemaphoreInFlight - 1) % _maxFramesInFlight;
+  ++_frameNumber;
 
   if (_swapchain != nullptr) {
     auto semaphoreRenderFinished = _semaphoreRenderFinished[swapchainIndex]->getSemaphore();

@@ -50,7 +50,7 @@ class GraphStorage final {
     ImageResizePolicy resizePolicy;
   };
   std::unordered_map<std::string, ImageResource> _images;
-  std::unordered_map<std::string, std::vector<std::unique_ptr<Buffer>>> _buffers;
+  std::unordered_map<std::string, std::unique_ptr<BufferHandler>> _buffers;
 
  public:
   GraphStorage() = default;
@@ -63,16 +63,14 @@ class GraphStorage final {
   void add(std::string_view name,
            std::unique_ptr<ImageViewHolder> imageViewHolder,
            ImageResizePolicy resizePolicy = ImageResizePolicy::FIXED);
-  // not const because will do std::move
-  void add(std::string_view name, std::vector<std::unique_ptr<Buffer>>& buffers);
+  void add(std::string_view name, std::unique_ptr<BufferHandler> bufferHandler);
   void reset(std::vector<std::shared_ptr<ImageView>> oldSwapchain,
              std::vector<std::shared_ptr<ImageView>> newSwapchain);
   std::string find(const std::vector<std::shared_ptr<ImageView>>& imageViews);
   bool containsImageViewHolder(std::string_view name) const;
   const ImageViewHolder& getImageViewHolder(std::string_view name) const;
-  bool containsBuffer(std::string_view name) const;
-  // NVRO
-  std::vector<Buffer*> getBuffer(std::string_view name) const;
+  bool containsBufferHandler(std::string_view name) const;
+  const BufferHandler& getBufferHandler(std::string_view name) const;
 };
 
 class GraphElement {
@@ -228,9 +226,8 @@ class Graph final {
   // special semaphores
   std::vector<std::shared_ptr<Semaphore>> _semaphoreRenderFinished, _semaphoreImageAvailable;
   std::unique_ptr<Semaphore> _semaphoreInFlight;
-  uint64_t _valueSemaphoreInFlight = 1;
+  uint64_t _frameNumber = 0;
   int _maxFramesInFlight;
-  int _frameInFlight = 0;
 
   // resources per pass
   struct Resource {
@@ -302,6 +299,7 @@ class Graph final {
   GraphPassCompute* getPassCompute(std::string_view name) const;
   GraphStorage& getGraphStorage() const noexcept;
   int getFrameInFlight() const noexcept;
+  uint64_t getFrameNumber() const noexcept;
 
   // Keep ticket producers and Buffer/Image objects alive until their last GPU use completes; tickets are copied here.
   void calculate(std::span<const GpuTicket> tickets = {});

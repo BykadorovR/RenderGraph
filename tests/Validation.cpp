@@ -554,7 +554,8 @@ TEST_P(UploadQueueTest, UploadedBuffersAndMipmapsReachComputeGraph) {
         mapped ? VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT : 0,
         allocator, device));
     const auto source = buffers.front().get();
-    graph.getGraphStorage().add("Data", buffers);
+    graph.getGraphStorage().add("Data", std::make_unique<RenderGraph::BufferHandler>(
+                                            std::move(buffers), [&graph] { return graph.getFrameInFlight(); }));
     auto image = std::make_unique<RenderGraph::Image>(allocator, device);
     image->createImage(VK_FORMAT_R8G8B8A8_UNORM, {4, 4}, 3, 1, VK_IMAGE_ASPECT_COLOR_BIT,
                        VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
@@ -1142,7 +1143,8 @@ TEST_P(ValidationScenarioTest, FullGraphPipelineHasNoValidationErrorsAcrossReset
           4096, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT, allocator,
           device));
     }
-    graph.getGraphStorage().add("Data", storageBuffers);
+    graph.getGraphStorage().add("Data", std::make_unique<RenderGraph::BufferHandler>(
+                                            std::move(storageBuffers), [&graph] { return graph.getFrameInFlight(); }));
 
     std::vector<std::unique_ptr<RenderGraph::Buffer>> indirectBuffers;
     indirectBuffers.reserve(framesInFlight);
@@ -1151,7 +1153,9 @@ TEST_P(ValidationScenarioTest, FullGraphPipelineHasNoValidationErrorsAcrossReset
           4096, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
           VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT, allocator, device));
     }
-    graph.getGraphStorage().add("IndirectCommands", indirectBuffers);
+    graph.getGraphStorage().add("IndirectCommands",
+                                std::make_unique<RenderGraph::BufferHandler>(
+                                    std::move(indirectBuffers), [&graph] { return graph.getFrameInFlight(); }));
 
     auto graphElement = std::make_shared<ValidationGraphElement>();
 
@@ -1276,7 +1280,8 @@ TEST_P(ValidationScenarioTest, GpuDrivenIndexedIndirectCountDrawsTriangle) {
         buffers.push_back(std::make_unique<RenderGraph::Buffer>(
             size, usage, VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT, allocator, device));
       }
-      graph.getGraphStorage().add(name, buffers);
+      graph.getGraphStorage().add(name, std::make_unique<RenderGraph::BufferHandler>(
+                                            std::move(buffers), [&graph] { return graph.getFrameInFlight(); }));
     };
 
     addBuffers("Positions", sizeof(float) * 4 * 3, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
@@ -1286,10 +1291,10 @@ TEST_P(ValidationScenarioTest, GpuDrivenIndexedIndirectCountDrawsTriangle) {
     addBuffers("DrawCounts", sizeof(uint32_t),
                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT);
 
-    const auto positions = graph.getGraphStorage().getBuffer("Positions");
-    const auto indices = graph.getGraphStorage().getBuffer("Indices");
-    const auto drawCommands = graph.getGraphStorage().getBuffer("DrawCommands");
-    const auto drawCounts = graph.getGraphStorage().getBuffer("DrawCounts");
+    const auto positions = graph.getGraphStorage().getBufferHandler("Positions").getBuffers();
+    const auto indices = graph.getGraphStorage().getBufferHandler("Indices").getBuffers();
+    const auto drawCommands = graph.getGraphStorage().getBufferHandler("DrawCommands").getBuffers();
+    const auto drawCounts = graph.getGraphStorage().getBufferHandler("DrawCounts").getBuffers();
 
     auto& generatePass = graph.createPassCompute("GenerateDraw", computeQueueType);
     generatePass.addStorageBufferOutput("Positions");
@@ -1361,7 +1366,8 @@ TEST_P(ValidationScenarioTest, GraphicsStorageBufferBarriersUseDefaultDeviceFeat
       imageView->createImageView(VK_IMAGE_VIEW_TYPE_2D, 0, 0);
       colorImageViews.push_back(std::move(imageView));
     }
-    graph.getGraphStorage().add("Data", buffers);
+    graph.getGraphStorage().add("Data", std::make_unique<RenderGraph::BufferHandler>(
+                                            std::move(buffers), [&graph] { return graph.getFrameInFlight(); }));
     graph.getGraphStorage().add("Color", std::make_unique<RenderGraph::ImageViewHolder>(
                                              colorImageViews, [&graph]() { return graph.getFrameInFlight(); }));
 
@@ -1394,15 +1400,19 @@ TEST_P(ValidationScenarioTest, ComputePassesWithoutResourcesRunAcrossFrames) {
 
   ValidationMessenger validationMessenger(instance.getInstance().instance, validationErrors);
 
-  {
-    constexpr int framesInFlight = 2;
-    constexpr int frameCount = framesInFlight + 1;
+  for (const int framesInFlight : {2, 3}) {
+    SCOPED_TRACE(framesInFlight);
+    const int frameCount = framesInFlight + 1;
     RenderGraph::Device device(instance);
     device.initialize();
     RenderGraph::MemoryAllocator allocator(device, instance);
     RenderGraph::Tracer tracer(device);
     RenderGraph::Graph graph(2, framesInFlight, device, tracer);
     graph.initialize();
+    EXPECT_EQ(graph.getFrameNumber(), 0);
+    EXPECT_EQ(graph.getFrameInFlight(), 0);
+    ASSERT_FALSE(graph.render());
+    EXPECT_EQ(graph.getFrameNumber(), 0);
 
     const std::array passes{&graph.createPassCompute("Before", RenderGraph::QueueType::GENERAL),
                             &graph.createPassCompute("Middle", GetParam()),
@@ -1413,7 +1423,10 @@ TEST_P(ValidationScenarioTest, ComputePassesWithoutResourcesRunAcrossFrames) {
     }
     ASSERT_NO_THROW(graph.calculate());
     for (int frameIndex = 0; frameIndex < frameCount; ++frameIndex) {
+      EXPECT_EQ(graph.getFrameNumber(), frameIndex);
+      EXPECT_EQ(graph.getFrameInFlight(), frameIndex % framesInFlight);
       ASSERT_FALSE(graph.render());
+      EXPECT_EQ(graph.getFrameNumber(), frameIndex + 1);
     }
     ASSERT_EQ(vkDeviceWaitIdle(device.getLogicalDevice()), VK_SUCCESS);
     EXPECT_EQ(graphElement->getDrawCount(), frameCount * 3);
@@ -1424,12 +1437,17 @@ TEST_P(ValidationScenarioTest, ComputePassesWithoutResourcesRunAcrossFrames) {
       buffers.push_back(
           std::make_unique<RenderGraph::Buffer>(16, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 0, allocator, device));
     }
-    graph.getGraphStorage().add("Data", buffers);
+    graph.getGraphStorage().add("Data", std::make_unique<RenderGraph::BufferHandler>(
+                                            std::move(buffers), [&graph] { return graph.getFrameInFlight(); }));
     passes.front()->addStorageBufferOutput("Data");
     passes.back()->addStorageBufferInput("Data");
     ASSERT_NO_THROW(graph.calculate());
+    EXPECT_EQ(graph.getFrameNumber(), frameCount);
     for (int frameIndex = 0; frameIndex < frameCount; ++frameIndex) {
+      EXPECT_EQ(graph.getFrameNumber(), frameCount + frameIndex);
+      EXPECT_EQ(graph.getFrameInFlight(), (frameCount + frameIndex) % framesInFlight);
       ASSERT_FALSE(graph.render());
+      EXPECT_EQ(graph.getFrameNumber(), frameCount + frameIndex + 1);
     }
     ASSERT_EQ(vkDeviceWaitIdle(device.getLogicalDevice()), VK_SUCCESS);
     EXPECT_EQ(graphElement->getDrawCount(), frameCount * 6);
@@ -1473,7 +1491,8 @@ TEST(ValidationTest, ComputeGraphRunsWithoutSwapchain) {
             VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT, allocator,
             device));
       }
-      graph.getGraphStorage().add(name, buffers);
+      graph.getGraphStorage().add(name, std::make_unique<RenderGraph::BufferHandler>(
+                                            std::move(buffers), [&graph] { return graph.getFrameInFlight(); }));
     };
 
     addMappedBuffers("Positions", sizeof(float) * 4 * 3);
@@ -1481,10 +1500,10 @@ TEST(ValidationTest, ComputeGraphRunsWithoutSwapchain) {
     addMappedBuffers("DrawCommands", sizeof(VkDrawIndexedIndirectCommand));
     addMappedBuffers("DrawCounts", sizeof(uint32_t));
 
-    const auto positions = graph.getGraphStorage().getBuffer("Positions");
-    const auto indices = graph.getGraphStorage().getBuffer("Indices");
-    const auto drawCommands = graph.getGraphStorage().getBuffer("DrawCommands");
-    const auto drawCounts = graph.getGraphStorage().getBuffer("DrawCounts");
+    const auto positions = graph.getGraphStorage().getBufferHandler("Positions").getBuffers();
+    const auto indices = graph.getGraphStorage().getBufferHandler("Indices").getBuffers();
+    const auto drawCommands = graph.getGraphStorage().getBufferHandler("DrawCommands").getBuffers();
+    const auto drawCounts = graph.getGraphStorage().getBufferHandler("DrawCounts").getBuffers();
 
     std::vector<std::shared_ptr<RenderGraph::ImageView>> storageImageViews;
     storageImageViews.reserve(framesInFlight);
@@ -1563,7 +1582,8 @@ TEST_P(ValidationScenarioTest, GpuTicketsGateGraphExecution) {
       auto& sourceUploader = std::string_view(name) == "First" ? uploader : transferUploader;
       sourceUploader.upload(*buffers.front(), std::as_bytes(std::span(data)));
       tickets.push_back(sourceUploader.submit());
-      graph.getGraphStorage().add(name, buffers);
+      graph.getGraphStorage().add(name, std::make_unique<RenderGraph::BufferHandler>(
+                                            std::move(buffers), [&graph] { return graph.getFrameInFlight(); }));
     }
 
     RenderGraph::Image image(allocator, device);
@@ -1635,12 +1655,13 @@ TEST_P(ValidationScenarioTest, GpuTicketsGateGraphExecution) {
 
     auto& firstPass = graph.createPassCompute("First readback", GetParam());
     firstPass.addStorageBufferInput("First");
-    firstPass.registerGraphElement(std::make_shared<ReadbackElement>(
-        graph.getGraphStorage().getBuffer("First").front()->getBuffer(), firstReadback.getBuffer(), image.getImage()));
+    firstPass.registerGraphElement(
+        std::make_shared<ReadbackElement>(graph.getGraphStorage().getBufferHandler("First").getBuffer().getBuffer(),
+                                          firstReadback.getBuffer(), image.getImage()));
     auto& secondPass = graph.createPassCompute("Second readback", RenderGraph::QueueType::GENERAL);
     secondPass.addStorageBufferInput("Second");
     secondPass.registerGraphElement(std::make_shared<ReadbackElement>(
-        graph.getGraphStorage().getBuffer("Second").front()->getBuffer(), secondReadback.getBuffer()));
+        graph.getGraphStorage().getBufferHandler("Second").getBuffer().getBuffer(), secondReadback.getBuffer()));
     // Repeated and older tickets for one uploader must merge into one wait for its latest batch.
     std::ranges::reverse(tickets);
     graph.calculate(tickets);
@@ -2034,7 +2055,8 @@ TEST(ValidationTest, SharedImagesSurviveResizeAcrossFrames) {
       buffers.push_back(
           std::make_unique<RenderGraph::Buffer>(16, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 0, allocator, device));
     }
-    graph.getGraphStorage().add("State", buffers);
+    graph.getGraphStorage().add("State", std::make_unique<RenderGraph::BufferHandler>(
+                                             std::move(buffers), [&graph] { return graph.getFrameInFlight(); }));
     auto& compute = graph.createPassCompute("Compute", RenderGraph::QueueType::COMPUTE);
     auto& graphics = graph.createPassCompute("ReadOnGraphics", RenderGraph::QueueType::GENERAL);
     compute.addStorageBufferInput("State");
@@ -2104,7 +2126,8 @@ TEST(ValidationTest, OffscreenComputeGraphPresentsWithoutWritingSwapchain) {
           4096, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT, allocator,
           device));
     }
-    graph.getGraphStorage().add("Data", storageBuffers);
+    graph.getGraphStorage().add("Data", std::make_unique<RenderGraph::BufferHandler>(
+                                            std::move(storageBuffers), [&graph] { return graph.getFrameInFlight(); }));
 
     auto graphElement = std::make_shared<ValidationGraphElement>();
     auto& computePass = graph.createPassCompute("OffscreenCompute", RenderGraph::QueueType::GENERAL);
