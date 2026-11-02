@@ -281,7 +281,46 @@ class Graph final {
   VkPipelineStageFlags2 _swapchainFirstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
   VkAccessFlags2 _swapchainFirstAccessMask = 0;
 
+  // History across frames: each physical instance's last writer, subsequent readers, and completion points.
+  struct Access {
+    VkQueue queue = VK_NULL_HANDLE;
+    VkPipelineStageFlags2 stageMask = 0;
+    VkAccessFlags2 accessMask = 0;
+    uint64_t value = 0;
+  };
+  struct PhysicalHistory {
+    Access lastWrite;
+    std::vector<Access> readers;
+  };
+  std::unordered_map<VkBuffer, PhysicalHistory> _bufferHistory;
+  std::unordered_map<VkImage, PhysicalHistory> _imageHistory;
+
+  // Per-pass candidate usage prepared by calculate(): resource selector, READ/WRITE, and stage/access masks.
+  struct PhysicalAccess {
+    const BufferHandler* buffer = nullptr;
+    const ImageViewHolder* image = nullptr;
+    VkPipelineStageFlags2 stageMask = 0;
+    VkAccessFlags2 accessMask = 0;
+    bool writes = false;
+  };
+  std::unordered_map<GraphPass*, std::vector<PhysicalAccess>> _physicalAccesses;
+  // Same-queue dependencies rebuilt from physical history before recording commands in each render().
+  std::unordered_map<GraphPass*, Barrier> _physicalBarriers;
+
+  // Cross-queue synchronization: one timeline per real queue assigns completion points to its submissions.
+  struct QueueTimeline {
+    std::unique_ptr<Semaphore> semaphore;
+    uint64_t value = 0;
+  };
+  std::unordered_map<VkQueue, QueueTimeline> _queueTimelines;
+
   void _setResourceNames();
+  void _preparePhysicalAccesses(std::unordered_map<GraphPass*, uint64_t>& submissionValues,
+                                std::unordered_map<GraphPass*, std::vector<VkSemaphoreSubmitInfo>>& waits);
+  void _addWait(std::vector<VkSemaphoreSubmitInfo>& waits,
+                VkSemaphore semaphore,
+                uint64_t value,
+                VkPipelineStageFlags2 stages);
 
  public:
   Graph(int threadsNumber, int maxFramesInFlight, const Device& device, Tracer& tracer);

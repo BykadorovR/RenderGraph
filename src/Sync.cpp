@@ -31,6 +31,11 @@ VkSemaphore Semaphore::getSemaphore() const noexcept { return _semaphore; }
 
 Semaphore::~Semaphore() { vkDestroySemaphore(_device->getLogicalDevice(), _semaphore, nullptr); }
 
+void Barrier::clear() noexcept {
+  _bufferBarriers.clear();
+  _imageBarriers.clear();
+}
+
 void Barrier::addBuffer(Buffer* buffer,
                         VkPipelineStageFlags2 srcStageMask,
                         VkAccessFlags2 srcAccessMask,

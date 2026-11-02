@@ -1,0 +1,16 @@
+#version 450
+layout(local_size_x = 1) in;
+layout(set = 0, binding = 0, std430) readonly buffer Source { uint value; } source;
+layout(set = 0, binding = 1, std430) writeonly buffer Target { uint value; } target;
+layout(set = 0, binding = 2, std430) buffer Audit { uint values[]; } audit;
+layout(set = 0, binding = 3, r32ui) uniform readonly uimage2D sourceImage;
+layout(set = 0, binding = 4, r32ui) uniform writeonly uimage2D targetImage;
+layout(push_constant) uniform Settings { uint phase; uint increment; } settings;
+void main() {
+  uint bufferValue = source.value + settings.increment;
+  uint imageValue = imageLoad(sourceImage, ivec2(0)).r + settings.increment;
+  target.value = bufferValue;
+  imageStore(targetImage, ivec2(0), uvec4(imageValue));
+  audit.values[settings.phase * 2] = bufferValue;
+  audit.values[settings.phase * 2 + 1] = imageValue;
+}

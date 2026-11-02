@@ -138,6 +138,7 @@ class ImageViewHolder final {
   std::function<int()> _index;
 
  public:
+  // Index callbacks must support concurrent calls and remain stable throughout Graph::render().
   ImageViewHolder(std::vector<std::shared_ptr<ImageView>> imageViews, std::function<int()> index) noexcept;
   ImageViewHolder(const ImageViewHolder&) = delete;
   ImageViewHolder& operator=(const ImageViewHolder&) = delete;

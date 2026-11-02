@@ -47,6 +47,7 @@ class BufferHandler final {
   std::function<int()> _index;
 
  public:
+  // Index callbacks must support concurrent calls and remain stable throughout Graph::render().
   BufferHandler(std::vector<std::shared_ptr<Buffer>> buffers, std::function<int()> index);
   BufferHandler(std::vector<std::unique_ptr<Buffer>> buffers, std::function<int()> index);
   BufferHandler(const BufferHandler&) = delete;

@@ -38,6 +38,7 @@ class Barrier final {
   std::vector<VkImageMemoryBarrier2> _imageBarriers;
 
  public:
+  void clear() noexcept;
   void addBuffer(Buffer* buffer,
                  VkPipelineStageFlags2 srcStageMask,
                  VkAccessFlags2 srcAccessMask,

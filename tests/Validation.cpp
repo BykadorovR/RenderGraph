@@ -14,11 +14,13 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -2371,3 +2373,414 @@ INSTANTIATE_TEST_SUITE_P(UploadQueues,
                            if (info.param == RenderGraph::QueueType::GENERAL) return "GeneralQueue";
                            return info.param == RenderGraph::QueueType::TRANSFER ? "TransferQueue" : "ComputeQueue";
                          });
+
+class PhysicalResourceElement final : public RenderGraph::GraphElement {
+ private:
+  const RenderGraph::BufferHandler &_source, &_target, &_audit;
+  const RenderGraph::ImageViewHolder &_sourceImage, &_targetImage;
+  std::vector<std::shared_ptr<RenderGraph::Texture>> _textures;
+  RenderGraph::Shader _shader;
+  RenderGraph::DescriptorSetLayout _layout;
+  RenderGraph::DescriptorPool _pool;
+  RenderGraph::Pipeline _pipeline;
+  std::unique_ptr<RenderGraph::DescriptorHandler> _descriptors;
+  std::array<uint32_t, 2> _settings;
+
+  RenderGraph::Texture* _getTexture(const RenderGraph::ImageViewHolder& holder) const {
+    const auto view = holder.getImageView().getImageView();
+    return std::ranges::find_if(_textures,
+                                [&](const auto& texture) { return texture->getImageView().getImageView() == view; })
+        ->get();
+  }
+
+ public:
+  PhysicalResourceElement(RenderGraph::Graph& graph,
+                          const RenderGraph::CommandBuffer& initialize,
+                          const std::string& source,
+                          const std::string& target,
+                          uint32_t phase,
+                          uint32_t increment,
+                          int frames,
+                          std::vector<std::shared_ptr<RenderGraph::Texture>> textures,
+                          const RenderGraph::MemoryAllocator& allocator,
+                          const RenderGraph::Device& device,
+                          bool descriptorBuffer)
+      : _source(graph.getGraphStorage().getBufferHandler(source)),
+        _target(graph.getGraphStorage().getBufferHandler(target)),
+        _audit(graph.getGraphStorage().getBufferHandler("Audit")),
+        _sourceImage(graph.getGraphStorage().getImageViewHolder(source + "Image")),
+        _targetImage(graph.getGraphStorage().getImageViewHolder(target + "Image")),
+        _textures(std::move(textures)),
+        _shader(device),
+        _layout(device),
+        _pool({}, device),
+        _pipeline(device),
+        _settings{phase, increment} {
+    _shader.add(readTestShader(increment ? "physicalUpdate.comp.spv" : "physicalObserve.comp.spv"));
+    std::vector<VkDescriptorSetLayoutBinding> bindings;
+    for (uint32_t binding = 0; binding < 5; ++binding) {
+      bindings.push_back(
+          {.binding = binding,
+           .descriptorType = binding < 3 ? VK_DESCRIPTOR_TYPE_STORAGE_BUFFER : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+           .descriptorCount = 1,
+           .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT});
+    }
+    _layout.createCustom(bindings);
+    std::vector<RenderGraph::DescriptorSetLayout*> layouts{&_layout};
+    _pipeline.createCompute(_shader.getShaderStageInfo().front(), layouts,
+                            {{"Settings", {VK_SHADER_STAGE_COMPUTE_BIT, 0, 8}}});
+    if (descriptorBuffer) {
+      _descriptors = std::make_unique<RenderGraph::DescriptorBuffer>(layouts, allocator, device);
+    } else {
+      _descriptors = std::make_unique<RenderGraph::DescriptorSet>(layouts, _pool, device);
+    }
+    for (int frame = 0; frame < frames; ++frame) {
+      _descriptors->add(std::vector<RenderGraph::Buffer*>{&_source.getBuffer()});
+      _descriptors->add(std::vector<RenderGraph::Buffer*>{&_target.getBuffer()});
+      _descriptors->add(std::vector<RenderGraph::Buffer*>{&_audit.getBuffer()});
+      _descriptors->add(std::vector<RenderGraph::Texture*>{_getTexture(_sourceImage)});
+      _descriptors->add(std::vector<RenderGraph::Texture*>{_getTexture(_targetImage)});
+    }
+    _descriptors->initialize(initialize);
+  }
+
+  void draw(int frame, const RenderGraph::CommandBuffer& commands) override {
+    _descriptors->update(0, std::vector<RenderGraph::Buffer*>{&_source.getBuffer()}, frame);
+    _descriptors->update(1, std::vector<RenderGraph::Buffer*>{&_target.getBuffer()}, frame);
+    _descriptors->update(2, std::vector<RenderGraph::Buffer*>{&_audit.getBuffer()}, frame);
+    _descriptors->update(3, std::vector<RenderGraph::Texture*>{_getTexture(_sourceImage)}, commands, frame);
+    _descriptors->update(4, std::vector<RenderGraph::Texture*>{_getTexture(_targetImage)}, commands, frame);
+    vkCmdBindPipeline(commands.getCommandBuffer(), VK_PIPELINE_BIND_POINT_COMPUTE, _pipeline.getPipeline());
+    _descriptors->bind(VK_PIPELINE_BIND_POINT_COMPUTE, _pipeline.getPipelineLayout(), commands, frame);
+    vkCmdPushConstants(commands.getCommandBuffer(), _pipeline.getPipelineLayout(), VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                       sizeof(_settings), _settings.data());
+    vkCmdDispatch(commands.getCommandBuffer(), 1, 1, 1);
+    RenderGraph::Barrier host;
+    host.addBuffer(&_audit.getBuffer(), VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_WRITE_BIT,
+                   VK_PIPELINE_STAGE_2_HOST_BIT, VK_ACCESS_2_HOST_READ_BIT);
+    host.execute(commands.getCommandBuffer());
+  }
+  void update(int frame, const RenderGraph::CommandBuffer& commands) override {}
+  void reset(const std::vector<std::shared_ptr<RenderGraph::ImageView>>& swapchain) override {}
+};
+
+class PhysicalResourceTest : public testing::TestWithParam<std::tuple<int, int, bool, bool>> {};
+
+TEST_P(PhysicalResourceTest, GpuResultsAndSynchronization) {
+  const auto [frames, mode, separateQueues, descriptorBuffer] = GetParam();
+  ValidationErrorCollector validationErrors;
+  RenderGraph::Instance instance("PhysicalResources", true);
+  if (!instance.isDebug()) GTEST_SKIP() << "Vulkan validation layers are unavailable";
+  ValidationMessenger messenger(instance.getInstance().instance, validationErrors);
+  {
+    RenderGraph::Device device(instance);
+    RenderGraph::DeviceRequirements requirements;
+    if (descriptorBuffer) requirements.optionalExtensions = {VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME};
+    device.initialize(requirements);
+    if (descriptorBuffer && !device.isExtensionEnabled(VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME)) {
+      GTEST_SKIP() << "VK_EXT_descriptor_buffer is unavailable";
+    }
+    if (separateQueues &&
+        device.getQueue(RenderGraph::QueueType::GENERAL) == device.getQueue(RenderGraph::QueueType::COMPUTE)) {
+      GTEST_SKIP() << "GENERAL and COMPUTE use the same VkQueue; distinct queues cannot be tested";
+    }
+    if (!device.isFormatFeatureSupported(VK_FORMAT_R32_UINT, VK_IMAGE_TILING_OPTIMAL,
+                                         VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)) {
+      GTEST_SKIP() << "R32_UINT storage images are unavailable";
+    }
+    VkPhysicalDeviceProperties properties{};
+    vkGetPhysicalDeviceProperties(device.getPhysicalDevice(), &properties);
+    RecordProperty("device", properties.deviceName);
+    RecordProperty("generalQueueFamily", device.getQueueIndex(RenderGraph::QueueType::GENERAL));
+    RecordProperty("computeQueueFamily", device.getQueueIndex(RenderGraph::QueueType::COMPUTE));
+    RenderGraph::MemoryAllocator allocator(device, instance);
+    RenderGraph::Tracer tracer(device);
+    const int count = mode == 1 ? 2 : mode == 2 ? 5 : mode == 5 ? frames + 1 : frames;
+    const int iterations = 24;
+    const std::array<uint32_t, 6> increments{1, 0, 0, 5, 9, 0};
+    std::vector<uint32_t> bufferValues(count), imageValues(count);
+    std::vector<std::shared_ptr<RenderGraph::Buffer>> buffers, audits;
+    std::vector<std::shared_ptr<RenderGraph::ImageView>> images;
+    std::vector<std::shared_ptr<RenderGraph::Texture>> textures;
+    RenderGraph::CommandPool pool(RenderGraph::QueueType::GENERAL, device);
+    RenderGraph::CommandBuffer initialize(pool, device);
+    initialize.beginCommands();
+    for (int index = 0; index < count; ++index) {
+      bufferValues[index] = 100 + index * 7;
+      imageValues[index] = 200 + index * 11;
+      buffers.push_back(std::make_shared<RenderGraph::Buffer>(
+          4,
+          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+              VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+          VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT, allocator,
+          device));
+      *static_cast<uint32_t*>(buffers.back()->getAllocationInfo().pMappedData) = bufferValues[index];
+      ASSERT_EQ(vmaFlushAllocation(allocator.getAllocator(), buffers.back()->getAllocation(), 0, VK_WHOLE_SIZE),
+                VK_SUCCESS);
+      auto image = std::make_unique<RenderGraph::Image>(allocator, device);
+      image->createImage(
+          VK_FORMAT_R32_UINT, {1, 1}, 1, 1, VK_IMAGE_ASPECT_COLOR_BIT,
+          VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+      auto view = std::make_shared<RenderGraph::ImageView>(std::move(image), device);
+      view->createImageView(VK_IMAGE_VIEW_TYPE_2D, 0, 0);
+      images.push_back(view);
+      textures.push_back(std::make_shared<RenderGraph::Texture>(view, nullptr));
+      const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+      RenderGraph::Barrier before;
+      before.addImage(view->getImage().getImage(), VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0,
+                      VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, range);
+      before.execute(initialize.getCommandBuffer());
+      VkClearColorValue clear{};
+      clear.uint32[0] = imageValues[index];
+      vkCmdClearColorImage(initialize.getCommandBuffer(), view->getImage().getImage(),
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear, 1, &range);
+      RenderGraph::Barrier after;
+      after.addImage(view->getImage().getImage(), VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                     VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL, range);
+      after.execute(initialize.getCommandBuffer());
+      view->getImage().setImageLayout(VK_IMAGE_LAYOUT_GENERAL);
+    }
+    for (int iteration = 0; iteration < iterations; ++iteration) {
+      audits.push_back(std::make_shared<RenderGraph::Buffer>(
+          48, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+          VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT, allocator, device));
+    }
+    RenderGraph::Graph graph(4, frames, device, tracer);
+    graph.initialize();
+    int sourceIndex = 0, targetIndex = 1, imageSourceIndex = 0, imageTargetIndex = 1;
+    auto source = [&] {
+      if (mode == 5) return graph.getFrameNumber() % 4 == 0 ? frames : graph.getFrameInFlight();
+      return mode == 2   ? sourceIndex
+             : mode == 1 ? static_cast<int>(graph.getFrameNumber() % 2)
+                         : graph.getFrameInFlight();
+    };
+    auto target = [&] {
+      if (mode == 5) return 0;
+      return mode == 2   ? targetIndex
+             : mode == 1 ? static_cast<int>((graph.getFrameNumber() + 1) % 2)
+                         : graph.getFrameInFlight();
+    };
+    auto imageSource = [&] {
+      if (mode == 5) return graph.getFrameNumber() % 3 == 0 ? frames : graph.getFrameInFlight();
+      return mode == 2 ? imageSourceIndex : source();
+    };
+    auto imageTarget = [&] { return mode == 2 ? imageTargetIndex : target(); };
+    auto addName = [&](const std::string& name, std::function<int()> bufferIndex, std::function<int()> imageIndex) {
+      const bool sharedOnly = mode == 5 && name != "Input";
+      graph.getGraphStorage().add(name, std::make_unique<RenderGraph::BufferHandler>(
+                                            sharedOnly ? std::vector{buffers.back()} : buffers, bufferIndex));
+      graph.getGraphStorage().add(name + "Image", std::make_unique<RenderGraph::ImageViewHolder>(
+                                                      sharedOnly ? std::vector{images.back()} : images, imageIndex));
+    };
+    if (mode == 3) {
+      addName("State", source, imageSource);
+      addName("UnusedAlias", source, imageSource);
+    } else {
+      addName("Input", source, imageSource);
+      addName("Output", target, imageTarget);
+      addName("Alias", target, imageTarget);
+    }
+    graph.getGraphStorage().add("Audit", std::make_unique<RenderGraph::BufferHandler>(
+                                             audits, [&] { return static_cast<int>(graph.getFrameNumber()); }));
+    for (uint32_t phase = 0; phase < increments.size(); ++phase) {
+      const std::string input = mode == 3                  ? "State"
+                                : phase == 1 || phase == 4 ? "Output"
+                                : phase == 2               ? "Alias"
+                                                           : "Input";
+      const std::string output = mode == 3 ? "State" : phase == 4 ? "Input" : "Output";
+      const auto increment = mode == 4 ? 0 : increments[phase];
+      auto& pass = graph.createPassCompute("Phase" + std::to_string(phase), separateQueues && phase % 2 == 0
+                                                                                ? RenderGraph::QueueType::COMPUTE
+                                                                                : RenderGraph::QueueType::GENERAL);
+      pass.addStorageBufferInput(input);
+      pass.addStorageTextureInput(input + "Image");
+      if (increment) {
+        pass.addStorageBufferOutput(output);
+        pass.addStorageTextureOutput(output + "Image");
+      }
+      pass.addStorageBufferOutput("Audit");
+      pass.registerGraphElement(std::make_shared<PhysicalResourceElement>(
+          graph, initialize, input, output, phase, increment, frames, textures, allocator, device, descriptorBuffer));
+    }
+    initialize.endCommands();
+    RenderGraph::Semaphore ready(VK_SEMAPHORE_TYPE_TIMELINE, device);
+    const VkCommandBufferSubmitInfo initCommands{.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+                                                 .commandBuffer = initialize.getCommandBuffer()};
+    const VkSemaphoreSubmitInfo initSignal{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+                                           .semaphore = ready.getSemaphore(),
+                                           .value = 1,
+                                           .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};
+    const VkSubmitInfo2 initSubmit{.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+                                   .commandBufferInfoCount = 1,
+                                   .pCommandBufferInfos = &initCommands,
+                                   .signalSemaphoreInfoCount = 1,
+                                   .pSignalSemaphoreInfos = &initSignal};
+    ASSERT_EQ(vkQueueSubmit2(device.getQueue(RenderGraph::QueueType::GENERAL), 1, &initSubmit, nullptr), VK_SUCCESS);
+    const RenderGraph::GpuTicket ticket{ready.getSemaphore(), 1};
+    graph.calculate({&ticket, 1});
+    std::vector<std::array<uint32_t, 12>> expected(iterations);
+    for (int iteration = 0; iteration < iterations; ++iteration) {
+      SCOPED_TRACE(iteration);
+      if (mode == 2) {
+        sourceIndex = (iteration * 3 + iteration / 2) % count;
+        targetIndex = iteration % 4 == 0 ? sourceIndex : (iteration * 2 + 1) % count;
+        imageSourceIndex = (iteration * 2 + 1) % count;
+        imageTargetIndex = iteration % 3 == 0 ? imageSourceIndex : (iteration * 4 + 2) % count;
+      }
+      const int src = source(), dst = mode == 5 ? count - 1 : target(), imageSrc = imageSource(),
+                imageDst = mode == 5 ? count - 1 : imageTarget();
+      for (uint32_t phase = 0; phase < increments.size(); ++phase) {
+        const bool readsTarget = phase == 1 || phase == 2 || phase == 4;
+        const int from = readsTarget ? dst : src, imageFrom = readsTarget ? imageDst : imageSrc;
+        const int to = phase == 4 ? src : dst, imageTo = phase == 4 ? imageSrc : imageDst;
+        const uint32_t increment = mode == 4 ? 0 : increments[phase];
+        expected[iteration][phase * 2] = bufferValues[from] + increment;
+        expected[iteration][phase * 2 + 1] = imageValues[imageFrom] + increment;
+        if (increment) {
+          bufferValues[to] = expected[iteration][phase * 2];
+          imageValues[imageTo] = expected[iteration][phase * 2 + 1];
+        }
+      }
+      GraphCommandRecorder recorder;
+      ASSERT_FALSE(graph.render());
+      EXPECT_EQ(graph.getFrameNumber(), iteration + 1);
+      EXPECT_EQ(recorder.submissionQueues.size(), separateQueues ? 6 : 1);
+      for (const auto& [commands, barrier] : recorder.imageBarriers) {
+        EXPECT_TRUE(barrier.image == images[imageSrc]->getImage().getImage() ||
+                    barrier.image == images[imageDst]->getImage().getImage());
+        EXPECT_EQ(barrier.oldLayout, VK_IMAGE_LAYOUT_GENERAL);
+        EXPECT_EQ(barrier.newLayout, VK_IMAGE_LAYOUT_GENERAL);
+        EXPECT_EQ(std::ranges::count_if(recorder.imageBarriers,
+                                        [&](const auto& other) {
+                                          return other.first == commands && other.second.image == barrier.image;
+                                        }),
+                  1);
+      }
+      if (iteration == iterations / 2) {
+        ASSERT_EQ(vkDeviceWaitIdle(device.getLogicalDevice()), VK_SUCCESS);
+        graph.calculate();
+      }
+    }
+    ASSERT_EQ(vkDeviceWaitIdle(device.getLogicalDevice()), VK_SUCCESS);
+    for (int iteration = 0; iteration < iterations; ++iteration) {
+      ASSERT_EQ(vmaInvalidateAllocation(allocator.getAllocator(), audits[iteration]->getAllocation(), 0, VK_WHOLE_SIZE),
+                VK_SUCCESS);
+      const auto* actual = static_cast<const uint32_t*>(audits[iteration]->getAllocationInfo().pMappedData);
+      for (int value = 0; value < 12; ++value) {
+        EXPECT_EQ(actual[value], expected[iteration][value]) << "iteration " << iteration << ", audit " << value;
+      }
+    }
+    RenderGraph::Buffer readback(count * 8, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                 VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+                                 allocator, device);
+    RenderGraph::CommandBuffer read(pool, device);
+    read.beginCommands();
+    RenderGraph::Barrier before;
+    for (int index = 0; index < count; ++index) {
+      before.addBuffer(buffers[index].get(), VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT,
+                       VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+      before.addImage(images[index]->getImage().getImage(), VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                      VK_ACCESS_2_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+                      VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1});
+    }
+    before.execute(read.getCommandBuffer());
+    for (int index = 0; index < count; ++index) {
+      const VkBufferCopy bufferCopy{0, static_cast<VkDeviceSize>(index * 4), 4};
+      vkCmdCopyBuffer(read.getCommandBuffer(), buffers[index]->getBuffer(), readback.getBuffer(), 1, &bufferCopy);
+      const VkBufferImageCopy imageCopy{.bufferOffset = static_cast<VkDeviceSize>((count + index) * 4),
+                                        .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                                        .imageExtent = {1, 1, 1}};
+      vkCmdCopyImageToBuffer(read.getCommandBuffer(), images[index]->getImage().getImage(), VK_IMAGE_LAYOUT_GENERAL,
+                             readback.getBuffer(), 1, &imageCopy);
+    }
+    RenderGraph::Barrier host;
+    host.addBuffer(&readback, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                   VK_PIPELINE_STAGE_2_HOST_BIT, VK_ACCESS_2_HOST_READ_BIT);
+    host.execute(read.getCommandBuffer());
+    read.endCommands();
+    const VkCommandBufferSubmitInfo readCommands{.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+                                                 .commandBuffer = read.getCommandBuffer()};
+    const VkSubmitInfo2 readSubmit{.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+                                   .commandBufferInfoCount = 1,
+                                   .pCommandBufferInfos = &readCommands};
+    ASSERT_EQ(vkQueueSubmit2(device.getQueue(RenderGraph::QueueType::GENERAL), 1, &readSubmit, nullptr), VK_SUCCESS);
+    ASSERT_EQ(vkQueueWaitIdle(device.getQueue(RenderGraph::QueueType::GENERAL)), VK_SUCCESS);
+    ASSERT_EQ(vmaInvalidateAllocation(allocator.getAllocator(), readback.getAllocation(), 0, VK_WHOLE_SIZE),
+              VK_SUCCESS);
+    const auto* actual = static_cast<const uint32_t*>(readback.getAllocationInfo().pMappedData);
+    for (int index = 0; index < count; ++index) {
+      EXPECT_EQ(actual[index], bufferValues[index]) << "physical buffer " << index;
+      EXPECT_EQ(actual[count + index], imageValues[index]) << "physical image " << index;
+    }
+  }
+  EXPECT_TRUE(validationErrors.getErrors().empty()) << joinErrors(validationErrors.getErrors());
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    FramesAndSelections,
+    PhysicalResourceTest,
+    testing::Combine(testing::Values(2, 3), testing::Values(0, 1, 2, 3, 4, 5), testing::Bool(), testing::Bool()),
+    ([](const testing::TestParamInfo<PhysicalResourceTest::ParamType>& info) {
+      const auto [frames, mode, separateQueues, descriptorBuffer] = info.param;
+      const std::array names{"PerFrame", "PingPong", "Arbitrary", "Ordinary", "ReadOnlyAliases", "PartialOverlap"};
+      return "F" + std::to_string(frames) + "_" + names[mode] + (separateQueues ? "_SeparateQueues" : "_SameQueue") +
+             (descriptorBuffer ? "_DescriptorBuffer" : "_DescriptorSet");
+    }));
+
+TEST(ValidationTest, PhysicalAliasesTransitionOnlyTheSelectedImage) {
+  ValidationErrorCollector errors;
+  RenderGraph::Instance instance("PhysicalInitialLayouts", true);
+  if (!instance.isDebug()) GTEST_SKIP() << "Vulkan validation layers are unavailable";
+  ValidationMessenger messenger(instance.getInstance().instance, errors);
+  for (const bool separateQueues : {false, true}) {
+    SCOPED_TRACE(separateQueues);
+    RenderGraph::Device device(instance);
+    device.initialize();
+    RenderGraph::MemoryAllocator allocator(device, instance);
+    RenderGraph::Tracer tracer(device);
+    RenderGraph::Graph graph(2, 3, device, tracer);
+    graph.initialize();
+    std::vector<std::shared_ptr<RenderGraph::ImageView>> views;
+    for (int index = 0; index < 2; ++index) {
+      auto image = std::make_unique<RenderGraph::Image>(allocator, device);
+      image->createImage(VK_FORMAT_R32_UINT, {1, 1}, 1, 1, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_USAGE_STORAGE_BIT);
+      auto view = std::make_shared<RenderGraph::ImageView>(std::move(image), device);
+      view->createImageView(VK_IMAGE_VIEW_TYPE_2D, 0, 0);
+      views.push_back(view);
+    }
+    int selected = 1;
+    for (const std::string name : {"First", "Second"}) {
+      graph.getGraphStorage().add(
+          name, std::make_unique<RenderGraph::ImageViewHolder>(views, [&selected] { return selected; }));
+    }
+    graph.createPassCompute("ReadFirst", RenderGraph::QueueType::GENERAL).addStorageTextureInput("First");
+    graph
+        .createPassCompute("ReadSecond",
+                           separateQueues ? RenderGraph::QueueType::COMPUTE : RenderGraph::QueueType::GENERAL)
+        .addStorageTextureInput("Second");
+    graph.createPassCompute("Write", RenderGraph::QueueType::GENERAL).addStorageTextureOutput("First");
+    graph.calculate();
+    std::array<bool, 2> initialized{};
+    for (const int index : {1, 0, 1}) {
+      selected = index;
+      GraphCommandRecorder recorder;
+      ASSERT_FALSE(graph.render());
+      int transitions = 0;
+      for (const auto& [commands, barrier] : recorder.imageBarriers) {
+        EXPECT_EQ(barrier.image, views[index]->getImage().getImage());
+        EXPECT_EQ(barrier.newLayout, VK_IMAGE_LAYOUT_GENERAL);
+        if (barrier.oldLayout == VK_IMAGE_LAYOUT_UNDEFINED) ++transitions;
+      }
+      EXPECT_EQ(transitions, initialized[index] ? 0 : 1);
+      initialized[index] = true;
+      for (int image = 0; image < 2; ++image) {
+        EXPECT_EQ(views[image]->getImage().getImageLayout(),
+                  initialized[image] ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_UNDEFINED);
+      }
+    }
+    ASSERT_EQ(vkDeviceWaitIdle(device.getLogicalDevice()), VK_SUCCESS);
+  }
+  EXPECT_TRUE(errors.getErrors().empty()) << joinErrors(errors.getErrors());
+}
