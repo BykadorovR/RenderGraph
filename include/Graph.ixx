@@ -2,8 +2,8 @@ module;
 
 #include "BS_thread_pool.hpp"
 
+#include <cstddef>
 #include <deque>
-#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
@@ -107,6 +107,7 @@ class GraphPass {
   // NVRO
   GraphPassType getGraphPassType() const noexcept;
   QueueType getQueueType() const noexcept;
+  CommandBuffer& getCommandBuffer(int frame) const;
   std::vector<CommandBuffer*> getCommandBuffers() const;
   std::string getName() const;
   virtual void execute(int currentFrame, const CommandBuffer& commandBuffer) = 0;
@@ -238,6 +239,9 @@ class Graph final {
       WRITE = 1 << 1,
     };
     uint8_t operation = 0;
+    // Prepared by calculate() from the pass's declared inputs/outputs.
+    VkPipelineStageFlags2 stageMask = 0;
+    VkAccessFlags2 accessMask = 0;
   };
 
   class Resources {
@@ -249,63 +253,34 @@ class Graph final {
     bool contains(std::string_view name, Resource::Type type, Resource::Operation operation) const;
     const std::vector<Resource>& getResources() const noexcept;
     std::vector<Resource> getResources(Resource::Operation operation) const;
-    std::vector<std::string> getNames(Resource::Type type) const;
   };
 
   std::unordered_map<GraphPass*, Resources> _resources;
 
-  // syncrhonization per pass
-  class Sync {
-   private:
-    // same semaphore is wait and signal, so can't be unique
-    std::vector<std::pair<std::vector<std::shared_ptr<Semaphore>>, std::function<int()>>> _waitSemaphores,
-        _signalSemaphores;
-    std::vector<std::pair<std::vector<Barrier>, std::function<int()>>> _barriers;
-
-   public:
-    Sync() = default;
-    void addSignalSemaphore(std::vector<std::shared_ptr<Semaphore>>& signalSemaphore, std::function<int()> index);
-    void addWaitSemaphore(std::vector<std::shared_ptr<Semaphore>>& waitSemaphore, std::function<int()> index);
-    void addBarrier(std::vector<Barrier>& barriers, std::function<int()> index);
-
-    std::vector<Semaphore*> getWaitSemaphores() const;
-    std::vector<Semaphore*> getSignalSemaphores() const;
-    std::vector<const Barrier*> getBarriers() const;
-  };
-
-  std::unordered_map<GraphPass*, Sync> _sync;
-  // The first submission waits for external GPU work; subsequent queues depend on that submission.
+  // Every submission waits for external GPU work until the pending tickets have been consumed.
   std::vector<GpuTicket> _pendingTickets;
-  std::unordered_map<GraphPass*, std::vector<std::pair<Image*, Barrier>>> _initialImageBarriers;
   GraphPass* _swapchainFirstPass = nullptr;
-  VkPipelineStageFlags2 _swapchainFirstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-  VkAccessFlags2 _swapchainFirstAccessMask = 0;
 
-  // History across frames: each physical instance's last writer, subsequent readers, and completion points.
+  // A selected physical access and its submission's completion point.
   struct Access {
     VkQueue queue = VK_NULL_HANDLE;
     VkPipelineStageFlags2 stageMask = 0;
     VkAccessFlags2 accessMask = 0;
     uint64_t value = 0;
-  };
-  struct PhysicalHistory {
-    Access lastWrite;
-    std::vector<Access> readers;
-  };
-  std::unordered_map<VkBuffer, PhysicalHistory> _bufferHistory;
-  std::unordered_map<VkImage, PhysicalHistory> _imageHistory;
-
-  // Per-pass candidate usage prepared by calculate(): resource selector, READ/WRITE, and stage/access masks.
-  struct PhysicalAccess {
-    const BufferHandler* buffer = nullptr;
-    const ImageViewHolder* image = nullptr;
-    VkPipelineStageFlags2 stageMask = 0;
-    VkAccessFlags2 accessMask = 0;
+    Buffer* buffer = nullptr;
+    Image* image = nullptr;
     bool writes = false;
   };
-  std::unordered_map<GraphPass*, std::vector<PhysicalAccess>> _physicalAccesses;
+  // Per physical instance: the last WRITE (if any), then subsequent READs, one per queue. Kept across frames.
+  std::unordered_map<VkBuffer, std::vector<Access>> _bufferHistory;
+  std::unordered_map<VkImage, std::vector<Access>> _imageHistory;
   // Same-queue dependencies rebuilt from physical history before recording commands in each render().
   std::unordered_map<GraphPass*, Barrier> _physicalBarriers;
+
+  // If Input and Output select the same buffer/image, combine their READ/WRITE and stage/access masks
+  // to build its dependencies and update its history once per pass.
+  // calculate() reserves the vector; render() reuses it across passes and frames.
+  std::vector<Access> _resolvedAccesses;
 
   // Cross-queue synchronization: one timeline per real queue assigns completion points to its submissions.
   struct QueueTimeline {
@@ -314,9 +289,20 @@ class Graph final {
   };
   std::unordered_map<VkQueue, QueueTimeline> _queueTimelines;
 
+  // Passes in [firstPass, endPass) are sent to queue in one vkQueueSubmit2 call.
+  // calculate() groups the passes and prepares commands for each frame slot.
+  // render() sets the semaphore waits/signals and the timeline value that marks this submission's completion.
+  struct Submission {
+    VkQueue queue;
+    std::size_t firstPass = 0, endPass = 0;
+    std::vector<std::vector<VkCommandBufferSubmitInfo>> commands;
+    std::vector<VkSemaphoreSubmitInfo> waits, signals;
+    uint64_t value = 0;
+  };
+  std::vector<Submission> _submissions;
+
   void _setResourceNames();
-  void _preparePhysicalAccesses(std::unordered_map<GraphPass*, uint64_t>& submissionValues,
-                                std::unordered_map<GraphPass*, std::vector<VkSemaphoreSubmitInfo>>& waits);
+  void _preparePhysicalAccesses();
   void _addWait(std::vector<VkSemaphoreSubmitInfo>& waits,
                 VkSemaphore semaphore,
                 uint64_t value,

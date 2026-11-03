@@ -143,18 +143,21 @@ class GraphCommandRecorder final {
                                                      const VkSubmitInfo2* submits,
                                                      VkFence fence) {
     auto& recorder = *_active;
-    {
-      std::scoped_lock lock(recorder._mutex);
-      for (uint32_t index = 0; index < submitCount; ++index) {
-        const auto& submit = submits[index];
-        recorder.submissionQueues.push_back(queue);
-        recorder.submissionBuffers.emplace_back();
-        for (uint32_t buffer = 0; buffer < submit.commandBufferInfoCount; ++buffer) {
-          recorder.submissionBuffers.back().push_back(submit.pCommandBufferInfos[buffer].commandBuffer);
-        }
-      }
-    }
+    for (uint32_t index = 0; index < submitCount; ++index) recorder._recordSubmission(queue, submits[index]);
     return recorder._queueSubmit(queue, submitCount, submits, fence);
+  }
+
+  void _recordSubmission(VkQueue queue, const VkSubmitInfo2& submit) {
+    std::scoped_lock lock(_mutex);
+    submissionQueues.push_back(queue);
+    submissionBuffers.emplace_back();
+    for (uint32_t buffer = 0; buffer < submit.commandBufferInfoCount; ++buffer) {
+      submissionBuffers.back().push_back(submit.pCommandBufferInfos[buffer].commandBuffer);
+    }
+    submissionSignals.emplace_back();
+    for (uint32_t signal = 0; signal < submit.signalSemaphoreInfoCount; ++signal) {
+      submissionSignals.back().push_back(submit.pSignalSemaphoreInfos[signal]);
+    }
   }
 
  public:
@@ -162,6 +165,7 @@ class GraphCommandRecorder final {
   std::vector<VkBufferMemoryBarrier2> bufferBarriers;
   std::vector<VkQueue> submissionQueues;
   std::vector<std::vector<VkCommandBuffer>> submissionBuffers;
+  std::vector<std::vector<VkSemaphoreSubmitInfo>> submissionSignals;
 
   GraphCommandRecorder() {
     _active = this;
@@ -2329,9 +2333,19 @@ TEST(ValidationTest, SwapchainComputeUseHasNoOwnershipBarriers) {
       ASSERT_FALSE(graph.render());
       const auto imageIndex = swapchain.getSwapchainIndex();
       const auto& image = swapchain.getImage(imageIndex);
-      ASSERT_EQ(recorder.imageBarriers.size(), 2);
-      const auto& [acquireCommand, acquire] = recorder.imageBarriers.front();
-      const auto& [presentCommand, present] = recorder.imageBarriers.back();
+      const bool sameQueue = device.getQueue(RenderGraph::QueueType::GENERAL) ==
+                             device.getQueue(RenderGraph::QueueType::COMPUTE);
+      ASSERT_EQ(recorder.imageBarriers.size(), graphicsFirst && sameQueue ? 3 : 2);
+      const auto acquireIt = std::ranges::find_if(recorder.imageBarriers, [](const auto& recorded) {
+        return recorded.second.oldLayout != VK_IMAGE_LAYOUT_GENERAL;
+      });
+      const auto presentIt = std::ranges::find_if(recorder.imageBarriers, [](const auto& recorded) {
+        return recorded.second.newLayout == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+      });
+      ASSERT_NE(acquireIt, recorder.imageBarriers.end());
+      ASSERT_NE(presentIt, recorder.imageBarriers.end());
+      const auto& [acquireCommand, acquire] = *acquireIt;
+      const auto& [presentCommand, present] = *presentIt;
       EXPECT_EQ(acquireCommand, firstCommand);
       EXPECT_EQ(acquire.oldLayout, layouts[imageIndex]);
       EXPECT_EQ(acquire.newLayout, VK_IMAGE_LAYOUT_GENERAL);
@@ -2495,7 +2509,8 @@ TEST_P(PhysicalResourceTest, GpuResultsAndSynchronization) {
     RecordProperty("computeQueueFamily", device.getQueueIndex(RenderGraph::QueueType::COMPUTE));
     RenderGraph::MemoryAllocator allocator(device, instance);
     RenderGraph::Tracer tracer(device);
-    const int count = mode == 1 ? 2 : mode == 2 ? 5 : mode == 5 ? frames + 1 : frames;
+    const bool singleName = mode == 3 || mode >= 6;
+    const int count = mode == 6 ? 1 : mode == 1 || mode == 7 ? 2 : mode == 2 ? 5 : mode == 5 ? frames + 1 : frames;
     const int iterations = 24;
     const std::array<uint32_t, 6> increments{1, 0, 0, 5, 9, 0};
     std::vector<uint32_t> bufferValues(count), imageValues(count);
@@ -2551,12 +2566,15 @@ TEST_P(PhysicalResourceTest, GpuResultsAndSynchronization) {
     graph.initialize();
     int sourceIndex = 0, targetIndex = 1, imageSourceIndex = 0, imageTargetIndex = 1;
     auto source = [&] {
+      if (mode == 6) return 0;
+      if (mode == 7) return static_cast<int>((graph.getFrameNumber() + graph.getFrameNumber() / 3) % 2);
       if (mode == 5) return graph.getFrameNumber() % 4 == 0 ? frames : graph.getFrameInFlight();
       return mode == 2   ? sourceIndex
              : mode == 1 ? static_cast<int>(graph.getFrameNumber() % 2)
                          : graph.getFrameInFlight();
     };
     auto target = [&] {
+      if (singleName) return source();
       if (mode == 5) return 0;
       return mode == 2   ? targetIndex
              : mode == 1 ? static_cast<int>((graph.getFrameNumber() + 1) % 2)
@@ -2574,7 +2592,7 @@ TEST_P(PhysicalResourceTest, GpuResultsAndSynchronization) {
       graph.getGraphStorage().add(name + "Image", std::make_unique<RenderGraph::ImageViewHolder>(
                                                       sharedOnly ? std::vector{images.back()} : images, imageIndex));
     };
-    if (mode == 3) {
+    if (singleName) {
       addName("State", source, imageSource);
       addName("UnusedAlias", source, imageSource);
     } else {
@@ -2585,11 +2603,11 @@ TEST_P(PhysicalResourceTest, GpuResultsAndSynchronization) {
     graph.getGraphStorage().add("Audit", std::make_unique<RenderGraph::BufferHandler>(
                                              audits, [&] { return static_cast<int>(graph.getFrameNumber()); }));
     for (uint32_t phase = 0; phase < increments.size(); ++phase) {
-      const std::string input = mode == 3                  ? "State"
+      const std::string input = singleName                 ? "State"
                                 : phase == 1 || phase == 4 ? "Output"
                                 : phase == 2               ? "Alias"
                                                            : "Input";
-      const std::string output = mode == 3 ? "State" : phase == 4 ? "Input" : "Output";
+      const std::string output = singleName ? "State" : phase == 4 ? "Input" : "Output";
       const auto increment = mode == 4 ? 0 : increments[phase];
       auto& pass = graph.createPassCompute("Phase" + std::to_string(phase), separateQueues && phase % 2 == 0
                                                                                 ? RenderGraph::QueueType::COMPUTE
@@ -2721,13 +2739,81 @@ TEST_P(PhysicalResourceTest, GpuResultsAndSynchronization) {
 INSTANTIATE_TEST_SUITE_P(
     FramesAndSelections,
     PhysicalResourceTest,
-    testing::Combine(testing::Values(2, 3), testing::Values(0, 1, 2, 3, 4, 5), testing::Bool(), testing::Bool()),
+    testing::Combine(testing::Values(2, 3), testing::Values(0, 1, 2, 3, 4, 5, 6, 7), testing::Bool(), testing::Bool()),
     ([](const testing::TestParamInfo<PhysicalResourceTest::ParamType>& info) {
       const auto [frames, mode, separateQueues, descriptorBuffer] = info.param;
-      const std::array names{"PerFrame", "PingPong", "Arbitrary", "Ordinary", "ReadOnlyAliases", "PartialOverlap"};
+      const std::array names{"PerFrame",        "PingPong",       "Arbitrary",      "Ordinary",
+                             "ReadOnlyAliases", "PartialOverlap", "SharedInstance", "SingleNameSwitching"};
       return "F" + std::to_string(frames) + "_" + names[mode] + (separateQueues ? "_SeparateQueues" : "_SameQueue") +
              (descriptorBuffer ? "_DescriptorBuffer" : "_DescriptorSet");
     }));
+
+TEST(ValidationTest, IndependentQueuesRetireFrameTogether) {
+  ValidationErrorCollector errors;
+  RenderGraph::Instance instance("IndependentQueueCompletion", true);
+  if (!instance.isDebug()) GTEST_SKIP() << "Vulkan validation layers are unavailable";
+  ValidationMessenger messenger(instance.getInstance().instance, errors);
+  {
+    RenderGraph::Device device(instance);
+    device.initialize();
+    if (device.getQueue(RenderGraph::QueueType::GENERAL) == device.getQueue(RenderGraph::QueueType::COMPUTE)) {
+      GTEST_SKIP() << "GENERAL and COMPUTE use the same VkQueue; independent queues cannot be tested";
+    }
+    RenderGraph::Tracer tracer(device);
+    for (const int frames : {2, 3}) {
+      SCOPED_TRACE(frames);
+      RenderGraph::Graph graph(2, frames, device, tracer);
+      graph.initialize();
+      graph.createPassCompute("Gated", RenderGraph::QueueType::COMPUTE);
+      graph.createPassCompute("Independent", RenderGraph::QueueType::GENERAL);
+      graph.createPassCompute("GatedTail", RenderGraph::QueueType::COMPUTE);
+      graph.createPassCompute("FrameCompletion", RenderGraph::QueueType::GENERAL);
+      graph.calculate();
+
+      RenderGraph::Semaphore gate(VK_SEMAPHORE_TYPE_TIMELINE, device);
+      const VkSemaphoreSubmitInfo gateWait{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+                                           .semaphore = gate.getSemaphore(),
+                                           .value = 1,
+                                           .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};
+      const VkSubmitInfo2 blocked{.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+                                  .waitSemaphoreInfoCount = 1,
+                                  .pWaitSemaphoreInfos = &gateWait};
+      ASSERT_EQ(vkQueueSubmit2(device.getQueue(RenderGraph::QueueType::COMPUTE), 1, &blocked, nullptr), VK_SUCCESS);
+
+      GraphCommandRecorder recorder;
+      const bool reset = graph.render();
+      VkResult independentResult = VK_ERROR_UNKNOWN, completionResult = VK_ERROR_UNKNOWN;
+      if (recorder.submissionSignals.size() == 4 && !recorder.submissionSignals[1].empty() &&
+          recorder.submissionSignals.back().size() == 2) {
+        const auto& independent = recorder.submissionSignals[1].front();
+        const VkSemaphoreWaitInfo independentWait{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
+                                                  .semaphoreCount = 1,
+                                                  .pSemaphores = &independent.semaphore,
+                                                  .pValues = &independent.value};
+        // Unrelated work on GENERAL must complete while COMPUTE remains blocked.
+        independentResult = vkWaitSemaphores(device.getLogicalDevice(), &independentWait, 1'000'000'000);
+        const auto& completion = recorder.submissionSignals.back().back();
+        const VkSemaphoreWaitInfo completionWait{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
+                                                 .semaphoreCount = 1,
+                                                 .pSemaphores = &completion.semaphore,
+                                                 .pValues = &completion.value};
+        completionResult = vkWaitSemaphores(device.getLogicalDevice(), &completionWait, 10'000'000);
+      }
+      // Release the gated queue before assertions so a failure cannot leave GPU work blocked.
+      const VkSemaphoreSignalInfo release{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO,
+                                          .semaphore = gate.getSemaphore(),
+                                          .value = 1};
+      ASSERT_EQ(vkSignalSemaphore(device.getLogicalDevice(), &release), VK_SUCCESS);
+      ASSERT_EQ(vkDeviceWaitIdle(device.getLogicalDevice()), VK_SUCCESS);
+      EXPECT_FALSE(reset);
+      EXPECT_EQ(graph.getFrameNumber(), 1);
+      EXPECT_EQ(recorder.submissionQueues.size(), 4);
+      EXPECT_EQ(independentResult, VK_SUCCESS);
+      EXPECT_EQ(completionResult, VK_TIMEOUT);
+    }
+  }
+  EXPECT_TRUE(errors.getErrors().empty()) << joinErrors(errors.getErrors());
+}
 
 TEST(ValidationTest, PhysicalAliasesTransitionOnlyTheSelectedImage) {
   ValidationErrorCollector errors;
