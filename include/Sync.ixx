@@ -19,7 +19,6 @@ class Semaphore final {
  private:
   const Device* _device;
   VkSemaphore _semaphore;
-  VkSemaphoreType _type;
 
  public:
   Semaphore(VkSemaphoreType type, const Device& device);

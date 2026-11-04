@@ -9,8 +9,6 @@ module Sync;
 using namespace RenderGraph;
 
 Semaphore::Semaphore(VkSemaphoreType type, const Device& device) : _device(&device) {
-  _type = type;
-
   VkSemaphoreCreateInfo semaphoreInfo{};
   VkSemaphoreTypeCreateInfo timelineCreateInfo{};
   if (type & VK_SEMAPHORE_TYPE_TIMELINE) {

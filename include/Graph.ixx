@@ -3,7 +3,6 @@ module;
 #include "BS_thread_pool.hpp"
 
 #include <cstddef>
-#include <deque>
 #include <memory>
 #include <optional>
 #include <span>
@@ -220,9 +219,8 @@ class Graph final {
   Tracer* _tracer;
   std::unique_ptr<BS::thread_pool> _threadPool;
   std::vector<std::unique_ptr<GraphPass>> _passes;
-  std::deque<GraphPass*> _passesOrdered;
-  std::unordered_map<GraphPass*, QueueType> _passQueueTypes;
-  std::unordered_set<GraphPass*> _collectionPasses;
+  // First pass on each real queue, for external waits and GPU profiling collection.
+  std::unordered_set<GraphPass*> _queueFirstPasses;
   std::unique_ptr<GraphStorage> _graphStorage;
   // special semaphores
   std::vector<std::shared_ptr<Semaphore>> _semaphoreRenderFinished, _semaphoreImageAvailable;
@@ -234,11 +232,6 @@ class Graph final {
   struct Resource {
     std::string name;
     enum class Type { IMAGE, BUFFER } type;
-    enum class Operation : uint8_t {
-      READ = 1 << 0,
-      WRITE = 1 << 1,
-    };
-    uint8_t operation = 0;
     // Prepared by calculate() from the pass's declared inputs/outputs.
     VkPipelineStageFlags2 stageMask = 0;
     VkAccessFlags2 accessMask = 0;
@@ -250,16 +243,13 @@ class Graph final {
 
    public:
     void add(Resource resource);
-    bool contains(std::string_view name, Resource::Type type, Resource::Operation operation) const;
     const std::vector<Resource>& getResources() const noexcept;
-    std::vector<Resource> getResources(Resource::Operation operation) const;
   };
 
   std::unordered_map<GraphPass*, Resources> _resources;
 
-  // Every submission waits for external GPU work until the pending tickets have been consumed.
+  // The first submission of each real queue waits for pending external GPU work.
   std::vector<GpuTicket> _pendingTickets;
-  GraphPass* _swapchainFirstPass = nullptr;
 
   // A selected physical access and its submission's completion point.
   struct Access {
@@ -269,18 +259,16 @@ class Graph final {
     uint64_t value = 0;
     Buffer* buffer = nullptr;
     Image* image = nullptr;
-    bool writes = false;
   };
-  // Per physical instance: the last WRITE (if any), then subsequent READs, one per queue. Kept across frames.
+  // Each vector stores an optional last writer first, followed by readers (one per real queue).
+  // Writers have write bits in accessMask, including READ|WRITE accesses and layout transitions.
+  // A write replaces the whole vector; a read keeps the writer and adds or merges its queue's reader.
+  // Reader stage/access masks are ORed and the highest completion value is kept for that queue.
+  // Without a prior write the vector contains only readers. Preserved across frames; cleared by calculate().
   std::unordered_map<VkBuffer, std::vector<Access>> _bufferHistory;
   std::unordered_map<VkImage, std::vector<Access>> _imageHistory;
   // Same-queue dependencies rebuilt from physical history before recording commands in each render().
   std::unordered_map<GraphPass*, Barrier> _physicalBarriers;
-
-  // If Input and Output select the same buffer/image, combine their READ/WRITE and stage/access masks
-  // to build its dependencies and update its history once per pass.
-  // calculate() reserves the vector; render() reuses it across passes and frames.
-  std::vector<Access> _resolvedAccesses;
 
   // Cross-queue synchronization: one timeline per real queue assigns completion points to its submissions.
   struct QueueTimeline {
@@ -290,17 +278,18 @@ class Graph final {
   std::unordered_map<VkQueue, QueueTimeline> _queueTimelines;
 
   // Passes in [firstPass, endPass) are sent to queue in one vkQueueSubmit2 call.
-  // calculate() groups the passes and prepares commands for each frame slot.
+  // calculate() groups the passes; render() gathers their command buffers for the current frame slot.
   // render() sets the semaphore waits/signals and the timeline value that marks this submission's completion.
   struct Submission {
     VkQueue queue;
     std::size_t firstPass = 0, endPass = 0;
-    std::vector<std::vector<VkCommandBufferSubmitInfo>> commands;
     std::vector<VkSemaphoreSubmitInfo> waits, signals;
     uint64_t value = 0;
   };
   std::vector<Submission> _submissions;
 
+  bool _hasReadAccess(VkAccessFlags2 mask) const noexcept;
+  bool _hasWriteAccess(VkAccessFlags2 mask) const noexcept;
   void _setResourceNames();
   void _preparePhysicalAccesses();
   void _addWait(std::vector<VkSemaphoreSubmitInfo>& waits,

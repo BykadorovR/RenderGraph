@@ -74,6 +74,55 @@ TEST(ScenarioTest, ComputePassQueueTypes) {
   EXPECT_EQ(graphicsPass.getQueueType(), RenderGraph::QueueType::GENERAL);
 }
 
+TEST(ScenarioTest, PrintShowsStaticPlanAndPreparedFrame) {
+  RenderGraph::Instance instance("PrintGraph", false);
+  RenderGraph::Device device(instance);
+  device.initialize();
+  RenderGraph::MemoryAllocator allocator(device, instance);
+  RenderGraph::Tracer tracer(device);
+  RenderGraph::Graph graph(1, 2, device, tracer);
+  graph.initialize();
+  std::vector<std::unique_ptr<RenderGraph::Buffer>> buffers;
+  for (int frame = 0; frame < 2; ++frame) {
+    buffers.push_back(
+        std::make_unique<RenderGraph::Buffer>(16, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 0, allocator, device));
+  }
+  std::atomic<int> selections = 0;
+  graph.getGraphStorage().add("State", std::make_unique<RenderGraph::BufferHandler>(std::move(buffers), [&] {
+                                ++selections;
+                                return graph.getFrameInFlight();
+                              }));
+  graph.createPassCompute("Write", RenderGraph::QueueType::GENERAL).addStorageBufferOutput("State");
+  graph.createPassCompute("Read", RenderGraph::QueueType::GENERAL).addStorageBufferInput("State");
+  graph.calculate();
+  auto print = [&] {
+    testing::internal::CaptureStdout();
+    graph.print();
+    return testing::internal::GetCapturedStdout();
+  };
+  const auto plan = print();
+  EXPECT_EQ(selections, 0);
+  EXPECT_NE(plan.find("Synchronization: not prepared"), std::string::npos);
+  EXPECT_NE(plan.find("Submission 0, queue:"), std::string::npos);
+  EXPECT_NE(plan.find("passes: Write Read"), std::string::npos);
+  EXPECT_NE(plan.find("State (buffer) WRITE stages=0x"), std::string::npos);
+  EXPECT_NE(plan.find("State (buffer) READ stages=0x"), std::string::npos);
+  EXPECT_NE(plan.find(" handles: "), std::string::npos);
+  EXPECT_NE(plan.find("barriers: <resolved by render()>"), std::string::npos);
+  ASSERT_FALSE(graph.render());
+  ASSERT_EQ(vkDeviceWaitIdle(device.getLogicalDevice()), VK_SUCCESS);
+  EXPECT_EQ(graph.getFrameInFlight(), 1);
+  const auto selected = selections.load();
+  const auto prepared = print();
+  EXPECT_EQ(selections, selected);
+  EXPECT_NE(prepared.find("Synchronization: prepared frame 0 (slot 0)"), std::string::npos);
+  EXPECT_NE(prepared.find(" waits:"), std::string::npos);
+  EXPECT_NE(prepared.find(" signals:"), std::string::npos);
+  EXPECT_NE(prepared.find("buffer State ("), std::string::npos);
+  graph.calculate();
+  EXPECT_NE(print().find("Synchronization: not prepared"), std::string::npos);
+}
+
 TEST(ScenarioTest, GraphOneQueue) {
   glm::ivec2 resolution(1920, 1080);
   RenderGraph::Instance instance("TestApp", false);
@@ -186,16 +235,14 @@ TEST(ScenarioTest, GraphOneQueue) {
 
   graph.calculate();
 
-  EXPECT_TRUE(graph._resources.at(&renderPass)
-                  .contains("Swapchain", RenderGraph::Graph::Resource::Type::IMAGE,
-                            RenderGraph::Graph::Resource::Operation::WRITE));
-  EXPECT_FALSE(graph._resources.at(&renderPass)
-                   .contains("Swapchain", RenderGraph::Graph::Resource::Type::IMAGE,
-                             RenderGraph::Graph::Resource::Operation::READ));
-  EXPECT_TRUE(graph._resources.at(&guiPass).contains("Swapchain", RenderGraph::Graph::Resource::Type::IMAGE,
-                                                     RenderGraph::Graph::Resource::Operation::READ));
-  EXPECT_TRUE(graph._resources.at(&guiPass).contains("Swapchain", RenderGraph::Graph::Resource::Type::IMAGE,
-                                                     RenderGraph::Graph::Resource::Operation::WRITE));
+  const auto& renderResources = graph._resources.at(&renderPass).getResources();
+  const auto renderSwapchain = std::ranges::find(renderResources, "Swapchain", &RenderGraph::Graph::Resource::name);
+  ASSERT_NE(renderSwapchain, renderResources.end());
+  EXPECT_EQ(renderSwapchain->accessMask, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+  const auto& guiResources = graph._resources.at(&guiPass).getResources();
+  const auto guiSwapchain = std::ranges::find(guiResources, "Swapchain", &RenderGraph::Graph::Resource::name);
+  ASSERT_NE(guiSwapchain, guiResources.end());
+  EXPECT_EQ(guiSwapchain->accessMask, VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
 
   RenderGraph::Graph offscreenGraph(1, framesInFlight, device, tracer);
   offscreenGraph.setSwapchain(swapchain);
@@ -207,8 +254,8 @@ TEST(ScenarioTest, GraphOneQueue) {
   offscreenGraph.calculate();
 
   // calculate() prepares usage descriptions; physical barriers are built for the selected frame.
-  EXPECT_TRUE(offscreenGraph._physicalBarriers.at(&offscreenPass).getImageBarriers().empty());
-  EXPECT_TRUE(graph._physicalBarriers.at(&renderPass).getImageBarriers().empty());
+  EXPECT_TRUE(offscreenGraph._physicalBarriers.empty());
+  EXPECT_TRUE(graph._physicalBarriers.empty());
   EXPECT_TRUE(graph._queueTimelines.empty());
   commandBuffer[graph.getFrameInFlight()].endCommands();
 
@@ -243,7 +290,6 @@ TEST(ScenarioTest, GraphOneQueue) {
   graph.render();
   EXPECT_EQ(positionImageViews.front()->getImage().getImageLayout(), VK_IMAGE_LAYOUT_GENERAL);
   EXPECT_EQ(positionImageViews.back()->getImage().getImageLayout(), VK_IMAGE_LAYOUT_UNDEFINED);
-  EXPECT_EQ(graph._swapchainFirstPass, &renderPass);
   EXPECT_EQ(graph.getFrameInFlight(), 1);
   EXPECT_EQ(elementMock->getDrawCount(), 3);
   EXPECT_EQ(elementMock->getUpdateCount(), elementMock->getDrawCount());
@@ -496,10 +542,10 @@ TEST(ScenarioTest, BufferQueueChangesUseSemaphores) {
 
   graph.calculate();
 
-  ASSERT_EQ(graph._submissions.size(), 4);
+  const bool separateQueues = device.getQueue(RenderGraph::QueueType::GENERAL) !=
+                              device.getQueue(RenderGraph::QueueType::COMPUTE);
+  ASSERT_EQ(graph._submissions.size(), separateQueues ? 4 : 1);
   graph._preparePhysicalAccesses();
-  EXPECT_TRUE(graph._submissions[1].waits.empty());
-  EXPECT_TRUE(graph._submissions[2].waits.empty());
   // Link stays on the graphics queue and requires one barrier before Middle.
   const auto& middleBarriers = graph._physicalBarriers.at(&middlePass).getBufferBarriers();
   ASSERT_EQ(middleBarriers.size(), 1);
@@ -508,7 +554,9 @@ TEST(ScenarioTest, BufferQueueChangesUseSemaphores) {
   EXPECT_EQ(barrier.srcQueueFamilyIndex, VK_QUEUE_FAMILY_IGNORED);
   EXPECT_EQ(barrier.dstQueueFamilyIndex, VK_QUEUE_FAMILY_IGNORED);
 
-  if (device.getQueue(RenderGraph::QueueType::GENERAL) != device.getQueue(RenderGraph::QueueType::COMPUTE)) {
+  if (separateQueues) {
+    EXPECT_TRUE(graph._submissions[1].waits.empty());
+    EXPECT_TRUE(graph._submissions[2].waits.empty());
     EXPECT_TRUE(graph._physicalBarriers.at(&lastPass).getBufferBarriers().empty());
     const auto& waits = graph._submissions.back().waits;
     ASSERT_EQ(waits.size(), 1);
@@ -519,6 +567,32 @@ TEST(ScenarioTest, BufferQueueChangesUseSemaphores) {
   } else {
     EXPECT_EQ(graph._physicalBarriers.at(&lastPass).getBufferBarriers().size(), 2);
     EXPECT_TRUE(graph._submissions.back().waits.empty());
+  }
+
+  RenderGraph::Semaphore upload(VK_SEMAPHORE_TYPE_TIMELINE, device);
+  const RenderGraph::GpuTicket tickets[]{{upload.getSemaphore(), 3}, {upload.getSemaphore(), 7}};
+  graph.calculate(tickets);
+  if (!separateQueues) {
+    // Exercise repeated submissions even when the device exposes only one queue.
+    graph._submissions.clear();
+    for (std::size_t index = 0; index < 4; ++index) {
+      graph._submissions.push_back(
+          {.queue = device.getQueue(RenderGraph::QueueType::GENERAL), .firstPass = index, .endPass = index + 1});
+    }
+  }
+  graph._preparePhysicalAccesses();
+  std::vector<VkQueue> waitedQueues;
+  for (const auto& submission : graph._submissions) {
+    const bool first = !std::ranges::contains(waitedQueues, submission.queue);
+    waitedQueues.push_back(submission.queue);
+    const auto& waits = submission.waits;
+    EXPECT_EQ(std::ranges::count(waits, upload.getSemaphore(), &VkSemaphoreSubmitInfo::semaphore), first ? 1 : 0);
+    if (first) {
+      const auto wait = std::ranges::find(waits, upload.getSemaphore(), &VkSemaphoreSubmitInfo::semaphore);
+      ASSERT_NE(wait, waits.end());
+      EXPECT_EQ(wait->value, 7);
+      EXPECT_EQ(wait->stageMask, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
+    }
   }
 }
 
@@ -546,15 +620,17 @@ TEST(ScenarioTest, BufferQueueChangesSurviveFrameSlotReuse) {
   auto& graphicsPass = graph.createPassCompute("ReadStateOnGraphics", RenderGraph::QueueType::GENERAL);
   graphicsPass.addStorageBufferInput("State");
   graph.calculate();
+  EXPECT_TRUE(graph._bufferHistory.empty());
 
   for (int frame = 0; frame < framesInFlight * 3; ++frame) {
     const auto buffer = graph.getGraphStorage().getBufferHandler("State").getBuffer().getBuffer();
     ASSERT_FALSE(graph.render());
+    EXPECT_EQ(graph._bufferHistory.size(), std::min(frame + 1, framesInFlight));
     const auto& history = graph._bufferHistory.at(buffer);
     ASSERT_EQ(history.size(), 2);
-    EXPECT_TRUE(history.front().writes);
+    EXPECT_EQ(history.front().accessMask, VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT);
     EXPECT_EQ(history.front().queue, device.getQueue(RenderGraph::QueueType::COMPUTE));
-    EXPECT_FALSE(history.back().writes);
+    EXPECT_EQ(history.back().accessMask, VK_ACCESS_2_SHADER_READ_BIT);
     EXPECT_EQ(history.back().queue, device.getQueue(RenderGraph::QueueType::GENERAL));
   }
   EXPECT_EQ(vkDeviceWaitIdle(device.getLogicalDevice()), VK_SUCCESS);
@@ -658,12 +734,14 @@ TEST(ScenarioTest, GraphicsPassBufferInputs) {
   EXPECT_EQ(drawPass.getVertexBufferInputs().front(), "Vertices");
   ASSERT_EQ(drawPass.getIndexBufferInputs().size(), 1);
   EXPECT_EQ(drawPass.getIndexBufferInputs().front(), "Indices");
-  EXPECT_FALSE(graph._resources.at(&drawPass).contains("Swapchain", RenderGraph::Graph::Resource::Type::IMAGE,
-                                                       RenderGraph::Graph::Resource::Operation::READ));
+  const auto& resources = graph._resources.at(&drawPass).getResources();
+  const auto swapchainResource = std::ranges::find(resources, "Swapchain", &RenderGraph::Graph::Resource::name);
+  ASSERT_NE(swapchainResource, resources.end());
+  EXPECT_EQ(swapchainResource->accessMask, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
 
-  ASSERT_EQ(graph._passesOrdered.size(), 2);
-  EXPECT_EQ(graph._passesOrdered.front(), &cullPass);
-  EXPECT_EQ(graph._passesOrdered.back(), &drawPass);
+  ASSERT_EQ(graph._passes.size(), 2);
+  EXPECT_EQ(graph._passes.front().get(), &cullPass);
+  EXPECT_EQ(graph._passes.back().get(), &drawPass);
 
   graph._preparePhysicalAccesses();
   const auto& barriers = graph._physicalBarriers.at(&drawPass).getBufferBarriers();
@@ -762,9 +840,9 @@ TEST(ScenarioTest, ComputePassIndirectBufferInput) {
   ASSERT_EQ(dispatchPass.getIndirectBufferInputs().size(), 1);
   EXPECT_EQ(dispatchPass.getIndirectBufferInputs().front(), "DispatchCommands");
 
-  ASSERT_EQ(graph._passesOrdered.size(), 5);
-  EXPECT_EQ(graph._passesOrdered.front(), &generatePass);
-  EXPECT_EQ(graph._passesOrdered.back(), &inspectRewritePass);
+  ASSERT_EQ(graph._passes.size(), 5);
+  EXPECT_EQ(graph._passes.front().get(), &generatePass);
+  EXPECT_EQ(graph._passes.back().get(), &inspectRewritePass);
 
   graph._preparePhysicalAccesses();
   const auto& barriers = graph._physicalBarriers.at(&dispatchPass).getBufferBarriers();
@@ -1133,17 +1211,17 @@ TEST(ScenarioTest, TraversalKeepsTransitiveProducerBeforeConsumer) {
 
   graph.calculate();
 
-  ASSERT_EQ(graph._passesOrdered.size(), 3);
+  ASSERT_EQ(graph._passes.size(), 3);
 
-  auto orderedPass = graph._passesOrdered.begin();
+  auto orderedPass = graph._passes.begin();
 
-  EXPECT_EQ(*orderedPass, &firstPass);
+  EXPECT_EQ(orderedPass->get(), &firstPass);
   ++orderedPass;
 
-  EXPECT_EQ(*orderedPass, &middlePass);
+  EXPECT_EQ(orderedPass->get(), &middlePass);
   ++orderedPass;
 
-  EXPECT_EQ(*orderedPass, &lastPass);
+  EXPECT_EQ(orderedPass->get(), &lastPass);
 }
 
 TEST(ScenarioTest, TraversalDiamondGraph) {
@@ -1237,28 +1315,28 @@ TEST(ScenarioTest, TraversalDiamondGraph) {
 
   graph.calculate();
 
-  ASSERT_EQ(graph._passesOrdered.size(), 4);
+  ASSERT_EQ(graph._passes.size(), 4);
 
-  const auto sourceIt = std::ranges::find(graph._passesOrdered, &sourcePass);
+  const auto sourceIt = std::ranges::find(graph._passes, &sourcePass, &std::unique_ptr<RenderGraph::GraphPass>::get);
 
-  const auto leftIt = std::ranges::find(graph._passesOrdered, &leftPass);
+  const auto leftIt = std::ranges::find(graph._passes, &leftPass, &std::unique_ptr<RenderGraph::GraphPass>::get);
 
-  const auto rightIt = std::ranges::find(graph._passesOrdered, &rightPass);
+  const auto rightIt = std::ranges::find(graph._passes, &rightPass, &std::unique_ptr<RenderGraph::GraphPass>::get);
 
-  const auto joinIt = std::ranges::find(graph._passesOrdered, &joinPass);
+  const auto joinIt = std::ranges::find(graph._passes, &joinPass, &std::unique_ptr<RenderGraph::GraphPass>::get);
 
-  ASSERT_NE(sourceIt, graph._passesOrdered.end());
-  ASSERT_NE(leftIt, graph._passesOrdered.end());
-  ASSERT_NE(rightIt, graph._passesOrdered.end());
-  ASSERT_NE(joinIt, graph._passesOrdered.end());
+  ASSERT_NE(sourceIt, graph._passes.end());
+  ASSERT_NE(leftIt, graph._passes.end());
+  ASSERT_NE(rightIt, graph._passes.end());
+  ASSERT_NE(joinIt, graph._passes.end());
 
-  const auto sourceIndex = std::distance(graph._passesOrdered.begin(), sourceIt);
+  const auto sourceIndex = std::distance(graph._passes.begin(), sourceIt);
 
-  const auto leftIndex = std::distance(graph._passesOrdered.begin(), leftIt);
+  const auto leftIndex = std::distance(graph._passes.begin(), leftIt);
 
-  const auto rightIndex = std::distance(graph._passesOrdered.begin(), rightIt);
+  const auto rightIndex = std::distance(graph._passes.begin(), rightIt);
 
-  const auto joinIndex = std::distance(graph._passesOrdered.begin(), joinIt);
+  const auto joinIndex = std::distance(graph._passes.begin(), joinIt);
 
   EXPECT_LT(sourceIndex, leftIndex);
   EXPECT_LT(sourceIndex, rightIndex);
@@ -1294,8 +1372,10 @@ TEST(ScenarioTest, TraversalDiamondGraph) {
 
   // calculate() leaves layouts untouched; render planning transitions the selected physical image.
   EXPECT_EQ(imageView->getImage().getImageLayout(), VK_IMAGE_LAYOUT_UNDEFINED);
-  EXPECT_TRUE(imageGraph._physicalBarriers.at(&initialGraphicsReader).getImageBarriers().empty());
+  EXPECT_TRUE(imageGraph._physicalBarriers.empty());
+  EXPECT_TRUE(imageGraph._imageHistory.empty());
   imageGraph._preparePhysicalAccesses();
+  EXPECT_EQ(imageGraph._imageHistory.size(), 1);
   ASSERT_EQ(imageGraph._physicalBarriers.at(&initialGraphicsReader).getImageBarriers().size(), 1);
   const auto& layoutBarrier = imageGraph._physicalBarriers.at(&initialGraphicsReader).getImageBarriers().front();
   EXPECT_EQ(layoutBarrier.oldLayout, VK_IMAGE_LAYOUT_UNDEFINED);

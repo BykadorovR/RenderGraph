@@ -154,6 +154,10 @@ class GraphCommandRecorder final {
     for (uint32_t buffer = 0; buffer < submit.commandBufferInfoCount; ++buffer) {
       submissionBuffers.back().push_back(submit.pCommandBufferInfos[buffer].commandBuffer);
     }
+    submissionWaits.emplace_back();
+    for (uint32_t wait = 0; wait < submit.waitSemaphoreInfoCount; ++wait) {
+      submissionWaits.back().push_back(submit.pWaitSemaphoreInfos[wait]);
+    }
     submissionSignals.emplace_back();
     for (uint32_t signal = 0; signal < submit.signalSemaphoreInfoCount; ++signal) {
       submissionSignals.back().push_back(submit.pSignalSemaphoreInfos[signal]);
@@ -165,6 +169,7 @@ class GraphCommandRecorder final {
   std::vector<VkBufferMemoryBarrier2> bufferBarriers;
   std::vector<VkQueue> submissionQueues;
   std::vector<std::vector<VkCommandBuffer>> submissionBuffers;
+  std::vector<std::vector<VkSemaphoreSubmitInfo>> submissionWaits;
   std::vector<std::vector<VkSemaphoreSubmitInfo>> submissionSignals;
 
   GraphCommandRecorder() {
@@ -1744,6 +1749,8 @@ TEST(ValidationTest, GraphStorageResetPreservesFixedImages) {
                 RenderGraph::ImageResizePolicy::SWAPCHAIN);
     std::vector swapchainViews{createImageView(initialSwapchainResolution)};
     storage.add("Swapchain", std::make_unique<RenderGraph::ImageViewHolder>(swapchainViews, []() { return 0; }));
+    storage.add("SwapchainAlias", std::make_unique<RenderGraph::ImageViewHolder>(swapchainViews, []() { return 0; }),
+                RenderGraph::ImageResizePolicy::SWAPCHAIN);
 
     RenderGraph::ResourceUploader uploader(allocator, device);
     const std::vector<std::byte> pixels(fixedResolution.x * fixedResolution.y * 4, std::byte{0x5a});
@@ -1760,6 +1767,8 @@ TEST(ValidationTest, GraphStorageResetPreservesFixedImages) {
       std::vector newSwapchainViews{createImageView(resolution)};
       storage.reset(swapchainViews, newSwapchainViews);
       EXPECT_EQ(storage.getImageViewHolder("Swapchain").getImageView().getImageView(),
+                newSwapchainViews.front()->getImageView());
+      EXPECT_EQ(storage.getImageViewHolder("SwapchainAlias").getImageView().getImageView(),
                 newSwapchainViews.front()->getImageView());
       ASSERT_EQ(fixedView->getImage().getResolution(), fixedResolution);
       EXPECT_EQ(fixedView->getImage().getImage(), fixedImage);
@@ -2220,13 +2229,16 @@ TEST(ValidationTest, SwapchainLayoutsFollowAcquiredImagesAcrossRecalculationAndR
     RenderGraph::MemoryAllocator allocator(device, instance);
     RenderGraph::Swapchain swapchain(resolution, allocator, device);
     swapchain.initialize();
+    const auto presentMode = swapchain.getSwapchain().present_mode;
     RenderGraph::Tracer tracer(device);
     RenderGraph::Graph graph(2, 2, device, tracer);
     graph.setSwapchain(swapchain);
     graph.initialize();
-    graph.getGraphStorage().add("Swapchain",
-                                std::make_unique<RenderGraph::ImageViewHolder>(
-                                    swapchain.getImageViews(), [&swapchain] { return swapchain.getSwapchainIndex(); }));
+    for (const auto* name : {"Swapchain", "SwapchainAlias"}) {
+      graph.getGraphStorage().add(
+          name, std::make_unique<RenderGraph::ImageViewHolder>(swapchain.getImageViews(),
+                                                               [&swapchain] { return swapchain.getSwapchainIndex(); }));
+    }
     graph.createPassCompute("UnrelatedFirstPass", RenderGraph::QueueType::GENERAL);
     RenderGraph::GraphPass* firstUse = nullptr;
     if (useSwapchain) {
@@ -2239,6 +2251,11 @@ TEST(ValidationTest, SwapchainLayoutsFollowAcquiredImagesAcrossRecalculationAndR
 
     for (int cycle = 0; cycle < 2; ++cycle) {
       if (cycle != 0) ASSERT_NO_THROW(graph.reset({96, 64}));
+      EXPECT_EQ(swapchain.getSwapchain().present_mode, presentMode);
+      const auto swapchainViews = swapchain.getImageViews();
+      for (const auto* name : {"Swapchain", "SwapchainAlias"}) {
+        ASSERT_TRUE(graph.getGraphStorage().getImageViewHolder(name).contains(swapchainViews)) << name;
+      }
       graph.calculate();
       graph.calculate();
       std::vector<VkImageLayout> layouts(swapchain.getImageCount(), VK_IMAGE_LAYOUT_UNDEFINED);
@@ -2269,7 +2286,7 @@ TEST(ValidationTest, SwapchainLayoutsFollowAcquiredImagesAcrossRecalculationAndR
         ASSERT_EQ(recorder.submissionBuffers.front().size(), useSwapchain ? 3 : 2);
         EXPECT_EQ(recorder.submissionBuffers.front().back(), finalCommand);
         layouts[imageIndex] = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-        // Rebuilding the plan must not change the acquired-image history.
+        // Rebuilding the plan must preserve the tracked image layout.
         ASSERT_EQ(vkDeviceWaitIdle(device.getLogicalDevice()), VK_SUCCESS);
         graph.calculate();
         EXPECT_EQ(image.getImageLayout(), layouts[imageIndex]);
@@ -2357,8 +2374,7 @@ TEST(ValidationTest, SwapchainComputeUseHasNoOwnershipBarriers) {
         EXPECT_EQ(barrier.srcQueueFamilyIndex, VK_QUEUE_FAMILY_IGNORED);
         EXPECT_EQ(barrier.dstQueueFamilyIndex, VK_QUEUE_FAMILY_IGNORED);
       }
-      // QueueType changes retain two submissions even if the actual queues alias.
-      ASSERT_EQ(recorder.submissionQueues.size(), 2);
+      ASSERT_EQ(recorder.submissionQueues.size(), sameQueue ? 1 : 2);
       EXPECT_EQ(recorder.submissionQueues.back(),
                 device.getQueue(graphicsFirst ? RenderGraph::QueueType::COMPUTE : RenderGraph::QueueType::GENERAL));
       EXPECT_EQ(recorder.submissionBuffers.back().back(), finalCommand);
@@ -2639,6 +2655,7 @@ TEST_P(PhysicalResourceTest, GpuResultsAndSynchronization) {
     const RenderGraph::GpuTicket ticket{ready.getSemaphore(), 1};
     graph.calculate({&ticket, 1});
     std::vector<std::array<uint32_t, 12>> expected(iterations);
+    RenderGraph::GpuTicket completion{};
     for (int iteration = 0; iteration < iterations; ++iteration) {
       SCOPED_TRACE(iteration);
       if (mode == 2) {
@@ -2665,6 +2682,23 @@ TEST_P(PhysicalResourceTest, GpuResultsAndSynchronization) {
       ASSERT_FALSE(graph.render());
       EXPECT_EQ(graph.getFrameNumber(), iteration + 1);
       EXPECT_EQ(recorder.submissionQueues.size(), separateQueues ? 6 : 1);
+      if (completion.semaphore) {
+        std::vector<VkQueue> waitedQueues;
+        for (std::size_t index = 0; index < recorder.submissionWaits.size(); ++index) {
+          const auto queue = recorder.submissionQueues[index];
+          const bool first = !std::ranges::contains(waitedQueues, queue);
+          waitedQueues.push_back(queue);
+          const auto& waits = recorder.submissionWaits[index];
+          const auto wait = std::ranges::find(waits, completion.semaphore, &VkSemaphoreSubmitInfo::semaphore);
+          if (iteration == iterations / 2 + 1 && first) {
+            ASSERT_NE(wait, waits.end());
+            EXPECT_EQ(wait->value, completion.value);
+            EXPECT_EQ(wait->stageMask, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
+          } else {
+            EXPECT_EQ(wait, waits.end());
+          }
+        }
+      }
       for (const auto& [commands, barrier] : recorder.imageBarriers) {
         EXPECT_TRUE(barrier.image == images[imageSrc]->getImage().getImage() ||
                     barrier.image == images[imageDst]->getImage().getImage());
@@ -2678,6 +2712,8 @@ TEST_P(PhysicalResourceTest, GpuResultsAndSynchronization) {
       }
       if (iteration == iterations / 2) {
         ASSERT_EQ(vkDeviceWaitIdle(device.getLogicalDevice()), VK_SUCCESS);
+        const auto& signal = recorder.submissionSignals.back().back();
+        completion = {signal.semaphore, signal.value};
         graph.calculate();
       }
     }
