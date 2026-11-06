@@ -607,9 +607,9 @@ void Graph::calculate(std::span<const GpuTicket> tickets) {
     }
   };
   for (const auto& ticket : tickets) addTicket(ticket);
-  // Preserve visibility of existing resource contents when rebuilding their dependency history.
+  // Recalculation clears history, but buffers/FIXED images can retain their contents.
+  // Wait for the last submitted frame once before using them with the rebuilt history.
   if (_frameNumber) addTicket({_semaphoreInFlight->getSemaphore(), _frameNumber});
-  // store resources in a convinient way
   _resources.clear();
   _queueFirstPasses.clear();
   _physicalBarriers.clear();
@@ -621,6 +621,7 @@ void Graph::calculate(std::span<const GpuTicket> tickets) {
     return;
   }
 
+  // Prepare usage declarations only; each selected buffer/image is resolved later in render().
   auto addResources = [this](GraphPass* pass, const auto& names, Resource::Type type, VkPipelineStageFlags2 stages,
                              VkAccessFlags2 access) {
     for (const auto& name : names) {
@@ -673,6 +674,7 @@ void Graph::calculate(std::span<const GpuTicket> tickets) {
     }
   }
 
+  // Debug labels enumerate all physical instances without evaluating their index callbacks.
   _setResourceNames();
 
   // Group adjacent passes on the same real queue: G G C C G → [G G] [C C] [G].
@@ -681,16 +683,18 @@ void Graph::calculate(std::span<const GpuTicket> tickets) {
     auto* pass = _passes[passIndex].get();
     const QueueType queueType = pass->getQueueType();
     const auto queue = _device->getQueue(queueType);
+    // insert().second is true only on the first occurrence of this VkQueue.
     if (collectionQueues.insert(queue).second) {
       _queueFirstPasses.insert(pass);
     }
     if (_submissions.empty() || _submissions.back().queue != queue) {
       _submissions.push_back({.queue = queue, .firstPass = passIndex});
     }
-    _submissions.back().endPass = passIndex + 1;
+    _submissions.back().endPass = passIndex + 1;  // The end is excluded, so size() is a valid endPass.
   }
 
-  // Multiple real queues use timelines for resource dependencies and completion of the whole frame.
+  // One timeline per unique queue, not per submission: G,C,G needs two semaphores.
+  // Same-queue resource dependencies use barriers; existing timelines/counters survive recalculation.
   if (collectionQueues.size() > 1) {
     for (const auto queue : collectionQueues) {
       auto [timeline, added] = _queueTimelines.try_emplace(queue);
@@ -699,10 +703,9 @@ void Graph::calculate(std::span<const GpuTicket> tickets) {
   }
 }
 
-// Merge waits for one semaphore using the highest completion value and all required destination stages.
-// semaphore S, value 5, COMPUTE_SHADER
-// semaphore S, value 8, VERTEX_SHADER
-// produces: semaphore S, value 8, COMPUTE_SHADER | VERTEX_SHADER
+// Add a wait description for an existing semaphore; no semaphore is created here.
+// S=5 at COMPUTE + S=8 at VERTEX -> one wait for S=8 at COMPUTE|VERTEX.
+// These stages belong to the waiting submission, not the signaling queue.
 void Graph::_addWait(std::vector<VkSemaphoreSubmitInfo>& waits,
                      VkSemaphore semaphore,
                      uint64_t value,
@@ -720,18 +723,30 @@ void Graph::_addWait(std::vector<VkSemaphoreSubmitInfo>& waits,
 }
 
 void Graph::_preparePhysicalAccesses() {
-  // Combine reads and writes to the same physical instance within a pass.
+  // Scratch list cleared per pass; one entry per selected VkBuffer/VkImage.
   std::vector<Access> resolvedAccesses;
+  // True only if a declared pass uses the image returned by this frame's acquire.
   bool acquiredImageUsed = false;
-  // clean everything from the previous frame and increase timeline semaphore counter (different for different queues)
+  // Rebuild this frame's wait/signal descriptions; the semaphore objects already exist.
   for (auto& submission : _submissions) {
     submission.waits.clear();
     submission.signals.clear();
+    // Upload example: uploader signals S=5; the first submission on each queue waits for S=5.
+    // Tickets carry no resource list; ALL_COMMANDS also covers later submissions on this queue.
+    if (_queueFirstPasses.contains(_passes[submission.firstPass].get())) {
+      for (const auto& ticket : _pendingTickets) {
+        _addWait(submission.waits, ticket.semaphore, ticket.value, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
+      }
+    }
+    // Reserve a value on the CPU; the GPU reaches it when this submission finishes.
+    // G,C,G reuse the queue semaphores with values G=1,C=1,G=2, rather than a common frame number.
+    // push_back adds a signal description to this submission, not a new submission.
     if (const auto timeline = _queueTimelines.find(submission.queue); timeline != _queueTimelines.end()) {
       submission.value = ++timeline->second.value;
       submission.signals.push_back({.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
                                     .semaphore = timeline->second.semaphore->getSemaphore(),
                                     .value = submission.value,
+                                    // Include copies and indirect work, not just shader stages.
                                     .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT});
     }
   }
@@ -746,7 +761,8 @@ void Graph::_preparePhysicalAccesses() {
       barrier.clear();
       resolvedAccesses.clear();
       resolvedAccesses.reserve(_resources.at(pass).getResources().size());
-      // Combine aliases into one READ/WRITE history update per selected instance in this pass.
+      // Input=READ A and Output=WRITE A become one READ|WRITE access to A in this pass.
+      // Merge these destination masks before checking earlier accesses in history.
       for (const auto& resource : _resources.at(pass).getResources()) {
         Access current{.queue = queue,
                        .stageMask = resource.stageMask,
@@ -769,28 +785,38 @@ void Graph::_preparePhysicalAccesses() {
         }
       }
 
-      // depending on the resource history deciding whether a semaphore or barrier is needed + masks/stages
-      for (const auto& access : resolvedAccesses) {
+      for (const auto& passAccess : resolvedAccesses) {
+        auto access = passAccess;
+        // A handle keeps its history across names and render() calls, including previous-frame uses.
         auto& history = access.buffer ? _bufferHistory[access.buffer->getBuffer()]
                                       : _imageHistory[access.image->getImage()];
+        // Acquire signals readiness, not layout; wait in the first submission that actually uses the image.
         if (access.image && access.image->getImage() == acquiredImage && !acquiredImageUsed) {
           acquiredImageUsed = true;
           _addWait(submission.waits, _semaphoreImageAvailable[getFrameInFlight()]->getSemaphore(), 0,
                    VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
         }
         const bool transition = access.image && access.image->getImageLayout() != VK_IMAGE_LAYOUT_GENERAL;
+        // A layout change may write image memory even when the pass only reads.
+        // Use broad masks for that change; passAccess still holds the pass's original masks.
+        if (transition) {
+          access.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+          access.accessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+        }
         const bool writes = _hasWriteAccess(access.accessMask);
         VkPipelineStageFlags2 sourceStages = 0;
         VkAccessFlags2 sourceAccess = 0;
-        // Reads depend on writes; writes and layout transitions depend on every prior access.
+        // Source masks describe earlier uses; destination masks describe this pass, including any transition.
+        // READ depends on the writer; WRITE depends on the writer and every reader.
+        // Same queue: merge sources for a barrier. Other queue: wait for its stored timeline value.
         for (const auto& prior : history) {
-          if (!_hasWriteAccess(prior.accessMask) && !writes && !transition) continue;
+          if (!_hasWriteAccess(prior.accessMask) && !writes) continue;
           if (prior.queue == queue) {
             sourceStages |= prior.stageMask;
             sourceAccess |= prior.accessMask;
           } else {
             _addWait(submission.waits, _queueTimelines.at(prior.queue).semaphore->getSemaphore(), prior.value,
-                     transition ? VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT : access.stageMask);
+                     access.stageMask);
           }
         }
         if (access.buffer && sourceStages) {
@@ -798,21 +824,19 @@ void Graph::_preparePhysicalAccesses() {
         } else if (access.image && (sourceStages || transition)) {
           auto& image = *access.image;
           barrier.addImage(image.getImage(), sourceStages ? sourceStages : VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-                           sourceAccess, transition ? VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT : access.stageMask,
-                           transition ? VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT : access.accessMask,
-                           transition ? image.getImageLayout() : VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL,
+                           sourceAccess, access.stageMask, access.accessMask, image.getImageLayout(),
+                           VK_IMAGE_LAYOUT_GENERAL,
                            {image.getAspectMask(), 0, static_cast<uint32_t>(image.getMipMapNumber()), 0,
                             static_cast<uint32_t>(image.getLayerNumber())});
+          // Track the planned layout on the CPU; the GPU transition is recorded later.
+          image.setImageLayout(VK_IMAGE_LAYOUT_GENERAL);
         }
-        if (transition) {
-          access.image->setImageLayout(VK_IMAGE_LAYOUT_GENERAL);
-          history.assign(1, access);
-          history.front().stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-          history.front().accessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
-        }
-        // A WRITE replaces history; a READ keeps the writer and joins this queue's readers.
+        // WRITE replaces history with one access; old dependencies are already in its barriers/waits.
+        // READ keeps the writer (W->R->R still needs it) and merges its queue's reader.
         if (writes) {
-          history.assign(1, access);
+          // Keep a real WRITE's narrow masks for the next barrier, e.g. COMPUTE_SHADER/SHADER_WRITE.
+          // READ+transition keeps the combined access so later readers also wait for the transition.
+          history.assign(1, _hasWriteAccess(passAccess.accessMask) ? passAccess : access);
         } else {
           auto reader = std::ranges::find_if(
               history, [&](const Access& prior) { return !_hasWriteAccess(prior.accessMask) && prior.queue == queue; });
@@ -826,19 +850,14 @@ void Graph::_preparePhysicalAccesses() {
         }
       }
     }
-    // An ALL_COMMANDS wait also covers later submissions on this same queue.
-    if (_queueFirstPasses.contains(_passes[submission.firstPass].get())) {
-      for (const auto& ticket : _pendingTickets) {
-        _addWait(submission.waits, ticket.semaphore, ticket.value, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
-      }
-    }
   }
 
   // Prepare swapchain acquire waits and presentation/completion signals.
   auto& last = _submissions.back();
   if (_swapchain) {
     if (!acquiredImageUsed) {
-      // Even an unused acquired image must be transitioned before presentation.
+      // No declared pass used the acquired image, so the resource loop did not prepare it.
+      // render() still records GENERAL -> PRESENT; prepare GENERAL and consume acquire here.
       auto& image = _swapchain->getImage(_swapchain->getSwapchainIndex());
       _physicalBarriers.at(_passes.back().get())
           .addImage(image.getImage(), VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
@@ -850,16 +869,21 @@ void Graph::_preparePhysicalAccesses() {
       _addWait(last.waits, _semaphoreImageAvailable[getFrameInFlight()]->getSemaphore(), 0,
                VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
     }
+    // Present waits for this binary semaphore, which is separate from the acquire semaphore.
     last.signals.push_back({.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
                             .semaphore = _semaphoreRenderFinished[_swapchain->getSwapchainIndex()]->getSemaphore(),
                             .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT});
   }
-  // Frame-slot reuse and presentation must wait for every queue, including independent passes.
+  // Frame-slot reuse must wait for every graph queue, including independent passes.
+  // If G is last, it waits for C; if C is last, it waits for G. Its own queue is covered by its signal.
+  // This waits before all commands in the last submission, so it may reduce overlap.
   for (const auto& [queue, timeline] : _queueTimelines) {
     if (queue != last.queue) {
       _addWait(last.waits, timeline.semaphore->getSemaphore(), timeline.value, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
     }
   }
+  // This separate timeline tells the CPU that all graph queues finished this frame.
+  // Frame 0 signals 1; with two slots, CPU waits for 1 before starting frame 2.
   last.signals.push_back({.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
                           .semaphore = _semaphoreInFlight->getSemaphore(),
                           .value = _frameNumber + 1,
@@ -904,7 +928,8 @@ bool Graph::render() {
     swapchainIndex = _swapchain->getSwapchainIndex();
   }
 
-  // Resolve physical accesses and prepare their dependencies before launching parallel command recording.
+  // Prepare this frame's accesses and dependencies before launching parallel recording.
+  // This call builds CPU descriptions; it neither waits on the GPU nor submits commands.
   const int frame = getFrameInFlight();
   _preparePhysicalAccesses();
 
@@ -918,11 +943,14 @@ bool Graph::render() {
         return _threadPool->submit([this, pass, commandBuffer, queueType, frame]() {
           const auto passCpuTrace = _tracer->traceCPU("Graph.pass." + pass->getName());
           const auto passGpuTrace = _tracer->traceGPU("Graph.pass." + pass->getName(), queueType, *commandBuffer);
+          // Record resource barriers before this pass; semaphore waits belong to its submission.
           _physicalBarriers.at(pass).execute(commandBuffer->getCommandBuffer());
           pass->execute(frame, *commandBuffer);
         });
       }) |
       std::ranges::to<std::vector<std::future<void>>>();
+  // Finish recording before submission. If get() throws, the remaining thread-pool jobs still run.
+  // Wait for valid (not yet consumed) futures before rethrowing, so these jobs cannot outlive render().
   try {
     for (auto& task : futureTasks) task.get();
   } catch (...) {
@@ -937,6 +965,7 @@ bool Graph::render() {
     const auto transitionGpuTrace = _tracer->traceGPU("Graph.transition.present", _passes.back()->getQueueType(),
                                                       *commandBuffer);
     auto& image = _swapchain->getImage(swapchainIndex);
+    // All pass accesses use GENERAL; record the final GENERAL -> PRESENT barrier in the last command buffer.
     Barrier present;
     present.addImage(image.getImage(), VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT,
                      VK_PIPELINE_STAGE_2_NONE, 0, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
@@ -944,6 +973,7 @@ bool Graph::render() {
                       static_cast<uint32_t>(image.getLayerNumber())});
     present.execute(commandBuffer->getCommandBuffer());
     image.setImageLayout(VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+    // Presentation preparation becomes the image's last write for its next acquired use.
     if (auto history = _imageHistory.find(image.getImage()); history != _imageHistory.end()) {
       history->second.assign(1, {.queue = _submissions.back().queue,
                                  .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
@@ -963,6 +993,7 @@ bool Graph::render() {
       commands.push_back(
           {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = commandBuffer.getCommandBuffer()});
     }
+    // Waits/signals apply to this submission regardless of when their descriptions were appended above.
     const VkSubmitInfo2 submitInfo{
         .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
         .waitSemaphoreInfoCount = static_cast<uint32_t>(submission.waits.size()),
@@ -975,6 +1006,7 @@ bool Graph::render() {
     const auto result = vkQueueSubmit2(submission.queue, 1, &submitInfo, nullptr);
     if (result != VK_SUCCESS) throw std::runtime_error("vkQueueSubmit2 failed: " + std::to_string(result));
   }
+  // Consume external readiness points once; ordinary following frames use the retained access history.
   _pendingTickets.clear();
 
   ++_frameNumber;

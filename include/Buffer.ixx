@@ -47,7 +47,8 @@ class BufferHandler final {
   std::function<int()> _index;
 
  public:
-  // Index callbacks must support concurrent calls and remain stable throughout Graph::render().
+  // May be called concurrently; return the same index throughout one Graph::render().
+  // E.g. frameNumber % 2 switches ping-pong slots between frames, not between getter calls.
   BufferHandler(std::vector<std::shared_ptr<Buffer>> buffers, std::function<int()> index);
   BufferHandler(std::vector<std::unique_ptr<Buffer>> buffers, std::function<int()> index);
   BufferHandler(const BufferHandler&) = delete;

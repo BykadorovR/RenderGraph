@@ -218,21 +218,22 @@ class Graph final {
   const Device* _device;
   Tracer* _tracer;
   std::unique_ptr<BS::thread_pool> _threadPool;
+  // Passes execute in declaration order; grouping submissions does not reorder them.
   std::vector<std::unique_ptr<GraphPass>> _passes;
-  // First pass on each real queue, for external waits and GPU profiling collection.
+  // First pass per VkQueue, used for ticket waits and GPU profiling: G0 G1 C0 G2 -> {G0, C0}.
   std::unordered_set<GraphPass*> _queueFirstPasses;
   std::unique_ptr<GraphStorage> _graphStorage;
-  // special semaphores
+  // Acquire: one binary semaphore per frame slot. Present-ready: one per swapchain image.
   std::vector<std::shared_ptr<Semaphore>> _semaphoreRenderFinished, _semaphoreImageAvailable;
+  // Separate timeline for CPU frame-slot reuse; its signal must cover all graph queues.
   std::unique_ptr<Semaphore> _semaphoreInFlight;
   uint64_t _frameNumber = 0;
   int _maxFramesInFlight;
 
-  // resources per pass
+  // calculate() stores resource names/types/masks; render() selects the physical buffer/image.
   struct Resource {
     std::string name;
     enum class Type { IMAGE, BUFFER } type;
-    // Prepared by calculate() from the pass's declared inputs/outputs.
     VkPipelineStageFlags2 stageMask = 0;
     VkAccessFlags2 accessMask = 0;
   };
@@ -246,9 +247,10 @@ class Graph final {
     const std::vector<Resource>& getResources() const noexcept;
   };
 
+  // One description per name in each pass, shared by all frame slots.
   std::unordered_map<GraphPass*, Resources> _resources;
 
-  // The first submission of each real queue waits for pending external GPU work.
+  // Upload/mipmap readiness, plus the previous frame when calculate() rebuilds history; consumed once.
   std::vector<GpuTicket> _pendingTickets;
 
   // A selected physical access and its submission's completion point.
@@ -256,30 +258,29 @@ class Graph final {
     VkQueue queue = VK_NULL_HANDLE;
     VkPipelineStageFlags2 stageMask = 0;
     VkAccessFlags2 accessMask = 0;
+    // Queue timeline completion value; zero when only one queue is used and no queue timeline is needed.
     uint64_t value = 0;
     Buffer* buffer = nullptr;
     Image* image = nullptr;
   };
-  // Each vector stores an optional last writer first, followed by readers (one per real queue).
-  // Writers have write bits in accessMask, including READ|WRITE accesses and layout transitions.
-  // A write replaces the whole vector; a read keeps the writer and adds or merges its queue's reader.
-  // Reader stage/access masks are ORed and the highest completion value is kept for that queue.
-  // Without a prior write the vector contains only readers. Preserved across frames; cleared by calculate().
+  // Per physical handle: optional last writer, then readers (one per queue).
+  // READ keeps the writer and merges reader masks/max value; WRITE replaces the history.
+  // Shared across names and frames, including repeated slots like [A,A,B]; cleared by calculate().
   std::unordered_map<VkBuffer, std::vector<Access>> _bufferHistory;
   std::unordered_map<VkImage, std::vector<Access>> _imageHistory;
   // Same-queue dependencies rebuilt from physical history before recording commands in each render().
   std::unordered_map<GraphPass*, Barrier> _physicalBarriers;
 
-  // Cross-queue synchronization: one timeline per real queue assigns completion points to its submissions.
+  // One semaphore per real queue; its counter increases per submission, not per frame.
   struct QueueTimeline {
     std::unique_ptr<Semaphore> semaphore;
     uint64_t value = 0;
   };
   std::unordered_map<VkQueue, QueueTimeline> _queueTimelines;
 
-  // Passes in [firstPass, endPass) are sent to queue in one vkQueueSubmit2 call.
-  // calculate() groups the passes; render() gathers their command buffers for the current frame slot.
-  // render() sets the semaphore waits/signals and the timeline value that marks this submission's completion.
+  // calculate() groups adjacent passes on one VkQueue; render() submits their current-slot command buffers.
+  // [firstPass, endPass) excludes endPass: [0,3) contains passes 0,1,2.
+  // waits/signals describe existing semaphores; adding an entry does not create a semaphore or submission.
   struct Submission {
     VkQueue queue;
     std::size_t firstPass = 0, endPass = 0;

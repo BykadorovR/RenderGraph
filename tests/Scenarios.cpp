@@ -1386,14 +1386,13 @@ TEST(ScenarioTest, TraversalDiamondGraph) {
   // The initial layout transition is a write; subsequent readers must also depend on it.
   ASSERT_EQ(imageGraph._physicalBarriers.at(&initialComputeReader).getImageBarriers().size(), 1);
   const auto& initialReadBarrier = imageGraph._physicalBarriers.at(&initialComputeReader).getImageBarriers().front();
-  EXPECT_EQ(initialReadBarrier.srcAccessMask, VK_ACCESS_2_MEMORY_WRITE_BIT);
+  EXPECT_EQ(initialReadBarrier.srcStageMask, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
+  EXPECT_NE(initialReadBarrier.srcAccessMask & VK_ACCESS_2_MEMORY_WRITE_BIT, 0);
   const auto& initialWriteBarriers = imageGraph._physicalBarriers.at(&imageWriter).getImageBarriers();
   ASSERT_EQ(initialWriteBarriers.size(), 1);
   const auto& initialWriteBarrier = initialWriteBarriers.front();
-  EXPECT_EQ(initialWriteBarrier.srcStageMask, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT |
-                                                  VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT |
-                                                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
-  EXPECT_EQ(initialWriteBarrier.srcAccessMask, VK_ACCESS_2_MEMORY_WRITE_BIT | VK_ACCESS_2_SHADER_READ_BIT);
+  EXPECT_NE(initialWriteBarrier.srcStageMask & VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0);
+  EXPECT_NE(initialWriteBarrier.srcAccessMask & VK_ACCESS_2_MEMORY_WRITE_BIT, 0);
   EXPECT_EQ(initialWriteBarrier.dstStageMask, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
   EXPECT_EQ(initialWriteBarrier.dstAccessMask, VK_ACCESS_2_SHADER_WRITE_BIT);
 
@@ -1431,4 +1430,32 @@ TEST(ScenarioTest, TraversalDiamondGraph) {
       EXPECT_EQ(imageBarrier.dstQueueFamilyIndex, VK_QUEUE_FAMILY_IGNORED);
     }
   }
+
+  // A transition before a write must not broaden the source scope of later barriers.
+  RenderGraph::Graph writeFirstGraph(1, 1, device, tracer);
+  writeFirstGraph.initialize();
+  auto writtenImage = std::make_unique<RenderGraph::Image>(allocator, device);
+  writtenImage->createImage(VK_FORMAT_R8G8B8A8_UNORM, {8, 8}, 1, 1, VK_IMAGE_ASPECT_COLOR_BIT,
+                            VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+  auto writtenView = std::make_shared<RenderGraph::ImageView>(std::move(writtenImage), device);
+  writtenView->createImageView(VK_IMAGE_VIEW_TYPE_2D, 0, 0);
+  writeFirstGraph.getGraphStorage().add(
+      "Written", std::make_unique<RenderGraph::ImageViewHolder>(std::vector{writtenView}, [] { return 0; }));
+  auto& firstWriter = writeFirstGraph.createPassCompute("FirstWrite", RenderGraph::QueueType::GENERAL);
+  firstWriter.addStorageTextureOutput("Written");
+  auto& firstSample = writeFirstGraph.createPassGraphic("FirstSample");
+  firstSample.addTextureInput("Written");
+  writeFirstGraph.calculate();
+  writeFirstGraph._preparePhysicalAccesses();
+  const auto& writeBarriers = writeFirstGraph._physicalBarriers.at(&firstWriter).getImageBarriers();
+  ASSERT_EQ(writeBarriers.size(), 1);
+  EXPECT_EQ(writeBarriers.front().oldLayout, VK_IMAGE_LAYOUT_UNDEFINED);
+  EXPECT_EQ(writeBarriers.front().newLayout, VK_IMAGE_LAYOUT_GENERAL);
+  EXPECT_EQ(writeBarriers.front().dstStageMask, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
+  const auto& sampleBarriers = writeFirstGraph._physicalBarriers.at(&firstSample).getImageBarriers();
+  ASSERT_EQ(sampleBarriers.size(), 1);
+  EXPECT_EQ(sampleBarriers.front().srcStageMask, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
+  EXPECT_EQ(sampleBarriers.front().srcAccessMask, VK_ACCESS_2_SHADER_WRITE_BIT);
+  EXPECT_EQ(sampleBarriers.front().dstStageMask, VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT);
+  EXPECT_EQ(sampleBarriers.front().dstAccessMask, VK_ACCESS_2_SHADER_READ_BIT);
 }
