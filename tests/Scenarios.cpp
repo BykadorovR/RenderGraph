@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdint>
 #include <iterator>
 #include <memory>
 #include <optional>
@@ -71,6 +72,55 @@ TEST(ScenarioTest, ComputePassQueueTypes) {
   EXPECT_EQ(computePass.getQueueType(), RenderGraph::QueueType::COMPUTE);
   EXPECT_EQ(generalComputePass.getQueueType(), RenderGraph::QueueType::GENERAL);
   EXPECT_EQ(graphicsPass.getQueueType(), RenderGraph::QueueType::GENERAL);
+}
+
+TEST(ScenarioTest, PrintShowsStaticPlanAndPreparedFrame) {
+  RenderGraph::Instance instance("PrintGraph", false);
+  RenderGraph::Device device(instance);
+  device.initialize();
+  RenderGraph::MemoryAllocator allocator(device, instance);
+  RenderGraph::Tracer tracer(device);
+  RenderGraph::Graph graph(1, 2, device, tracer);
+  graph.initialize();
+  std::vector<std::unique_ptr<RenderGraph::Buffer>> buffers;
+  for (int frame = 0; frame < 2; ++frame) {
+    buffers.push_back(
+        std::make_unique<RenderGraph::Buffer>(16, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 0, allocator, device));
+  }
+  std::atomic<int> selections = 0;
+  graph.getGraphStorage().add("State", std::make_unique<RenderGraph::BufferHandler>(std::move(buffers), [&] {
+                                ++selections;
+                                return graph.getFrameInFlight();
+                              }));
+  graph.createPassCompute("Write", RenderGraph::QueueType::GENERAL).addStorageBufferOutput("State");
+  graph.createPassCompute("Read", RenderGraph::QueueType::GENERAL).addStorageBufferInput("State");
+  graph.calculate();
+  auto print = [&] {
+    testing::internal::CaptureStdout();
+    graph.print();
+    return testing::internal::GetCapturedStdout();
+  };
+  const auto plan = print();
+  EXPECT_EQ(selections, 0);
+  EXPECT_NE(plan.find("Synchronization: not prepared"), std::string::npos);
+  EXPECT_NE(plan.find("Submission 0, queue:"), std::string::npos);
+  EXPECT_NE(plan.find("passes: Write Read"), std::string::npos);
+  EXPECT_NE(plan.find("State (buffer) WRITE stages=0x"), std::string::npos);
+  EXPECT_NE(plan.find("State (buffer) READ stages=0x"), std::string::npos);
+  EXPECT_NE(plan.find(" handles: "), std::string::npos);
+  EXPECT_NE(plan.find("barriers: <resolved by render()>"), std::string::npos);
+  ASSERT_FALSE(graph.render());
+  ASSERT_EQ(vkDeviceWaitIdle(device.getLogicalDevice()), VK_SUCCESS);
+  EXPECT_EQ(graph.getFrameInFlight(), 1);
+  const auto selected = selections.load();
+  const auto prepared = print();
+  EXPECT_EQ(selections, selected);
+  EXPECT_NE(prepared.find("Synchronization: prepared frame 0 (slot 0)"), std::string::npos);
+  EXPECT_NE(prepared.find(" waits:"), std::string::npos);
+  EXPECT_NE(prepared.find(" signals:"), std::string::npos);
+  EXPECT_NE(prepared.find("buffer State ("), std::string::npos);
+  graph.calculate();
+  EXPECT_NE(print().find("Synchronization: not prepared"), std::string::npos);
 }
 
 TEST(ScenarioTest, GraphOneQueue) {
@@ -185,16 +235,14 @@ TEST(ScenarioTest, GraphOneQueue) {
 
   graph.calculate();
 
-  EXPECT_TRUE(graph._resources.at(&renderPass)
-                  .contains("Swapchain", RenderGraph::Graph::Resource::Type::IMAGE,
-                            RenderGraph::Graph::Resource::Operation::WRITE));
-  EXPECT_FALSE(graph._resources.at(&renderPass)
-                   .contains("Swapchain", RenderGraph::Graph::Resource::Type::IMAGE,
-                             RenderGraph::Graph::Resource::Operation::READ));
-  EXPECT_TRUE(graph._resources.at(&guiPass).contains("Swapchain", RenderGraph::Graph::Resource::Type::IMAGE,
-                                                     RenderGraph::Graph::Resource::Operation::READ));
-  EXPECT_TRUE(graph._resources.at(&guiPass).contains("Swapchain", RenderGraph::Graph::Resource::Type::IMAGE,
-                                                     RenderGraph::Graph::Resource::Operation::WRITE));
+  const auto& renderResources = graph._resources.at(&renderPass).getResources();
+  const auto renderSwapchain = std::ranges::find(renderResources, "Swapchain", &RenderGraph::Graph::Resource::name);
+  ASSERT_NE(renderSwapchain, renderResources.end());
+  EXPECT_EQ(renderSwapchain->accessMask, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+  const auto& guiResources = graph._resources.at(&guiPass).getResources();
+  const auto guiSwapchain = std::ranges::find(guiResources, "Swapchain", &RenderGraph::Graph::Resource::name);
+  ASSERT_NE(guiSwapchain, guiResources.end());
+  EXPECT_EQ(guiSwapchain->accessMask, VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
 
   RenderGraph::Graph offscreenGraph(1, framesInFlight, device, tracer);
   offscreenGraph.setSwapchain(swapchain);
@@ -205,23 +253,10 @@ TEST(ScenarioTest, GraphOneQueue) {
   offscreenPass.addColorTarget("Offscreen", RenderGraph::RenderTargetLoadAction::CLEAR);
   offscreenGraph.calculate();
 
-  ASSERT_TRUE(offscreenGraph._sync.contains(&offscreenPass));
-  const auto offscreenWaitSemaphores = offscreenGraph._sync.at(&offscreenPass).getWaitSemaphores();
-  ASSERT_EQ(offscreenWaitSemaphores.size(), 1);
-  EXPECT_EQ(offscreenWaitSemaphores.front(), offscreenGraph._semaphoreImageAvailable.front().get());
-
-  // Render waits for the swapchain image-available semaphore.
-  ASSERT_TRUE(graph._sync.contains(&renderPass));
-  EXPECT_EQ(graph._sync.at(&renderPass).getWaitSemaphores().size(), 1);
-  EXPECT_EQ(graph._sync.at(&renderPass).getSignalSemaphores().size(), 0);
-  // Postprocessing does not use any semaphores.
-  ASSERT_TRUE(graph._sync.contains(&postprocessingPass));
-  EXPECT_EQ(graph._sync.at(&postprocessingPass).getWaitSemaphores().size(), 0);
-  EXPECT_EQ(graph._sync.at(&postprocessingPass).getSignalSemaphores().size(), 0);
-  // GUI signals the render-finished semaphore.
-  ASSERT_TRUE(graph._sync.contains(&guiPass));
-  EXPECT_EQ(graph._sync.at(&guiPass).getWaitSemaphores().size(), 0);
-  EXPECT_EQ(graph._sync.at(&guiPass).getSignalSemaphores().size(), 1);
+  // calculate() prepares usage descriptions; physical barriers are built for the selected frame.
+  EXPECT_TRUE(offscreenGraph._physicalBarriers.empty());
+  EXPECT_TRUE(graph._physicalBarriers.empty());
+  EXPECT_TRUE(graph._queueTimelines.empty());
   commandBuffer[graph.getFrameInFlight()].endCommands();
 
   auto loadSemaphore = RenderGraph::Semaphore(VK_SEMAPHORE_TYPE_TIMELINE, device);
@@ -251,9 +286,10 @@ TEST(ScenarioTest, GraphOneQueue) {
 
   vkWaitSemaphores(device.getLogicalDevice(), &waitInfo, UINT64_MAX);
 
-  EXPECT_FALSE(graph._initialImageBarriers.empty());
+  EXPECT_EQ(positionImageViews.front()->getImage().getImageLayout(), VK_IMAGE_LAYOUT_UNDEFINED);
   graph.render();
-  EXPECT_TRUE(graph._initialImageBarriers.empty());
+  EXPECT_EQ(positionImageViews.front()->getImage().getImageLayout(), VK_IMAGE_LAYOUT_GENERAL);
+  EXPECT_EQ(positionImageViews.back()->getImage().getImageLayout(), VK_IMAGE_LAYOUT_UNDEFINED);
   EXPECT_EQ(graph.getFrameInFlight(), 1);
   EXPECT_EQ(elementMock->getDrawCount(), 3);
   EXPECT_EQ(elementMock->getUpdateCount(), elementMock->getDrawCount());
@@ -377,18 +413,9 @@ TEST(ScenarioTest, GraphSeparateQueues) {
   EXPECT_EQ(guiPass.getPipelineGraphic(graph.getGraphStorage()).getColorAttachments().size(), 1);
 
   graph.calculate();
-  // Render waits for imageAvailable and signals the queue-transfer semaphore.
-  ASSERT_TRUE(graph._sync.contains(&renderPass));
-  EXPECT_EQ(graph._sync.at(&renderPass).getWaitSemaphores().size(), 1);
-  EXPECT_EQ(graph._sync.at(&renderPass).getSignalSemaphores().size(), 1);
-  // Postprocessing waits for Render and signals GUI.
-  ASSERT_TRUE(graph._sync.contains(&postprocessingPass));
-  EXPECT_EQ(graph._sync.at(&postprocessingPass).getWaitSemaphores().size(), 1);
-  EXPECT_EQ(graph._sync.at(&postprocessingPass).getSignalSemaphores().size(), 1);
-  // GUI waits for Postprocessing and signals renderFinished.
-  ASSERT_TRUE(graph._sync.contains(&guiPass));
-  EXPECT_EQ(graph._sync.at(&guiPass).getWaitSemaphores().size(), 1);
-  EXPECT_EQ(graph._sync.at(&guiPass).getSignalSemaphores().size(), 1);
+  const bool separateQueues = device.getQueue(RenderGraph::QueueType::GENERAL) !=
+                              device.getQueue(RenderGraph::QueueType::COMPUTE);
+  EXPECT_EQ(graph._queueTimelines.size(), separateQueues ? 2 : 0);
   commandBuffer[graph.getFrameInFlight()].endCommands();
 
   auto loadSemaphore = RenderGraph::Semaphore(VK_SEMAPHORE_TYPE_TIMELINE, device);
@@ -475,12 +502,14 @@ TEST(ScenarioTest, BufferQueueChangesUseSemaphores) {
                                                               allocator, device));
     }
 
-    graph.getGraphStorage().add(name, buffers);
+    graph.getGraphStorage().add(name, std::make_unique<RenderGraph::BufferHandler>(
+                                          std::move(buffers), [&graph] { return graph.getFrameInFlight(); }));
   };
 
   addStorageBuffers("X");
   addStorageBuffers("Y");
   addStorageBuffers("Link");
+  addStorageBuffers("Independent");
 
   /*
    * X, Y, Link are resources we want to pass between First, Middle, Last passes.
@@ -491,11 +520,15 @@ TEST(ScenarioTest, BufferQueueChangesUseSemaphores) {
    *
    * X and Y cross queues using the Middle -> Last semaphore.
    * Link stays on the graphics queue and requires a memory barrier.
+   * An unrelated compute pass between First and Middle must not make Middle wait.
    */
 
   auto& firstPass = graph.createPassCompute("First", RenderGraph::QueueType::GENERAL);
   firstPass.addStorageBufferOutput("X");
   firstPass.addStorageBufferOutput("Link");
+
+  auto& independentPass = graph.createPassCompute("Independent", RenderGraph::QueueType::COMPUTE);
+  independentPass.addStorageBufferOutput("Independent");
 
   auto& middlePass = graph.createPassCompute("Middle", RenderGraph::QueueType::GENERAL);
   middlePass.addStorageBufferInput("Link");
@@ -509,23 +542,58 @@ TEST(ScenarioTest, BufferQueueChangesUseSemaphores) {
 
   graph.calculate();
 
-  ASSERT_TRUE(graph._sync.contains(&middlePass));
-  ASSERT_TRUE(graph._sync.contains(&lastPass));
-
-  // Link stays on the graphics queue and requires one ordinary barrier before Middle.
-  EXPECT_EQ(graph._sync.at(&middlePass).getBarriers().size(), 1);
-
-  EXPECT_FALSE(graph._sync.contains(&firstPass));
-  EXPECT_TRUE(graph._sync.at(&lastPass).getBarriers().empty());
-  const auto& barrier = graph._sync.at(&middlePass).getBarriers().front()->getBufferBarriers().front();
+  const bool separateQueues = device.getQueue(RenderGraph::QueueType::GENERAL) !=
+                              device.getQueue(RenderGraph::QueueType::COMPUTE);
+  ASSERT_EQ(graph._submissions.size(), separateQueues ? 4 : 1);
+  graph._preparePhysicalAccesses();
+  // Link stays on the graphics queue and requires one barrier before Middle.
+  const auto& middleBarriers = graph._physicalBarriers.at(&middlePass).getBufferBarriers();
+  ASSERT_EQ(middleBarriers.size(), 1);
+  EXPECT_TRUE(graph._physicalBarriers.at(&firstPass).getBufferBarriers().empty());
+  const auto& barrier = middleBarriers.front();
   EXPECT_EQ(barrier.srcQueueFamilyIndex, VK_QUEUE_FAMILY_IGNORED);
   EXPECT_EQ(barrier.dstQueueFamilyIndex, VK_QUEUE_FAMILY_IGNORED);
 
-  const auto middleSignalSemaphores = graph._sync.at(&middlePass).getSignalSemaphores();
-  const auto lastWaitSemaphores = graph._sync.at(&lastPass).getWaitSemaphores();
-  ASSERT_EQ(middleSignalSemaphores.size(), 1);
-  ASSERT_EQ(lastWaitSemaphores.size(), 1);
-  EXPECT_TRUE(std::ranges::contains(lastWaitSemaphores, middleSignalSemaphores.front()));
+  if (separateQueues) {
+    EXPECT_TRUE(graph._submissions[1].waits.empty());
+    EXPECT_TRUE(graph._submissions[2].waits.empty());
+    EXPECT_TRUE(graph._physicalBarriers.at(&lastPass).getBufferBarriers().empty());
+    const auto& waits = graph._submissions.back().waits;
+    ASSERT_EQ(waits.size(), 1);
+    EXPECT_EQ(waits.front().semaphore,
+              graph._queueTimelines.at(device.getQueue(RenderGraph::QueueType::GENERAL)).semaphore->getSemaphore());
+    EXPECT_EQ(waits.front().value, graph._submissions[2].value);
+    EXPECT_LT(graph._submissions.front().value, graph._submissions[2].value);
+  } else {
+    EXPECT_EQ(graph._physicalBarriers.at(&lastPass).getBufferBarriers().size(), 2);
+    EXPECT_TRUE(graph._submissions.back().waits.empty());
+  }
+
+  RenderGraph::Semaphore upload(VK_SEMAPHORE_TYPE_TIMELINE, device);
+  const RenderGraph::GpuTicket tickets[]{{upload.getSemaphore(), 3}, {upload.getSemaphore(), 7}};
+  graph.calculate(tickets);
+  if (!separateQueues) {
+    // Exercise repeated submissions even when the device exposes only one queue.
+    graph._submissions.clear();
+    for (std::size_t index = 0; index < 4; ++index) {
+      graph._submissions.push_back(
+          {.queue = device.getQueue(RenderGraph::QueueType::GENERAL), .firstPass = index, .endPass = index + 1});
+    }
+  }
+  graph._preparePhysicalAccesses();
+  std::vector<VkQueue> waitedQueues;
+  for (const auto& submission : graph._submissions) {
+    const bool first = !std::ranges::contains(waitedQueues, submission.queue);
+    waitedQueues.push_back(submission.queue);
+    const auto& waits = submission.waits;
+    EXPECT_EQ(std::ranges::count(waits, upload.getSemaphore(), &VkSemaphoreSubmitInfo::semaphore), first ? 1 : 0);
+    if (first) {
+      const auto wait = std::ranges::find(waits, upload.getSemaphore(), &VkSemaphoreSubmitInfo::semaphore);
+      ASSERT_NE(wait, waits.end());
+      EXPECT_EQ(wait->value, 7);
+      EXPECT_EQ(wait->stageMask, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
+    }
+  }
 }
 
 TEST(ScenarioTest, BufferQueueChangesSurviveFrameSlotReuse) {
@@ -542,7 +610,8 @@ TEST(ScenarioTest, BufferQueueChangesSurviveFrameSlotReuse) {
     buffers.push_back(
         std::make_unique<RenderGraph::Buffer>(16, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 0, allocator, device));
   }
-  graph.getGraphStorage().add("State", buffers);
+  graph.getGraphStorage().add("State", std::make_unique<RenderGraph::BufferHandler>(
+                                           std::move(buffers), [&graph] { return graph.getFrameInFlight(); }));
 
   auto& computePass = graph.createPassCompute("UpdateState", RenderGraph::QueueType::COMPUTE);
   computePass.addStorageBufferInput("State");
@@ -551,17 +620,18 @@ TEST(ScenarioTest, BufferQueueChangesSurviveFrameSlotReuse) {
   auto& graphicsPass = graph.createPassCompute("ReadStateOnGraphics", RenderGraph::QueueType::GENERAL);
   graphicsPass.addStorageBufferInput("State");
   graph.calculate();
+  EXPECT_TRUE(graph._bufferHistory.empty());
 
-  ASSERT_TRUE(graph._sync.contains(&computePass));
-  ASSERT_TRUE(graph._sync.contains(&graphicsPass));
-  EXPECT_TRUE(graph._sync.at(&computePass).getBarriers().empty());
-  EXPECT_TRUE(graph._sync.at(&graphicsPass).getBarriers().empty());
-  const auto signals = graph._sync.at(&computePass).getSignalSemaphores();
-  const auto waits = graph._sync.at(&graphicsPass).getWaitSemaphores();
-  ASSERT_EQ(signals.size(), 1);
-  EXPECT_EQ(signals, waits);
   for (int frame = 0; frame < framesInFlight * 3; ++frame) {
+    const auto buffer = graph.getGraphStorage().getBufferHandler("State").getBuffer().getBuffer();
     ASSERT_FALSE(graph.render());
+    EXPECT_EQ(graph._bufferHistory.size(), std::min(frame + 1, framesInFlight));
+    const auto& history = graph._bufferHistory.at(buffer);
+    ASSERT_EQ(history.size(), 2);
+    EXPECT_EQ(history.front().accessMask, VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT);
+    EXPECT_EQ(history.front().queue, device.getQueue(RenderGraph::QueueType::COMPUTE));
+    EXPECT_EQ(history.back().accessMask, VK_ACCESS_2_SHADER_READ_BIT);
+    EXPECT_EQ(history.back().queue, device.getQueue(RenderGraph::QueueType::GENERAL));
   }
   EXPECT_EQ(vkDeviceWaitIdle(device.getLogicalDevice()), VK_SUCCESS);
 }
@@ -592,7 +662,8 @@ TEST(ScenarioTest, SwapchainGraphCanEndOnCompute) {
                                                             VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
                                                             allocator, device));
   }
-  graph.getGraphStorage().add("Data", buffers);
+  graph.getGraphStorage().add("Data", std::make_unique<RenderGraph::BufferHandler>(
+                                          std::move(buffers), [&graph] { return graph.getFrameInFlight(); }));
 
   auto& computePass = graph.createPassCompute("Compute", RenderGraph::QueueType::COMPUTE);
   computePass.addStorageBufferOutput("Data");
@@ -631,7 +702,8 @@ TEST(ScenarioTest, GraphicsPassBufferInputs) {
       buffers.push_back(std::make_unique<RenderGraph::Buffer>(
           1024, usage, VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT, allocator, device));
     }
-    graph.getGraphStorage().add(name, buffers);
+    graph.getGraphStorage().add(name, std::make_unique<RenderGraph::BufferHandler>(
+                                          std::move(buffers), [&graph] { return graph.getFrameInFlight(); }));
   };
 
   addBuffers("VisibleObjects", VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
@@ -662,29 +734,31 @@ TEST(ScenarioTest, GraphicsPassBufferInputs) {
   EXPECT_EQ(drawPass.getVertexBufferInputs().front(), "Vertices");
   ASSERT_EQ(drawPass.getIndexBufferInputs().size(), 1);
   EXPECT_EQ(drawPass.getIndexBufferInputs().front(), "Indices");
-  EXPECT_FALSE(graph._resources.at(&drawPass).contains("Swapchain", RenderGraph::Graph::Resource::Type::IMAGE,
-                                                       RenderGraph::Graph::Resource::Operation::READ));
+  const auto& resources = graph._resources.at(&drawPass).getResources();
+  const auto swapchainResource = std::ranges::find(resources, "Swapchain", &RenderGraph::Graph::Resource::name);
+  ASSERT_NE(swapchainResource, resources.end());
+  EXPECT_EQ(swapchainResource->accessMask, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
 
-  ASSERT_EQ(graph._passesOrdered.size(), 2);
-  EXPECT_EQ(graph._passesOrdered.front(), &cullPass);
-  EXPECT_EQ(graph._passesOrdered.back(), &drawPass);
+  ASSERT_EQ(graph._passes.size(), 2);
+  EXPECT_EQ(graph._passes.front().get(), &cullPass);
+  EXPECT_EQ(graph._passes.back().get(), &drawPass);
 
-  ASSERT_TRUE(graph._sync.contains(&drawPass));
-  const auto barriers = graph._sync.at(&drawPass).getBarriers();
+  graph._preparePhysicalAccesses();
+  const auto& barriers = graph._physicalBarriers.at(&drawPass).getBufferBarriers();
   ASSERT_EQ(barriers.size(), 4);
 
-  const VkBuffer visibleObjectsBuffer = graph.getGraphStorage().getBuffer("VisibleObjects")[0]->getBuffer();
-  const VkBuffer indirectCommandsBuffer = graph.getGraphStorage().getBuffer("IndirectCommands")[0]->getBuffer();
-  const VkBuffer vertexBuffer = graph.getGraphStorage().getBuffer("Vertices")[0]->getBuffer();
-  const VkBuffer indexBuffer = graph.getGraphStorage().getBuffer("Indices")[0]->getBuffer();
+  const VkBuffer visibleObjectsBuffer =
+      graph.getGraphStorage().getBufferHandler("VisibleObjects").getBuffer().getBuffer();
+  const VkBuffer indirectCommandsBuffer =
+      graph.getGraphStorage().getBufferHandler("IndirectCommands").getBuffer().getBuffer();
+  const VkBuffer vertexBuffer = graph.getGraphStorage().getBufferHandler("Vertices").getBuffer().getBuffer();
+  const VkBuffer indexBuffer = graph.getGraphStorage().getBufferHandler("Indices").getBuffer().getBuffer();
 
   bool foundStorageBarrier = false;
   bool foundIndirectBarrier = false;
   bool foundVertexBarrier = false;
   bool foundIndexBarrier = false;
-  for (const auto* barrier : barriers) {
-    ASSERT_EQ(barrier->getBufferBarriers().size(), 1);
-    const auto& bufferBarrier = barrier->getBufferBarriers().front();
+  for (const auto& bufferBarrier : barriers) {
     EXPECT_EQ(bufferBarrier.srcStageMask, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
     EXPECT_EQ(bufferBarrier.srcAccessMask, VK_ACCESS_2_SHADER_WRITE_BIT);
 
@@ -728,20 +802,22 @@ TEST(ScenarioTest, ComputePassIndirectBufferInput) {
   RenderGraph::Swapchain swapchain(resolution, allocator, device);
   swapchain.initialize();
 
-  constexpr int framesInFlight = 2;
+  constexpr int framesInFlight = 3;
   RenderGraph::Tracer tracer(device);
   RenderGraph::Graph graph(2, framesInFlight, device, tracer);
   graph.setSwapchain(swapchain);
   graph.initialize();
 
   std::vector<std::unique_ptr<RenderGraph::Buffer>> indirectBuffers;
-  indirectBuffers.reserve(framesInFlight);
-  for (int frameIndex = 0; frameIndex < framesInFlight; ++frameIndex) {
+  for (int bufferIndex = 0; bufferIndex < 2; ++bufferIndex) {
     indirectBuffers.push_back(std::make_unique<RenderGraph::Buffer>(
         sizeof(VkDispatchIndirectCommand), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
         VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT, allocator, device));
   }
-  graph.getGraphStorage().add("DispatchCommands", indirectBuffers);
+  int selectedBuffer = 1;
+  graph.getGraphStorage().add(
+      "DispatchCommands", std::make_unique<RenderGraph::BufferHandler>(std::move(indirectBuffers),
+                                                                       [&selectedBuffer] { return selectedBuffer; }));
 
   auto& generatePass = graph.createPassCompute("GenerateDispatch", RenderGraph::QueueType::GENERAL);
   generatePass.addStorageBufferOutput("DispatchCommands");
@@ -764,38 +840,36 @@ TEST(ScenarioTest, ComputePassIndirectBufferInput) {
   ASSERT_EQ(dispatchPass.getIndirectBufferInputs().size(), 1);
   EXPECT_EQ(dispatchPass.getIndirectBufferInputs().front(), "DispatchCommands");
 
-  ASSERT_EQ(graph._passesOrdered.size(), 5);
-  EXPECT_EQ(graph._passesOrdered.front(), &generatePass);
-  EXPECT_EQ(graph._passesOrdered.back(), &inspectRewritePass);
+  ASSERT_EQ(graph._passes.size(), 5);
+  EXPECT_EQ(graph._passes.front().get(), &generatePass);
+  EXPECT_EQ(graph._passes.back().get(), &inspectRewritePass);
 
-  ASSERT_TRUE(graph._sync.contains(&dispatchPass));
-  const auto barriers = graph._sync.at(&dispatchPass).getBarriers();
+  graph._preparePhysicalAccesses();
+  const auto& barriers = graph._physicalBarriers.at(&dispatchPass).getBufferBarriers();
   ASSERT_EQ(barriers.size(), 1);
-  ASSERT_EQ(barriers.front()->getBufferBarriers().size(), 1);
 
-  const auto& bufferBarrier = barriers.front()->getBufferBarriers().front();
+  const auto& bufferBarrier = barriers.front();
+  const auto& bufferHandler = graph.getGraphStorage().getBufferHandler("DispatchCommands");
+  EXPECT_EQ(bufferBarrier.buffer, bufferHandler.getBuffer().getBuffer());
+  EXPECT_NE(bufferBarrier.buffer, bufferHandler.getBuffers().front()->getBuffer());
   EXPECT_EQ(bufferBarrier.srcStageMask, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
   EXPECT_EQ(bufferBarrier.srcAccessMask, VK_ACCESS_2_SHADER_WRITE_BIT);
   EXPECT_EQ(bufferBarrier.dstStageMask, VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT);
   EXPECT_EQ(bufferBarrier.dstAccessMask, VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT);
 
   // The shader reader still depends on GenerateDispatch, not on the intervening indirect reader.
-  ASSERT_TRUE(graph._sync.contains(&inspectPass));
-  const auto inspectBarriers = graph._sync.at(&inspectPass).getBarriers();
+  const auto& inspectBarriers = graph._physicalBarriers.at(&inspectPass).getBufferBarriers();
   ASSERT_EQ(inspectBarriers.size(), 1);
-  ASSERT_EQ(inspectBarriers.front()->getBufferBarriers().size(), 1);
-  const auto& inspectBarrier = inspectBarriers.front()->getBufferBarriers().front();
+  const auto& inspectBarrier = inspectBarriers.front();
   EXPECT_EQ(inspectBarrier.srcStageMask, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
   EXPECT_EQ(inspectBarrier.srcAccessMask, VK_ACCESS_2_SHADER_WRITE_BIT);
   EXPECT_EQ(inspectBarrier.dstStageMask, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
   EXPECT_EQ(inspectBarrier.dstAccessMask, VK_ACCESS_2_SHADER_READ_BIT);
 
   // Rewriting must wait for both readers, even though only the shader reader used the buffer last.
-  ASSERT_TRUE(graph._sync.contains(&rewritePass));
-  const auto rewriteBarriers = graph._sync.at(&rewritePass).getBarriers();
+  const auto& rewriteBarriers = graph._physicalBarriers.at(&rewritePass).getBufferBarriers();
   ASSERT_EQ(rewriteBarriers.size(), 1);
-  ASSERT_EQ(rewriteBarriers.front()->getBufferBarriers().size(), 1);
-  const auto& rewriteBarrier = rewriteBarriers.front()->getBufferBarriers().front();
+  const auto& rewriteBarrier = rewriteBarriers.front();
   EXPECT_EQ(rewriteBarrier.srcStageMask,
             VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT);
   EXPECT_EQ(rewriteBarrier.srcAccessMask,
@@ -803,15 +877,24 @@ TEST(ScenarioTest, ComputePassIndirectBufferInput) {
   EXPECT_EQ(rewriteBarrier.dstStageMask, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
   EXPECT_EQ(rewriteBarrier.dstAccessMask, VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT);
 
-  ASSERT_TRUE(graph._sync.contains(&inspectRewritePass));
-  const auto inspectRewriteBarriers = graph._sync.at(&inspectRewritePass).getBarriers();
+  const auto& inspectRewriteBarriers = graph._physicalBarriers.at(&inspectRewritePass).getBufferBarriers();
   ASSERT_EQ(inspectRewriteBarriers.size(), 1);
-  ASSERT_EQ(inspectRewriteBarriers.front()->getBufferBarriers().size(), 1);
-  const auto& inspectRewriteBarrier = inspectRewriteBarriers.front()->getBufferBarriers().front();
+  const auto& inspectRewriteBarrier = inspectRewriteBarriers.front();
   EXPECT_EQ(inspectRewriteBarrier.srcStageMask, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
   EXPECT_EQ(inspectRewriteBarrier.srcAccessMask, VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT);
   EXPECT_EQ(inspectRewriteBarrier.dstStageMask, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
   EXPECT_EQ(inspectRewriteBarrier.dstAccessMask, VK_ACCESS_2_SHADER_READ_BIT);
+
+  for (const int index : {0, 1, 0}) {
+    selectedBuffer = index;
+    EXPECT_EQ(&bufferHandler.getBuffer(), bufferHandler.getBuffers()[index]);
+    graph._preparePhysicalAccesses();
+    for (auto* pass : {&dispatchPass, &inspectPass, &rewritePass, &inspectRewritePass}) {
+      const auto& barrier = graph._physicalBarriers.at(pass);
+      ASSERT_EQ(barrier.getBufferBarriers().size(), 1);
+      EXPECT_EQ(barrier.getBufferBarriers().front().buffer, bufferHandler.getBuffer().getBuffer());
+    }
+  }
 }
 
 TEST(ScenarioTest, GraphReset) {
@@ -1093,7 +1176,8 @@ TEST(ScenarioTest, TraversalKeepsTransitiveProducerBeforeConsumer) {
                                                               allocator, device));
     }
 
-    graph.getGraphStorage().add(name, buffers);
+    graph.getGraphStorage().add(name, std::make_unique<RenderGraph::BufferHandler>(
+                                          std::move(buffers), [&graph] { return graph.getFrameInFlight(); }));
   };
 
   addStorageBuffers("X");
@@ -1127,17 +1211,17 @@ TEST(ScenarioTest, TraversalKeepsTransitiveProducerBeforeConsumer) {
 
   graph.calculate();
 
-  ASSERT_EQ(graph._passesOrdered.size(), 3);
+  ASSERT_EQ(graph._passes.size(), 3);
 
-  auto orderedPass = graph._passesOrdered.begin();
+  auto orderedPass = graph._passes.begin();
 
-  EXPECT_EQ(*orderedPass, &firstPass);
+  EXPECT_EQ(orderedPass->get(), &firstPass);
   ++orderedPass;
 
-  EXPECT_EQ(*orderedPass, &middlePass);
+  EXPECT_EQ(orderedPass->get(), &middlePass);
   ++orderedPass;
 
-  EXPECT_EQ(*orderedPass, &lastPass);
+  EXPECT_EQ(orderedPass->get(), &lastPass);
 }
 
 TEST(ScenarioTest, TraversalDiamondGraph) {
@@ -1202,7 +1286,8 @@ TEST(ScenarioTest, TraversalDiamondGraph) {
                                                               allocator, device));
     }
 
-    graph.getGraphStorage().add(name, buffers);
+    graph.getGraphStorage().add(name, std::make_unique<RenderGraph::BufferHandler>(
+                                          std::move(buffers), [&graph] { return graph.getFrameInFlight(); }));
   };
 
   addStorageBuffers("X");
@@ -1230,28 +1315,28 @@ TEST(ScenarioTest, TraversalDiamondGraph) {
 
   graph.calculate();
 
-  ASSERT_EQ(graph._passesOrdered.size(), 4);
+  ASSERT_EQ(graph._passes.size(), 4);
 
-  const auto sourceIt = std::ranges::find(graph._passesOrdered, &sourcePass);
+  const auto sourceIt = std::ranges::find(graph._passes, &sourcePass, &std::unique_ptr<RenderGraph::GraphPass>::get);
 
-  const auto leftIt = std::ranges::find(graph._passesOrdered, &leftPass);
+  const auto leftIt = std::ranges::find(graph._passes, &leftPass, &std::unique_ptr<RenderGraph::GraphPass>::get);
 
-  const auto rightIt = std::ranges::find(graph._passesOrdered, &rightPass);
+  const auto rightIt = std::ranges::find(graph._passes, &rightPass, &std::unique_ptr<RenderGraph::GraphPass>::get);
 
-  const auto joinIt = std::ranges::find(graph._passesOrdered, &joinPass);
+  const auto joinIt = std::ranges::find(graph._passes, &joinPass, &std::unique_ptr<RenderGraph::GraphPass>::get);
 
-  ASSERT_NE(sourceIt, graph._passesOrdered.end());
-  ASSERT_NE(leftIt, graph._passesOrdered.end());
-  ASSERT_NE(rightIt, graph._passesOrdered.end());
-  ASSERT_NE(joinIt, graph._passesOrdered.end());
+  ASSERT_NE(sourceIt, graph._passes.end());
+  ASSERT_NE(leftIt, graph._passes.end());
+  ASSERT_NE(rightIt, graph._passes.end());
+  ASSERT_NE(joinIt, graph._passes.end());
 
-  const auto sourceIndex = std::distance(graph._passesOrdered.begin(), sourceIt);
+  const auto sourceIndex = std::distance(graph._passes.begin(), sourceIt);
 
-  const auto leftIndex = std::distance(graph._passesOrdered.begin(), leftIt);
+  const auto leftIndex = std::distance(graph._passes.begin(), leftIt);
 
-  const auto rightIndex = std::distance(graph._passesOrdered.begin(), rightIt);
+  const auto rightIndex = std::distance(graph._passes.begin(), rightIt);
 
-  const auto joinIndex = std::distance(graph._passesOrdered.begin(), joinIt);
+  const auto joinIndex = std::distance(graph._passes.begin(), joinIt);
 
   EXPECT_LT(sourceIndex, leftIndex);
   EXPECT_LT(sourceIndex, rightIndex);
@@ -1285,67 +1370,92 @@ TEST(ScenarioTest, TraversalDiamondGraph) {
   imageGraph.calculate();
   imageGraph.calculate();
 
-  // calculate() only prepares initialization; reads alone need no recurring barrier.
+  // calculate() leaves layouts untouched; render planning transitions the selected physical image.
   EXPECT_EQ(imageView->getImage().getImageLayout(), VK_IMAGE_LAYOUT_UNDEFINED);
-  ASSERT_EQ(imageGraph._initialImageBarriers.at(&initialGraphicsReader).size(), 1);
-  ASSERT_EQ(imageGraph._initialImageBarriers.at(&initialGraphicsReader).front().second.getImageBarriers().size(), 1);
-  const auto& layoutBarrier =
-      imageGraph._initialImageBarriers.at(&initialGraphicsReader).front().second.getImageBarriers().front();
+  EXPECT_TRUE(imageGraph._physicalBarriers.empty());
+  EXPECT_TRUE(imageGraph._imageHistory.empty());
+  imageGraph._preparePhysicalAccesses();
+  EXPECT_EQ(imageGraph._imageHistory.size(), 1);
+  ASSERT_EQ(imageGraph._physicalBarriers.at(&initialGraphicsReader).getImageBarriers().size(), 1);
+  const auto& layoutBarrier = imageGraph._physicalBarriers.at(&initialGraphicsReader).getImageBarriers().front();
   EXPECT_EQ(layoutBarrier.oldLayout, VK_IMAGE_LAYOUT_UNDEFINED);
   EXPECT_EQ(layoutBarrier.newLayout, VK_IMAGE_LAYOUT_GENERAL);
-  EXPECT_EQ(layoutBarrier.dstStageMask, VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
-  EXPECT_EQ(layoutBarrier.dstAccessMask, VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT);
-  EXPECT_FALSE(imageGraph._sync.contains(&initialGraphicsReader));
-  EXPECT_FALSE(imageGraph._sync.contains(&initialComputeReader));
-  ASSERT_TRUE(imageGraph._sync.contains(&imageWriter));
-  const auto initialWriteBarriers = imageGraph._sync.at(&imageWriter).getBarriers();
+  EXPECT_EQ(layoutBarrier.dstStageMask, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
+  EXPECT_EQ(layoutBarrier.dstAccessMask, VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
+  EXPECT_EQ(imageView->getImage().getImageLayout(), VK_IMAGE_LAYOUT_GENERAL);
+  // The initial layout transition is a write; subsequent readers must also depend on it.
+  ASSERT_EQ(imageGraph._physicalBarriers.at(&initialComputeReader).getImageBarriers().size(), 1);
+  const auto& initialReadBarrier = imageGraph._physicalBarriers.at(&initialComputeReader).getImageBarriers().front();
+  EXPECT_EQ(initialReadBarrier.srcStageMask, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
+  EXPECT_NE(initialReadBarrier.srcAccessMask & VK_ACCESS_2_MEMORY_WRITE_BIT, 0);
+  const auto& initialWriteBarriers = imageGraph._physicalBarriers.at(&imageWriter).getImageBarriers();
   ASSERT_EQ(initialWriteBarriers.size(), 1);
-  ASSERT_EQ(initialWriteBarriers.front()->getImageBarriers().size(), 1);
-  const auto& initialWriteBarrier = initialWriteBarriers.front()->getImageBarriers().front();
-  EXPECT_EQ(initialWriteBarrier.srcStageMask,
-            VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
-  EXPECT_EQ(initialWriteBarrier.srcAccessMask, VK_ACCESS_2_SHADER_READ_BIT);
+  const auto& initialWriteBarrier = initialWriteBarriers.front();
+  EXPECT_NE(initialWriteBarrier.srcStageMask & VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0);
+  EXPECT_NE(initialWriteBarrier.srcAccessMask & VK_ACCESS_2_MEMORY_WRITE_BIT, 0);
   EXPECT_EQ(initialWriteBarrier.dstStageMask, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
   EXPECT_EQ(initialWriteBarrier.dstAccessMask, VK_ACCESS_2_SHADER_WRITE_BIT);
 
   // Sampling the image does not remove the write dependency needed by a later compute reader.
-  ASSERT_TRUE(imageGraph._sync.contains(&computeReader));
-  const auto computeBarriers = imageGraph._sync.at(&computeReader).getBarriers();
+  const auto& computeBarriers = imageGraph._physicalBarriers.at(&computeReader).getImageBarriers();
   ASSERT_EQ(computeBarriers.size(), 1);
-  ASSERT_EQ(computeBarriers.front()->getImageBarriers().size(), 1);
-  const auto& computeBarrier = computeBarriers.front()->getImageBarriers().front();
+  const auto& computeBarrier = computeBarriers.front();
   EXPECT_EQ(computeBarrier.srcStageMask, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
   EXPECT_EQ(computeBarrier.srcAccessMask, VK_ACCESS_2_SHADER_WRITE_BIT);
   EXPECT_EQ(computeBarrier.dstStageMask, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
   EXPECT_EQ(computeBarrier.dstAccessMask, VK_ACCESS_2_SHADER_READ_BIT);
 
-  ASSERT_TRUE(imageGraph._sync.contains(&imageRewrite));
-  const auto imageRewriteBarriers = imageGraph._sync.at(&imageRewrite).getBarriers();
+  const auto& imageRewriteBarriers = imageGraph._physicalBarriers.at(&imageRewrite).getImageBarriers();
   ASSERT_EQ(imageRewriteBarriers.size(), 1);
-  ASSERT_EQ(imageRewriteBarriers.front()->getImageBarriers().size(), 1);
-  const auto& imageRewriteBarrier = imageRewriteBarriers.front()->getImageBarriers().front();
+  const auto& imageRewriteBarrier = imageRewriteBarriers.front();
   EXPECT_EQ(imageRewriteBarrier.srcStageMask,
             VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT);
   EXPECT_EQ(imageRewriteBarrier.srcAccessMask, VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_SHADER_READ_BIT);
 
   // A new writer starts a fresh history; old graphics readers must not remain in its source mask.
-  ASSERT_TRUE(imageGraph._sync.contains(&sampleRewrite));
-  const auto sampleRewriteBarriers = imageGraph._sync.at(&sampleRewrite).getBarriers();
+  const auto& sampleRewriteBarriers = imageGraph._physicalBarriers.at(&sampleRewrite).getImageBarriers();
   ASSERT_EQ(sampleRewriteBarriers.size(), 1);
-  ASSERT_EQ(sampleRewriteBarriers.front()->getImageBarriers().size(), 1);
-  const auto& sampleRewriteBarrier = sampleRewriteBarriers.front()->getImageBarriers().front();
+  const auto& sampleRewriteBarrier = sampleRewriteBarriers.front();
   EXPECT_EQ(sampleRewriteBarrier.srcStageMask, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
   EXPECT_EQ(sampleRewriteBarrier.srcAccessMask, VK_ACCESS_2_SHADER_WRITE_BIT);
   EXPECT_EQ(sampleRewriteBarrier.dstStageMask, VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT);
   EXPECT_EQ(sampleRewriteBarrier.dstAccessMask, VK_ACCESS_2_SHADER_READ_BIT);
 
-  for (const auto& [pass, sync] : imageGraph._sync) {
-    for (const auto* barrier : sync.getBarriers()) {
-      for (const auto& imageBarrier : barrier->getImageBarriers()) {
-        EXPECT_EQ(imageBarrier.oldLayout, imageBarrier.newLayout);
-        EXPECT_EQ(imageBarrier.srcQueueFamilyIndex, VK_QUEUE_FAMILY_IGNORED);
-        EXPECT_EQ(imageBarrier.dstQueueFamilyIndex, VK_QUEUE_FAMILY_IGNORED);
-      }
+  for (const auto& [pass, barrier] : imageGraph._physicalBarriers) {
+    for (const auto& imageBarrier : barrier.getImageBarriers()) {
+      EXPECT_EQ(imageBarrier.oldLayout,
+                pass == &initialGraphicsReader ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_GENERAL);
+      EXPECT_EQ(imageBarrier.newLayout, VK_IMAGE_LAYOUT_GENERAL);
+      EXPECT_EQ(imageBarrier.srcQueueFamilyIndex, VK_QUEUE_FAMILY_IGNORED);
+      EXPECT_EQ(imageBarrier.dstQueueFamilyIndex, VK_QUEUE_FAMILY_IGNORED);
     }
   }
+
+  // A transition before a write must not broaden the source scope of later barriers.
+  RenderGraph::Graph writeFirstGraph(1, 1, device, tracer);
+  writeFirstGraph.initialize();
+  auto writtenImage = std::make_unique<RenderGraph::Image>(allocator, device);
+  writtenImage->createImage(VK_FORMAT_R8G8B8A8_UNORM, {8, 8}, 1, 1, VK_IMAGE_ASPECT_COLOR_BIT,
+                            VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+  auto writtenView = std::make_shared<RenderGraph::ImageView>(std::move(writtenImage), device);
+  writtenView->createImageView(VK_IMAGE_VIEW_TYPE_2D, 0, 0);
+  writeFirstGraph.getGraphStorage().add(
+      "Written", std::make_unique<RenderGraph::ImageViewHolder>(std::vector{writtenView}, [] { return 0; }));
+  auto& firstWriter = writeFirstGraph.createPassCompute("FirstWrite", RenderGraph::QueueType::GENERAL);
+  firstWriter.addStorageTextureOutput("Written");
+  auto& firstSample = writeFirstGraph.createPassGraphic("FirstSample");
+  firstSample.addTextureInput("Written");
+  writeFirstGraph.calculate();
+  writeFirstGraph._preparePhysicalAccesses();
+  const auto& writeBarriers = writeFirstGraph._physicalBarriers.at(&firstWriter).getImageBarriers();
+  ASSERT_EQ(writeBarriers.size(), 1);
+  EXPECT_EQ(writeBarriers.front().oldLayout, VK_IMAGE_LAYOUT_UNDEFINED);
+  EXPECT_EQ(writeBarriers.front().newLayout, VK_IMAGE_LAYOUT_GENERAL);
+  EXPECT_EQ(writeBarriers.front().dstStageMask, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
+  const auto& sampleBarriers = writeFirstGraph._physicalBarriers.at(&firstSample).getImageBarriers();
+  ASSERT_EQ(sampleBarriers.size(), 1);
+  EXPECT_EQ(sampleBarriers.front().srcStageMask, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
+  EXPECT_EQ(sampleBarriers.front().srcAccessMask, VK_ACCESS_2_SHADER_WRITE_BIT);
+  EXPECT_EQ(sampleBarriers.front().dstStageMask, VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT);
+  EXPECT_EQ(sampleBarriers.front().dstAccessMask, VK_ACCESS_2_SHADER_READ_BIT);
 }

@@ -2,8 +2,7 @@ module;
 
 #include "BS_thread_pool.hpp"
 
-#include <deque>
-#include <functional>
+#include <cstddef>
 #include <memory>
 #include <optional>
 #include <span>
@@ -50,7 +49,7 @@ class GraphStorage final {
     ImageResizePolicy resizePolicy;
   };
   std::unordered_map<std::string, ImageResource> _images;
-  std::unordered_map<std::string, std::vector<std::unique_ptr<Buffer>>> _buffers;
+  std::unordered_map<std::string, std::unique_ptr<BufferHandler>> _buffers;
 
  public:
   GraphStorage() = default;
@@ -63,16 +62,14 @@ class GraphStorage final {
   void add(std::string_view name,
            std::unique_ptr<ImageViewHolder> imageViewHolder,
            ImageResizePolicy resizePolicy = ImageResizePolicy::FIXED);
-  // not const because will do std::move
-  void add(std::string_view name, std::vector<std::unique_ptr<Buffer>>& buffers);
+  void add(std::string_view name, std::unique_ptr<BufferHandler> bufferHandler);
   void reset(std::vector<std::shared_ptr<ImageView>> oldSwapchain,
              std::vector<std::shared_ptr<ImageView>> newSwapchain);
   std::string find(const std::vector<std::shared_ptr<ImageView>>& imageViews);
   bool containsImageViewHolder(std::string_view name) const;
   const ImageViewHolder& getImageViewHolder(std::string_view name) const;
-  bool containsBuffer(std::string_view name) const;
-  // NVRO
-  std::vector<Buffer*> getBuffer(std::string_view name) const;
+  bool containsBufferHandler(std::string_view name) const;
+  const BufferHandler& getBufferHandler(std::string_view name) const;
 };
 
 class GraphElement {
@@ -109,6 +106,7 @@ class GraphPass {
   // NVRO
   GraphPassType getGraphPassType() const noexcept;
   QueueType getQueueType() const noexcept;
+  CommandBuffer& getCommandBuffer(int frame) const;
   std::vector<CommandBuffer*> getCommandBuffers() const;
   std::string getName() const;
   virtual void execute(int currentFrame, const CommandBuffer& commandBuffer) = 0;
@@ -220,27 +218,24 @@ class Graph final {
   const Device* _device;
   Tracer* _tracer;
   std::unique_ptr<BS::thread_pool> _threadPool;
+  // Passes execute in declaration order; grouping submissions does not reorder them.
   std::vector<std::unique_ptr<GraphPass>> _passes;
-  std::deque<GraphPass*> _passesOrdered;
-  std::unordered_map<GraphPass*, QueueType> _passQueueTypes;
-  std::unordered_set<GraphPass*> _collectionPasses;
+  // First pass per VkQueue, used for ticket waits and GPU profiling: G0 G1 C0 G2 -> {G0, C0}.
+  std::unordered_set<GraphPass*> _queueFirstPasses;
   std::unique_ptr<GraphStorage> _graphStorage;
-  // special semaphores
+  // Acquire: one binary semaphore per frame slot. Present-ready: one per swapchain image.
   std::vector<std::shared_ptr<Semaphore>> _semaphoreRenderFinished, _semaphoreImageAvailable;
+  // Separate timeline for CPU frame-slot reuse; its signal must cover all graph queues.
   std::unique_ptr<Semaphore> _semaphoreInFlight;
-  uint64_t _valueSemaphoreInFlight = 1;
+  uint64_t _frameNumber = 0;
   int _maxFramesInFlight;
-  int _frameInFlight = 0;
 
-  // resources per pass
+  // calculate() stores resource names/types/masks; render() selects the physical buffer/image.
   struct Resource {
     std::string name;
     enum class Type { IMAGE, BUFFER } type;
-    enum class Operation : uint8_t {
-      READ = 1 << 0,
-      WRITE = 1 << 1,
-    };
-    uint8_t operation = 0;
+    VkPipelineStageFlags2 stageMask = 0;
+    VkAccessFlags2 accessMask = 0;
   };
 
   class Resources {
@@ -249,42 +244,59 @@ class Graph final {
 
    public:
     void add(Resource resource);
-    bool contains(std::string_view name, Resource::Type type, Resource::Operation operation) const;
     const std::vector<Resource>& getResources() const noexcept;
-    std::vector<Resource> getResources(Resource::Operation operation) const;
-    std::vector<std::string> getNames(Resource::Type type) const;
   };
 
+  // One description per name in each pass, shared by all frame slots.
   std::unordered_map<GraphPass*, Resources> _resources;
 
-  // syncrhonization per pass
-  class Sync {
-   private:
-    // same semaphore is wait and signal, so can't be unique
-    std::vector<std::pair<std::vector<std::shared_ptr<Semaphore>>, std::function<int()>>> _waitSemaphores,
-        _signalSemaphores;
-    std::vector<std::pair<std::vector<Barrier>, std::function<int()>>> _barriers;
-
-   public:
-    Sync() = default;
-    void addSignalSemaphore(std::vector<std::shared_ptr<Semaphore>>& signalSemaphore, std::function<int()> index);
-    void addWaitSemaphore(std::vector<std::shared_ptr<Semaphore>>& waitSemaphore, std::function<int()> index);
-    void addBarrier(std::vector<Barrier>& barriers, std::function<int()> index);
-
-    std::vector<Semaphore*> getWaitSemaphores() const;
-    std::vector<Semaphore*> getSignalSemaphores() const;
-    std::vector<const Barrier*> getBarriers() const;
-  };
-
-  std::unordered_map<GraphPass*, Sync> _sync;
-  // The first submission waits for external GPU work; subsequent queues depend on that submission.
+  // Upload/mipmap readiness, plus the previous frame when calculate() rebuilds history; consumed once.
   std::vector<GpuTicket> _pendingTickets;
-  std::unordered_map<GraphPass*, std::vector<std::pair<Image*, Barrier>>> _initialImageBarriers;
-  GraphPass* _swapchainFirstPass = nullptr;
-  VkPipelineStageFlags2 _swapchainFirstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-  VkAccessFlags2 _swapchainFirstAccessMask = 0;
 
+  // A selected physical access and its submission's completion point.
+  struct Access {
+    VkQueue queue = VK_NULL_HANDLE;
+    VkPipelineStageFlags2 stageMask = 0;
+    VkAccessFlags2 accessMask = 0;
+    // Queue timeline completion value; zero when only one queue is used and no queue timeline is needed.
+    uint64_t value = 0;
+    Buffer* buffer = nullptr;
+    Image* image = nullptr;
+  };
+  // Per physical handle: optional last writer, then readers (one per queue).
+  // READ keeps the writer and merges reader masks/max value; WRITE replaces the history.
+  // Shared across names and frames, including repeated slots like [A,A,B]; cleared by calculate().
+  std::unordered_map<VkBuffer, std::vector<Access>> _bufferHistory;
+  std::unordered_map<VkImage, std::vector<Access>> _imageHistory;
+  // Same-queue dependencies rebuilt from physical history before recording commands in each render().
+  std::unordered_map<GraphPass*, Barrier> _physicalBarriers;
+
+  // One semaphore per real queue; its counter increases per submission, not per frame.
+  struct QueueTimeline {
+    std::unique_ptr<Semaphore> semaphore;
+    uint64_t value = 0;
+  };
+  std::unordered_map<VkQueue, QueueTimeline> _queueTimelines;
+
+  // calculate() groups adjacent passes on one VkQueue; render() submits their current-slot command buffers.
+  // [firstPass, endPass) excludes endPass: [0,3) contains passes 0,1,2.
+  // waits/signals describe existing semaphores; adding an entry does not create a semaphore or submission.
+  struct Submission {
+    VkQueue queue;
+    std::size_t firstPass = 0, endPass = 0;
+    std::vector<VkSemaphoreSubmitInfo> waits, signals;
+    uint64_t value = 0;
+  };
+  std::vector<Submission> _submissions;
+
+  bool _hasReadAccess(VkAccessFlags2 mask) const noexcept;
+  bool _hasWriteAccess(VkAccessFlags2 mask) const noexcept;
   void _setResourceNames();
+  void _preparePhysicalAccesses();
+  void _addWait(std::vector<VkSemaphoreSubmitInfo>& waits,
+                VkSemaphore semaphore,
+                uint64_t value,
+                VkPipelineStageFlags2 stages);
 
  public:
   Graph(int threadsNumber, int maxFramesInFlight, const Device& device, Tracer& tracer);
@@ -302,6 +314,7 @@ class Graph final {
   GraphPassCompute* getPassCompute(std::string_view name) const;
   GraphStorage& getGraphStorage() const noexcept;
   int getFrameInFlight() const noexcept;
+  uint64_t getFrameNumber() const noexcept;
 
   // Keep ticket producers and Buffer/Image objects alive until their last GPU use completes; tickets are copied here.
   void calculate(std::span<const GpuTicket> tickets = {});

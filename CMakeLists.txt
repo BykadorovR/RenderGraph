@@ -185,6 +185,8 @@ if (RENDER_GRAPH_BUILD_TESTS)
   set(testShaderBinaryDir "${CMAKE_CURRENT_BINARY_DIR}/test_shaders")
   set(testShaderSources
     descriptorBinding.comp
+    physicalUpdate.comp
+    physicalObserve.comp
     gpuDriven.comp
     gpuDriven.vert
     gpuDriven.frag

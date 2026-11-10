@@ -4,6 +4,9 @@ module;
 #define VMA_DYNAMIC_VULKAN_FUNCTIONS 0
 
 #include <vk_mem_alloc.h>
+#include <functional>
+#include <memory>
+#include <vector>
 
 export module Buffer;
 
@@ -36,5 +39,23 @@ class Buffer final {
   VmaAllocation getAllocation() const noexcept;
   VkDeviceAddress getDeviceAddress(const Device& device) const noexcept;
   ~Buffer();
+};
+
+class BufferHandler final {
+ private:
+  std::vector<std::shared_ptr<Buffer>> _buffers;
+  std::function<int()> _index;
+
+ public:
+  // May be called concurrently; return the same index throughout one Graph::render().
+  // E.g. frameNumber % 2 switches ping-pong slots between frames, not between getter calls.
+  BufferHandler(std::vector<std::shared_ptr<Buffer>> buffers, std::function<int()> index);
+  BufferHandler(std::vector<std::unique_ptr<Buffer>> buffers, std::function<int()> index);
+  BufferHandler(const BufferHandler&) = delete;
+  BufferHandler& operator=(const BufferHandler&) = delete;
+  Buffer& getBuffer() const;
+  std::function<int()> getIndexFunction() const;
+  int getIndex() const;
+  std::vector<Buffer*> getBuffers() const;
 };
 }  // namespace RenderGraph

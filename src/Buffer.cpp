@@ -4,6 +4,10 @@ module;
 #define VMA_DYNAMIC_VULKAN_FUNCTIONS 0
 
 #include <stdexcept>
+#include <functional>
+#include <memory>
+#include <vector>
+#include <utility>
 #include <string>
 #include <vk_mem_alloc.h>
 #include <volk.h>
@@ -48,3 +52,30 @@ VkDeviceAddress Buffer::getDeviceAddress(const Device& device) const noexcept {
 VkBuffer Buffer::getBuffer() const noexcept { return _buffer; }
 
 Buffer::~Buffer() { vmaDestroyBuffer(_memoryAllocator->getAllocator(), _buffer, _allocation); }
+
+BufferHandler::BufferHandler(std::vector<std::shared_ptr<Buffer>> buffers, std::function<int()> index)
+    : _buffers(std::move(buffers)),
+      _index(std::move(index)) {}
+
+BufferHandler::BufferHandler(std::vector<std::unique_ptr<Buffer>> buffers, std::function<int()> index)
+    : _index(std::move(index)) {
+  _buffers.reserve(buffers.size());
+  for (auto& buffer : buffers) _buffers.emplace_back(std::move(buffer));
+}
+
+Buffer& BufferHandler::getBuffer() const {
+  auto* buffer = _buffers.at(getIndex()).get();
+  if (!buffer) throw std::logic_error("BufferHandler selected a null buffer");
+  return *buffer;
+}
+
+std::function<int()> BufferHandler::getIndexFunction() const { return _index; }
+
+int BufferHandler::getIndex() const { return _index(); }
+
+std::vector<Buffer*> BufferHandler::getBuffers() const {
+  std::vector<Buffer*> result;
+  result.reserve(_buffers.size());
+  for (const auto& buffer : _buffers) result.push_back(buffer.get());
+  return result;
+}

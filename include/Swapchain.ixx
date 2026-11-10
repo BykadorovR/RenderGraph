@@ -23,7 +23,7 @@ class Swapchain {
   VkFormat _swapchainFormat = VK_FORMAT_R8G8B8A8_UNORM;
   std::vector<std::shared_ptr<ImageView>> _imageViews;
   bool _verticalSync = false;
-  vkb::SwapchainBuilder _createBuilder() const;
+  vkb::SwapchainBuilder _createBuilder(glm::ivec2 resolution, VkImageUsageFlags imageUsage) const;
   void _destroy();
 
  public:

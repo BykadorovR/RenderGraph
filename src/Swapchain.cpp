@@ -14,7 +14,7 @@ module Swapchain;
 
 using namespace RenderGraph;
 
-vkb::SwapchainBuilder Swapchain::_createBuilder() const {
+vkb::SwapchainBuilder Swapchain::_createBuilder(glm::ivec2 resolution, VkImageUsageFlags imageUsage) const {
   const auto& device = _device->getDevice();
   if (device.surface == VK_NULL_HANDLE) throw std::runtime_error("Swapchain requires a surface");
   const auto graphicsFamily = static_cast<uint32_t>(_device->getQueueIndex(QueueType::GENERAL));
@@ -29,16 +29,6 @@ vkb::SwapchainBuilder Swapchain::_createBuilder() const {
   vkb::SwapchainBuilder builder{_device->getPhysicalDevice(), _device->getLogicalDevice(), device.surface,
                                 sharingFamily, graphicsFamily};
   builder.set_allocation_callbacks(device.allocation_callbacks);
-  return builder;
-}
-
-Swapchain::Swapchain(glm::ivec2 resolution,
-                     const MemoryAllocator& allocator,
-                     const Device& device,
-                     VkImageUsageFlags imageUsage)
-    : _allocator(&allocator),
-      _device(&device) {
-  auto builder = _createBuilder();
 #if defined(__ANDROID__)
   builder.set_pre_transform_flags(VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR);
 #endif
@@ -56,7 +46,16 @@ Swapchain::Swapchain(glm::ivec2 resolution,
   } else {
     builder.set_desired_present_mode(VK_PRESENT_MODE_IMMEDIATE_KHR);
   }
+  return builder;
+}
 
+Swapchain::Swapchain(glm::ivec2 resolution,
+                     const MemoryAllocator& allocator,
+                     const Device& device,
+                     VkImageUsageFlags imageUsage)
+    : _allocator(&allocator),
+      _device(&device) {
+  auto builder = _createBuilder(resolution, imageUsage);
   auto swapchainResult = builder.build();
   if (!swapchainResult) {
     throw std::runtime_error(swapchainResult.error().message());
@@ -109,16 +108,8 @@ const vkb::Swapchain& Swapchain::getSwapchain() const noexcept { return _swapcha
 uint32_t Swapchain::getSwapchainIndex() const noexcept { return _swapchainIndex; }
 
 std::vector<std::shared_ptr<ImageView>> Swapchain::reset(glm::ivec2 resolution) {
-  auto builder = _createBuilder();
-#if defined(__ANDROID__)
-  builder.set_pre_transform_flags(VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR);
-#endif
-  builder.set_desired_extent(static_cast<uint32_t>(resolution.x), static_cast<uint32_t>(resolution.y));
+  auto builder = _createBuilder(resolution, _swapchain.image_usage_flags);
   builder.set_old_swapchain(_swapchain);
-  builder.set_composite_alpha_flags(VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR);
-  builder.set_desired_format(
-      VkSurfaceFormatKHR{.format = _swapchainFormat, .colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR});
-  builder.set_image_usage_flags(_swapchain.image_usage_flags);
   auto swapchainResult = builder.build();
   if (!swapchainResult) {
     // Passing oldSwapchain can retire it even when creation fails.

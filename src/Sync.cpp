@@ -9,8 +9,6 @@ module Sync;
 using namespace RenderGraph;
 
 Semaphore::Semaphore(VkSemaphoreType type, const Device& device) : _device(&device) {
-  _type = type;
-
   VkSemaphoreCreateInfo semaphoreInfo{};
   VkSemaphoreTypeCreateInfo timelineCreateInfo{};
   if (type & VK_SEMAPHORE_TYPE_TIMELINE) {
@@ -30,6 +28,11 @@ Semaphore::Semaphore(VkSemaphoreType type, const Device& device) : _device(&devi
 VkSemaphore Semaphore::getSemaphore() const noexcept { return _semaphore; }
 
 Semaphore::~Semaphore() { vkDestroySemaphore(_device->getLogicalDevice(), _semaphore, nullptr); }
+
+void Barrier::clear() noexcept {
+  _bufferBarriers.clear();
+  _imageBarriers.clear();
+}
 
 void Barrier::addBuffer(Buffer* buffer,
                         VkPipelineStageFlags2 srcStageMask,

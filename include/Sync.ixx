@@ -10,16 +10,18 @@ import Device;
 import Buffer;
 
 export namespace RenderGraph {
+// An asynchronous producer returns {S,5}; its data is ready when semaphore S reaches 5.
+// A ticket identifies completion of a batch, not the individual buffers/images it wrote.
 struct GpuTicket {
   VkSemaphore semaphore = nullptr;
   uint64_t value = 0;
 };
 
+// Owns the Vulkan semaphore; submission wait/signal descriptions only refer to its handle.
 class Semaphore final {
  private:
   const Device* _device;
   VkSemaphore _semaphore;
-  VkSemaphoreType _type;
 
  public:
   Semaphore(VkSemaphoreType type, const Device& device);
@@ -32,12 +34,16 @@ class Semaphore final {
   ~Semaphore();
 };
 
+// addBuffer()/addImage() collect descriptions; execute() records vkCmdPipelineBarrier2.
+// Barriers order this queue's accesses and can change image layouts.
+// Waiting for a producer on another queue is handled separately by a semaphore.
 class Barrier final {
  private:
   std::vector<VkBufferMemoryBarrier2> _bufferBarriers;
   std::vector<VkImageMemoryBarrier2> _imageBarriers;
 
  public:
+  void clear() noexcept;
   void addBuffer(Buffer* buffer,
                  VkPipelineStageFlags2 srcStageMask,
                  VkAccessFlags2 srcAccessMask,
