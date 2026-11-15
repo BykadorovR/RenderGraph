@@ -10,16 +10,20 @@
 #include <algorithm>
 #include <atomic>
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <future>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -122,6 +126,7 @@ class GraphCommandRecorder final {
   inline static GraphCommandRecorder* _active = nullptr;
   PFN_vkCmdPipelineBarrier2 _pipelineBarrier = vkCmdPipelineBarrier2;
   PFN_vkQueueSubmit2 _queueSubmit = vkQueueSubmit2;
+  PFN_vkWaitSemaphores _waitSemaphores = vkWaitSemaphores;
   std::mutex _mutex;
 
   static VKAPI_ATTR void VKAPI_CALL recordBarrier(VkCommandBuffer commandBuffer, const VkDependencyInfo* dependency) {
@@ -143,12 +148,31 @@ class GraphCommandRecorder final {
                                                      const VkSubmitInfo2* submits,
                                                      VkFence fence) {
     auto& recorder = *_active;
-    for (uint32_t index = 0; index < submitCount; ++index) recorder._recordSubmission(queue, submits[index]);
-    return recorder._queueSubmit(queue, submitCount, submits, fence);
+    VkFence submissionFence = fence;
+    {
+      std::scoped_lock lock(recorder._mutex);
+      if (recorder.submissionQueues.empty() && recorder.firstSubmissionFence)
+        submissionFence = recorder.firstSubmissionFence;
+      for (uint32_t index = 0; index < submitCount; ++index) recorder._recordSubmission(queue, submits[index]);
+    }
+    return recorder._queueSubmit(queue, submitCount, submits, submissionFence);
+  }
+
+  static VKAPI_ATTR VkResult VKAPI_CALL recordCpuWait(VkDevice device,
+                                                      const VkSemaphoreWaitInfo* wait,
+                                                      uint64_t timeout) {
+    auto& recorder = *_active;
+    {
+      std::scoped_lock lock(recorder._mutex);
+      auto& completions = recorder.cpuWaits.emplace_back();
+      for (uint32_t index = 0; index < wait->semaphoreCount; ++index) {
+        completions.push_back({wait->pSemaphores[index], wait->pValues[index]});
+      }
+    }
+    return recorder._waitSemaphores(device, wait, timeout);
   }
 
   void _recordSubmission(VkQueue queue, const VkSubmitInfo2& submit) {
-    std::scoped_lock lock(_mutex);
     submissionQueues.push_back(queue);
     submissionBuffers.emplace_back();
     for (uint32_t buffer = 0; buffer < submit.commandBufferInfoCount; ++buffer) {
@@ -165,23 +189,27 @@ class GraphCommandRecorder final {
   }
 
  public:
+  VkFence firstSubmissionFence = VK_NULL_HANDLE;
   std::vector<std::pair<VkCommandBuffer, VkImageMemoryBarrier2>> imageBarriers;
   std::vector<VkBufferMemoryBarrier2> bufferBarriers;
   std::vector<VkQueue> submissionQueues;
   std::vector<std::vector<VkCommandBuffer>> submissionBuffers;
   std::vector<std::vector<VkSemaphoreSubmitInfo>> submissionWaits;
   std::vector<std::vector<VkSemaphoreSubmitInfo>> submissionSignals;
+  std::vector<std::vector<RenderGraph::GpuTicket>> cpuWaits;
 
   GraphCommandRecorder() {
     _active = this;
     vkCmdPipelineBarrier2 = recordBarrier;
     vkQueueSubmit2 = recordSubmit;
+    vkWaitSemaphores = recordCpuWait;
   }
   GraphCommandRecorder(const GraphCommandRecorder&) = delete;
   GraphCommandRecorder& operator=(const GraphCommandRecorder&) = delete;
   ~GraphCommandRecorder() {
     vkCmdPipelineBarrier2 = _pipelineBarrier;
     vkQueueSubmit2 = _queueSubmit;
+    vkWaitSemaphores = _waitSemaphores;
     _active = nullptr;
   }
 };
@@ -274,11 +302,20 @@ class ValidationGraphElement final : public RenderGraph::GraphElement {
  private:
   std::atomic<int> _drawCount = 0;
   std::atomic<int> _resetCount = 0;
+  std::function<void()> _update;
+  std::function<void()> _draw;
 
  public:
-  void draw(int currentFrame, const RenderGraph::CommandBuffer& commandBuffer) override { ++_drawCount; }
+  explicit ValidationGraphElement(std::function<void()> update = {}, std::function<void()> draw = {})
+      : _update(std::move(update)), _draw(std::move(draw)) {}
+  void draw(int currentFrame, const RenderGraph::CommandBuffer& commandBuffer) override {
+    if (_draw) _draw();
+    ++_drawCount;
+  }
 
-  void update(int currentFrame, const RenderGraph::CommandBuffer& commandBuffer) override {}
+  void update(int currentFrame, const RenderGraph::CommandBuffer& commandBuffer) override {
+    if (_update) _update();
+  }
 
   void reset(const std::vector<std::shared_ptr<RenderGraph::ImageView>>& swapchain) override { ++_resetCount; }
 
@@ -615,6 +652,7 @@ TEST_P(UploadQueueTest, UploadedBuffersAndMipmapsReachComputeGraph) {
     pass.addStorageTextureInput("Image");
     pass.registerGraphElement(
         std::make_shared<ReadbackElement>(source->getBuffer(), view->getImage().getImage(), readback));
+    graph.calculate();
     RenderGraph::ResourceUploader uploader(allocator, device, GetParam());
     RenderGraph::MipmapGenerator generator(device);
     GraphCommandRecorder recorder;
@@ -637,7 +675,7 @@ TEST_P(UploadQueueTest, UploadedBuffersAndMipmapsReachComputeGraph) {
       EXPECT_EQ(recorder.submissionQueues.back(), device.getQueue(GetParam()));
       generator.generate(view->getImage());
       const auto generated = generator.submit({&ticket, 1});
-      graph.calculate({&generated, 1});
+      graph.addFrameWait(generated);
       ASSERT_FALSE(graph.render());
       ASSERT_EQ(recorder.submissionQueues.size(), submissionCount + 3);
       EXPECT_EQ(recorder.submissionQueues[submissionCount], device.getQueue(GetParam()));
@@ -1612,7 +1650,8 @@ TEST_P(ValidationScenarioTest, GpuTicketsGateGraphExecution) {
     const auto generated = generator.submit({&tickets.back(), 1});
     tickets.push_back(generated);
     // Empty execution and recalculation must preserve tickets until passes are added.
-    graph.calculate(tickets);
+    for (const auto& ticket : tickets) graph.addFrameWait(ticket);
+    graph.calculate();
     ASSERT_FALSE(graph.render());
     graph.calculate();
 
@@ -1675,12 +1714,25 @@ TEST_P(ValidationScenarioTest, GpuTicketsGateGraphExecution) {
         graph.getGraphStorage().getBufferHandler("Second").getBuffer().getBuffer(), secondReadback.getBuffer()));
     // Repeated and older tickets for one uploader must merge into one wait for its latest batch.
     std::ranges::reverse(tickets);
-    graph.calculate(tickets);
+    for (const auto& ticket : tickets) graph.addFrameWait(ticket);
+    graph.calculate();
     // Recalculation before submission must retain pending uploads; later recalculations must not repeat waits.
+    uploader.upload(graph.getGraphStorage().getBufferHandler("First").getBuffer(), std::as_bytes(std::span(firstData)));
+    const auto updateTicket = uploader.submit();
+    firstPass.registerGraphElement(std::make_shared<ValidationGraphElement>([&, pending = true]() mutable {
+      if (!std::exchange(pending, false)) return;
+      graph.addFrameWait(updateTicket);
+    }));
     for (int frame = 0; frame < 3; ++frame) {
       graph.calculate();
       ASSERT_FALSE(graph.render());
       ASSERT_EQ(vkDeviceWaitIdle(device.getLogicalDevice()), VK_SUCCESS);
+      if (frame == 0) {
+        const auto& waits = recorder.submissionWaits.back();
+        const auto wait = std::ranges::find(waits, updateTicket.semaphore, &VkSemaphoreSubmitInfo::semaphore);
+        ASSERT_NE(wait, waits.end());
+        EXPECT_GE(wait->value, updateTicket.value);
+      }
       ASSERT_EQ(vmaInvalidateAllocation(allocator.getAllocator(), firstReadback.getAllocation(), 0, VK_WHOLE_SIZE),
                 VK_SUCCESS);
       ASSERT_EQ(vmaInvalidateAllocation(allocator.getAllocator(), secondReadback.getAllocation(), 0, VK_WHOLE_SIZE),
@@ -1884,7 +1936,8 @@ TEST(ValidationTest, SampledImageLayoutsPreserveUploadedContentsAcrossFrames) {
     sample.addColorTarget("Color");
     auto& keep = graph.createPassGraphic("Keep");
     keep.addColorTarget("Input", RenderGraph::RenderTargetLoadAction::KEEP);
-    graph.calculate(std::span(&ticket, 1));
+    graph.addFrameWait(ticket);
+    graph.calculate();
     graph.calculate();
     EXPECT_EQ(inputs[0]->getImage().getImageLayout(), VK_IMAGE_LAYOUT_GENERAL);
     EXPECT_EQ(inputs[1]->getImage().getImageLayout(), VK_IMAGE_LAYOUT_UNDEFINED);
@@ -1958,9 +2011,10 @@ TEST(ValidationTest, ImageUploadAfterCalculationPreservesContents) {
     RenderGraph::ResourceUploader uploader(allocator, device);
     const std::vector<std::byte> pixels(4 * 4 * 4, std::byte{42});
     const std::array<VkDeviceSize, 1> offsets{0};
-    uploader.upload(view->getImage(), pixels, offsets);
-    const auto ticket = uploader.submit();
-    EXPECT_EQ(view->getImage().getImageLayout(), VK_IMAGE_LAYOUT_GENERAL);
+    RenderGraph::GpuTicket ticket;
+    graph.getPassGraphic("KeepUploadedImage")->registerGraphElement(std::make_shared<ValidationGraphElement>([&] {
+      graph.addResourceWait(view->getImage(), ticket);
+    }));
 
     RenderGraph::CommandPool pool(RenderGraph::QueueType::GENERAL, device);
     RenderGraph::CommandBuffer commands(pool, device);
@@ -1975,19 +2029,15 @@ TEST(ValidationTest, ImageUploadAfterCalculationPreservesContents) {
                                  .pCommandBufferInfos = &commandInfo};
       return vkQueueSubmit2(device.getQueue(RenderGraph::QueueType::GENERAL), 1, &submit, nullptr);
     };
-    // Synchronize the upload externally so the graph's original plan is used without recalculation.
-    commands.beginCommands();
-    const VkSemaphoreSubmitInfo wait{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
-                                     .semaphore = ticket.semaphore,
-                                     .value = ticket.value,
-                                     .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};
-    ASSERT_EQ(submitCommands(std::span(&wait, 1)), VK_SUCCESS);
-    ASSERT_EQ(vkQueueWaitIdle(device.getQueue(RenderGraph::QueueType::GENERAL)), VK_SUCCESS);
-
     {
       GraphCommandRecorder recorder;
+      uploader.upload(view->getImage(), pixels, offsets);
+      ticket = uploader.submit();
       ASSERT_FALSE(graph.render());
-      EXPECT_TRUE(recorder.imageBarriers.empty());
+      ASSERT_EQ(recorder.imageBarriers.size(), 1u);  // Only the uploader transitions the fresh image.
+      EXPECT_EQ(recorder.imageBarriers.front().second.oldLayout, VK_IMAGE_LAYOUT_UNDEFINED);
+      ASSERT_EQ(recorder.submissionWaits.back().size(), 1u);
+      EXPECT_EQ(recorder.submissionWaits.back().front().semaphore, ticket.semaphore);
     }
     ASSERT_EQ(vkQueueWaitIdle(device.getQueue(RenderGraph::QueueType::GENERAL)), VK_SUCCESS);
 
@@ -2268,9 +2318,20 @@ TEST(ValidationTest, SwapchainLayoutsFollowAcquiredImagesAcrossRecalculationAndR
         const auto imageIndex = swapchain.getSwapchainIndex();
         const auto& image = swapchain.getImage(imageIndex);
         ASSERT_EQ(recorder.imageBarriers.size(), 2);
-        const auto& [acquireCommand, acquire] = recorder.imageBarriers.front();
-        const auto& [presentCommand, present] = recorder.imageBarriers.back();
-        EXPECT_EQ(acquireCommand, firstCommand);
+        const auto acquireIt = std::ranges::find_if(recorder.imageBarriers, [](const auto& entry) {
+          return entry.second.newLayout == VK_IMAGE_LAYOUT_GENERAL;
+        });
+        const auto presentIt = std::ranges::find_if(recorder.imageBarriers, [](const auto& entry) {
+          return entry.second.newLayout == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        });
+        ASSERT_NE(acquireIt, recorder.imageBarriers.end());
+        ASSERT_NE(presentIt, recorder.imageBarriers.end());
+        const auto& [acquireCommand, acquire] = *acquireIt;
+        const auto& [presentCommand, present] = *presentIt;
+        const auto first = std::ranges::find(recorder.submissionBuffers.front(), firstCommand);
+        ASSERT_NE(first, recorder.submissionBuffers.front().begin());
+        ASSERT_NE(first, recorder.submissionBuffers.front().end());
+        EXPECT_EQ(*std::prev(first), acquireCommand);
         EXPECT_EQ(acquire.image, image.getImage());
         EXPECT_EQ(acquire.oldLayout, layouts[imageIndex]);
         EXPECT_EQ(acquire.newLayout, VK_IMAGE_LAYOUT_GENERAL);
@@ -2283,7 +2344,7 @@ TEST(ValidationTest, SwapchainLayoutsFollowAcquiredImagesAcrossRecalculationAndR
         EXPECT_EQ(image.getImageLayout(), VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
         ASSERT_EQ(recorder.submissionQueues.size(), 1);
         EXPECT_EQ(recorder.submissionQueues.front(), device.getQueue(RenderGraph::QueueType::GENERAL));
-        ASSERT_EQ(recorder.submissionBuffers.front().size(), useSwapchain ? 3 : 2);
+        ASSERT_EQ(recorder.submissionBuffers.front().size(), useSwapchain ? 4 : 3);
         EXPECT_EQ(recorder.submissionBuffers.front().back(), finalCommand);
         layouts[imageIndex] = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
         // Rebuilding the plan must preserve the tracked image layout.
@@ -2337,6 +2398,10 @@ TEST(ValidationTest, SwapchainComputeUseHasNoOwnershipBarriers) {
       compute.addStorageTextureOutput("Swapchain");
       firstUse = &compute;
     }
+    // Advance the image user's queue timeline with unrelated work before the final PRESENT transition.
+    if (!graphicsFirst) graph.createPassCompute("UnrelatedGeneral", RenderGraph::QueueType::GENERAL);
+    graph.createPassCompute("UnrelatedImageQueue",
+                            graphicsFirst ? RenderGraph::QueueType::GENERAL : RenderGraph::QueueType::COMPUTE);
     // End on compute after graphics, and on graphics after compute, without extra submissions.
     auto& tail = graph.createPassCompute(
         "UnrelatedFinalPass", graphicsFirst ? RenderGraph::QueueType::COMPUTE : RenderGraph::QueueType::GENERAL);
@@ -2363,7 +2428,10 @@ TEST(ValidationTest, SwapchainComputeUseHasNoOwnershipBarriers) {
       ASSERT_NE(presentIt, recorder.imageBarriers.end());
       const auto& [acquireCommand, acquire] = *acquireIt;
       const auto& [presentCommand, present] = *presentIt;
-      EXPECT_EQ(acquireCommand, firstCommand);
+      const auto first = std::ranges::find(recorder.submissionBuffers.front(), firstCommand);
+      ASSERT_NE(first, recorder.submissionBuffers.front().begin());
+      ASSERT_NE(first, recorder.submissionBuffers.front().end());
+      EXPECT_EQ(*std::prev(first), acquireCommand);
       EXPECT_EQ(acquire.oldLayout, layouts[imageIndex]);
       EXPECT_EQ(acquire.newLayout, VK_IMAGE_LAYOUT_GENERAL);
       EXPECT_EQ(presentCommand, finalCommand);
@@ -2374,7 +2442,18 @@ TEST(ValidationTest, SwapchainComputeUseHasNoOwnershipBarriers) {
         EXPECT_EQ(barrier.srcQueueFamilyIndex, VK_QUEUE_FAMILY_IGNORED);
         EXPECT_EQ(barrier.dstQueueFamilyIndex, VK_QUEUE_FAMILY_IGNORED);
       }
-      ASSERT_EQ(recorder.submissionQueues.size(), sameQueue ? 1 : 2);
+      ASSERT_EQ(recorder.submissionQueues.size(), sameQueue ? 1 : 4);
+      if (!sameQueue) {
+        const auto& imageUserCompletion = recorder.submissionSignals.front().front();
+        const auto& unrelatedCompletion = recorder.submissionSignals[2].front();
+        const auto& presentWaits = recorder.submissionWaits.back();
+        const auto imageWait = std::ranges::find(presentWaits, imageUserCompletion.semaphore,
+                                                 &VkSemaphoreSubmitInfo::semaphore);
+        ASSERT_NE(imageWait, presentWaits.end());
+        EXPECT_EQ(imageWait->value, imageUserCompletion.value);
+        EXPECT_LT(imageWait->value, unrelatedCompletion.value);
+        EXPECT_EQ(imageWait->stageMask, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
+      }
       EXPECT_EQ(recorder.submissionQueues.back(),
                 device.getQueue(graphicsFirst ? RenderGraph::QueueType::COMPUTE : RenderGraph::QueueType::GENERAL));
       EXPECT_EQ(recorder.submissionBuffers.back().back(), finalCommand);
@@ -2493,6 +2572,671 @@ class PhysicalResourceElement final : public RenderGraph::GraphElement {
   void update(int frame, const RenderGraph::CommandBuffer& commands) override {}
   void reset(const std::vector<std::shared_ptr<RenderGraph::ImageView>>& swapchain) override {}
 };
+
+class ComputeUpdateBindingElement final : public RenderGraph::GraphElement {
+ private:
+  RenderGraph::Shader _shader;
+  RenderGraph::DescriptorSetLayout _layout;
+  RenderGraph::DescriptorPool _pool;
+  RenderGraph::Pipeline _pipeline;
+  std::unique_ptr<RenderGraph::DescriptorSet> _descriptors;
+
+ public:
+  ComputeUpdateBindingElement(const std::vector<RenderGraph::Buffer*>& counters,
+                              const RenderGraph::CommandBuffer& initialize,
+                              const RenderGraph::Device& device)
+      : _shader(device),
+        _layout(device),
+        _pool({}, device),
+        _pipeline(device) {
+    _shader.add(readTestShader("descriptorBinding.comp.spv"));
+    _layout.createCustom({{.binding = 0,
+                           .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                           .descriptorCount = 1,
+                           .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT}});
+    std::vector<RenderGraph::DescriptorSetLayout*> layouts{&_layout};
+    _pipeline.createCompute(_shader.getShaderStageInfo().front(), layouts, {});
+    _descriptors = std::make_unique<RenderGraph::DescriptorSet>(layouts, _pool, device);
+    for (auto* counter : counters) _descriptors->add(std::vector<RenderGraph::Buffer*>{counter});
+    _descriptors->initialize(initialize);
+  }
+
+  void update(int frame, const RenderGraph::CommandBuffer& commands) override {
+    vkCmdBindPipeline(commands.getCommandBuffer(), VK_PIPELINE_BIND_POINT_COMPUTE, _pipeline.getPipeline());
+    _descriptors->bind(VK_PIPELINE_BIND_POINT_COMPUTE, _pipeline.getPipelineLayout(), commands, frame);
+  }
+
+  void draw(int frame, const RenderGraph::CommandBuffer& commands) override {
+    vkCmdDispatch(commands.getCommandBuffer(), 1, 1, 1);
+    const VkMemoryBarrier2 barrier{
+        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        .srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_HOST_BIT,
+        .dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_HOST_READ_BIT};
+    const VkDependencyInfo dependency{.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                                      .memoryBarrierCount = 1,
+                                      .pMemoryBarriers = &barrier};
+    vkCmdPipelineBarrier2(commands.getCommandBuffer(), &dependency);
+  }
+
+  void reset(const std::vector<std::shared_ptr<RenderGraph::ImageView>>&) override {}
+};
+
+TEST_P(ValidationScenarioTest, ComputeElementsPreserveUpdateBindingsAcrossFrames) {
+  ValidationErrorCollector errors;
+  RenderGraph::Instance instance("ComputeUpdateBindings", true);
+  if (!instance.isDebug()) GTEST_SKIP() << "Vulkan validation layers are unavailable";
+  ValidationMessenger messenger(instance.getInstance().instance, errors);
+  {
+    RenderGraph::Device device(instance);
+    device.initialize();
+    RenderGraph::MemoryAllocator allocator(device, instance);
+    RenderGraph::Tracer tracer(device);
+    for (const int frames : {2, 3}) {
+      SCOPED_TRACE(frames);
+      constexpr int iterations = 9;
+      RenderGraph::Graph graph(2, frames, device, tracer);
+      graph.initialize();
+      RenderGraph::CommandPool pool(GetParam(), device);
+      RenderGraph::CommandBuffer initialize(pool, device);
+      initialize.beginCommands();
+      std::array<std::vector<std::shared_ptr<RenderGraph::Buffer>>, 2> counters;
+      auto& pass = graph.createPassCompute("Counters", GetParam());
+      for (int element = 0; element < 2; ++element) {
+        for (int slot = 0; slot < frames; ++slot) {
+          auto buffer = std::make_shared<RenderGraph::Buffer>(
+              4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+              VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT, allocator, device);
+          const uint32_t initialValue = (element + 1) * 10;
+          ASSERT_EQ(vmaCopyMemoryToAllocation(allocator.getAllocator(), &initialValue, buffer->getAllocation(), 0, 4),
+                    VK_SUCCESS);
+          counters[element].push_back(buffer);
+        }
+        const auto name = "Counter" + std::to_string(element);
+        graph.getGraphStorage().add(name, std::make_unique<RenderGraph::BufferHandler>(
+                                              counters[element], [&] { return graph.getFrameInFlight(); }));
+        pass.addStorageBufferInput(name);
+        pass.addStorageBufferOutput(name);
+        pass.registerGraphElement(std::make_shared<ComputeUpdateBindingElement>(
+            graph.getGraphStorage().getBufferHandler(name).getBuffers(), initialize, device));
+      }
+      initialize.endCommands();
+      graph.calculate();
+      for (int frame = 0; frame < iterations; ++frame) EXPECT_FALSE(graph.render());
+      ASSERT_EQ(vkDeviceWaitIdle(device.getLogicalDevice()), VK_SUCCESS);
+      for (int element = 0; element < 2; ++element) {
+        for (int slot = 0; slot < frames; ++slot) {
+          SCOPED_TRACE(element);
+          SCOPED_TRACE(slot);
+          const auto& counter = *counters[element][slot];
+          ASSERT_EQ(vmaInvalidateAllocation(allocator.getAllocator(), counter.getAllocation(), 0, 4), VK_SUCCESS);
+          const uint32_t expected = (element + 1) * 10 + (iterations - 1 - slot) / frames + 1;
+          EXPECT_EQ(*static_cast<const uint32_t*>(counter.getAllocationInfo().pMappedData), expected);
+        }
+      }
+    }
+  }
+  EXPECT_TRUE(errors.getErrors().empty()) << joinErrors(errors.getErrors());
+}
+
+TEST(ValidationTest, PassUpdatesRunInParallelBeforeDependencyPlanning) {
+  ValidationErrorCollector errors;
+  RenderGraph::Instance instance("ParallelPassUpdates", true);
+  if (!instance.isDebug()) GTEST_SKIP() << "Vulkan validation layers are unavailable";
+  ValidationMessenger messenger(instance.getInstance().instance, errors);
+  {
+    constexpr int passCount = 5;
+    RenderGraph::Device device(instance);
+    device.initialize();
+    RenderGraph::MemoryAllocator allocator(device, instance);
+    RenderGraph::Tracer tracer(device);
+    RenderGraph::Graph graph(passCount, 1, device, tracer);
+    graph.initialize();
+    RenderGraph::Semaphore ready(VK_SEMAPHORE_TYPE_TIMELINE, device);
+    const VkSemaphoreSignalInfo signal{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO,
+                                       .semaphore = ready.getSemaphore(),
+                                       .value = passCount};
+    ASSERT_EQ(vkSignalSemaphore(device.getLogicalDevice(), &signal), VK_SUCCESS);
+    const auto renderThread = std::this_thread::get_id();
+    std::atomic<int> updatesStarted = 0, updatesFinished = 0, draws = 0;
+    std::promise<void> allUpdatesStarted;
+    const auto started = allUpdatesStarted.get_future().share();
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    for (int passIndex = 0; passIndex < passCount; ++passIndex) {
+      const auto name = "Input" + std::to_string(passIndex);
+      auto buffer = std::make_shared<RenderGraph::Buffer>(4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 0, allocator, device);
+      graph.getGraphStorage().add(name, std::make_unique<RenderGraph::BufferHandler>(std::vector{buffer}, [&] {
+                                    EXPECT_EQ(updatesFinished.load(), passCount);
+                                    return 0;
+                                  }));
+      auto& pass = graph.createPassCompute("Read" + std::to_string(passIndex), RenderGraph::QueueType::GENERAL);
+      pass.addStorageBufferInput(name);
+      pass.registerGraphElement(std::make_shared<ValidationGraphElement>(
+          [&, buffer, passIndex] {
+            EXPECT_NE(std::this_thread::get_id(), renderThread);
+            const RenderGraph::GpuTicket ticket{ready.getSemaphore(), static_cast<uint64_t>(passIndex + 1)};
+            for (int registration = 0; registration < 32; ++registration) {
+              graph.addResourceWait(*buffer, ticket);
+              graph.addFrameWait(ticket);
+            }
+            if (++updatesStarted == passCount) allUpdatesStarted.set_value();
+            EXPECT_EQ(started.wait_until(deadline), std::future_status::ready);
+            ++updatesFinished;
+          },
+          [&] {
+            EXPECT_NE(std::this_thread::get_id(), renderThread);
+            ++draws;
+          }));
+    }
+    graph.calculate();
+    GraphCommandRecorder recorder;
+    EXPECT_FALSE(graph.render());
+    ASSERT_EQ(vkDeviceWaitIdle(device.getLogicalDevice()), VK_SUCCESS);
+    EXPECT_EQ(updatesFinished.load(), passCount);
+    EXPECT_EQ(draws.load(), passCount);
+    ASSERT_EQ(recorder.submissionWaits.size(), 1u);
+    ASSERT_EQ(recorder.submissionWaits.front().size(), 1u);
+    EXPECT_EQ(recorder.submissionWaits.front().front().semaphore, ready.getSemaphore());
+    EXPECT_EQ(recorder.submissionWaits.front().front().value, passCount);
+  }
+  EXPECT_TRUE(errors.getErrors().empty()) << joinErrors(errors.getErrors());
+}
+
+TEST(ValidationTest, FailedParallelUpdateWaitsForOtherPasses) {
+  RenderGraph::Instance instance("ParallelUpdateFailure", false);
+  RenderGraph::Device device(instance);
+  device.initialize();
+  RenderGraph::Tracer tracer(device);
+  RenderGraph::Graph graph(2, 1, device, tracer);
+  graph.initialize();
+  std::promise<void> secondStarted, aboutToThrow, releaseSecond;
+  const auto started = secondStarted.get_future().share();
+  const auto throwing = aboutToThrow.get_future();
+  const auto released = releaseSecond.get_future().share();
+  std::atomic<bool> secondFinished = false;
+  auto first = std::make_shared<ValidationGraphElement>([&] {
+    EXPECT_EQ(started.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    aboutToThrow.set_value();
+    throw std::runtime_error("Update failed");
+  });
+  auto second = std::make_shared<ValidationGraphElement>([&] {
+    secondStarted.set_value();
+    EXPECT_EQ(released.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    secondFinished = true;
+  });
+  graph.createPassCompute("Fail", RenderGraph::QueueType::GENERAL).registerGraphElement(first);
+  graph.createPassCompute("Finish", RenderGraph::QueueType::GENERAL).registerGraphElement(second);
+  graph.calculate();
+  auto render = std::async(std::launch::async, [&] { EXPECT_THROW(graph.render(), std::runtime_error); });
+  EXPECT_EQ(throwing.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+  const auto renderStatus = render.wait_for(std::chrono::milliseconds(50));
+  releaseSecond.set_value();
+  render.get();
+  EXPECT_EQ(renderStatus, std::future_status::timeout);
+  EXPECT_TRUE(secondFinished.load());
+  EXPECT_EQ(first->getDrawCount(), 0);
+  EXPECT_EQ(second->getDrawCount(), 1);
+  EXPECT_EQ(graph.getFrameNumber(), 0u);
+}
+
+TEST(ValidationTest, ParallelUpdatesRegisterPreparedBuffersForSameFrame) {
+  ValidationErrorCollector errors;
+  RenderGraph::Instance instance("ParallelBufferPreparation", true);
+  if (!instance.isDebug()) GTEST_SKIP() << "Vulkan validation layers are unavailable";
+  ValidationMessenger messenger(instance.getInstance().instance, errors);
+  {
+    constexpr int passCount = 5, iterations = 9;
+    RenderGraph::Device device(instance);
+    device.initialize();
+    RenderGraph::MemoryAllocator allocator(device, instance);
+    RenderGraph::Tracer tracer(device);
+    RenderGraph::Semaphore ready(VK_SEMAPHORE_TYPE_TIMELINE, device);
+    const VkSemaphoreSignalInfo signal{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO,
+                                       .semaphore = ready.getSemaphore(),
+                                       .value = iterations * passCount};
+    ASSERT_EQ(vkSignalSemaphore(device.getLogicalDevice(), &signal), VK_SUCCESS);
+    const auto renderThread = std::this_thread::get_id();
+    for (const int frames : {2, 3}) {
+      SCOPED_TRACE(frames);
+      RenderGraph::Graph graph(passCount, frames, device, tracer);
+      graph.initialize();
+      RenderGraph::CommandPool pool(RenderGraph::QueueType::GENERAL, device);
+      RenderGraph::CommandBuffer initialize(pool, device);
+      initialize.beginCommands();
+      std::vector<std::vector<std::shared_ptr<RenderGraph::Buffer>>> buffers(passCount);
+      std::vector<int> selectedBuffers(passCount, -1);
+      for (int passIndex = 0; passIndex < passCount; ++passIndex) {
+        for (int slot = 0; slot < frames; ++slot) {
+          buffers[passIndex].push_back(std::make_shared<RenderGraph::Buffer>(
+              4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+              VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT, allocator, device));
+        }
+        const auto name = "Counter" + std::to_string(passIndex);
+        graph.getGraphStorage().add(name,
+                                    std::make_unique<RenderGraph::BufferHandler>(buffers[passIndex], [&, passIndex] {
+                                      EXPECT_EQ(selectedBuffers[passIndex], graph.getFrameInFlight());
+                                      return selectedBuffers[passIndex];
+                                    }));
+        auto& pass = graph.createPassCompute(
+            "Prepare" + std::to_string(passIndex),
+            passIndex % 2 ? RenderGraph::QueueType::COMPUTE : RenderGraph::QueueType::GENERAL);
+        pass.addStorageBufferInput(name);
+        pass.addStorageBufferOutput(name);
+        pass.registerGraphElement(std::make_shared<ValidationGraphElement>([&, passIndex] {
+          EXPECT_NE(std::this_thread::get_id(), renderThread);
+          const int frame = static_cast<int>(graph.getFrameNumber());
+          selectedBuffers[passIndex] = graph.getFrameInFlight();
+          auto& buffer = *buffers[passIndex][selectedBuffers[passIndex]];
+          if (frame >= frames) {
+            EXPECT_EQ(vmaInvalidateAllocation(allocator.getAllocator(), buffer.getAllocation(), 0, 4), VK_SUCCESS);
+            const auto previous = *static_cast<const uint32_t*>(buffer.getAllocationInfo().pMappedData);
+            EXPECT_EQ(previous, (frame - frames) * 100 + passIndex + 2);
+          }
+          // Prepare this slot on the CPU; render() submits the pass that consumes it.
+          const uint32_t value = frame * 100 + passIndex + 1;
+          EXPECT_EQ(vmaCopyMemoryToAllocation(allocator.getAllocator(), &value, buffer.getAllocation(), 0, 4),
+                    VK_SUCCESS);
+          graph.addResourceWait(buffer,
+                                {ready.getSemaphore(), static_cast<uint64_t>(frame * passCount + passIndex + 1)});
+        }));
+        pass.registerGraphElement(std::make_shared<ComputeUpdateBindingElement>(
+            graph.getGraphStorage().getBufferHandler(name).getBuffers(), initialize, device));
+      }
+      initialize.endCommands();
+      graph.calculate();
+      for (int frame = 0; frame < iterations; ++frame) {
+        GraphCommandRecorder recorder;
+        EXPECT_FALSE(graph.render());
+        ASSERT_EQ(recorder.submissionWaits.size(), passCount);
+        for (int passIndex = 0; passIndex < passCount; ++passIndex) {
+          const auto& waits = recorder.submissionWaits[passIndex];
+          const auto wait = std::ranges::find(waits, ready.getSemaphore(), &VkSemaphoreSubmitInfo::semaphore);
+          ASSERT_NE(wait, waits.end());
+          EXPECT_EQ(wait->value, frame * passCount + passIndex + 1);
+        }
+      }
+      ASSERT_EQ(vkDeviceWaitIdle(device.getLogicalDevice()), VK_SUCCESS);
+      for (int passIndex = 0; passIndex < passCount; ++passIndex) {
+        for (int slot = 0; slot < frames; ++slot) {
+          int lastFrame = iterations - 1;
+          while (lastFrame % frames != slot) --lastFrame;
+          const auto& buffer = *buffers[passIndex][slot];
+          ASSERT_EQ(vmaInvalidateAllocation(allocator.getAllocator(), buffer.getAllocation(), 0, 4), VK_SUCCESS);
+          const auto actual = *static_cast<const uint32_t*>(buffer.getAllocationInfo().pMappedData);
+          EXPECT_EQ(actual, lastFrame * 100 + passIndex + 2);
+        }
+      }
+    }
+  }
+  EXPECT_TRUE(errors.getErrors().empty()) << joinErrors(errors.getErrors());
+}
+
+TEST(ValidationTest, ResourceImageTicketsDoNotRetainRecreatedImages) {
+  ValidationErrorCollector errors;
+  RenderGraph::Instance instance("ResourceTicketReset", true);
+  if (!instance.isDebug()) GTEST_SKIP() << "Vulkan validation layers are unavailable";
+  ValidationMessenger messenger(instance.getInstance().instance, errors);
+  {
+    const glm::ivec2 resolution(64, 48);
+    RenderGraph::Window window(resolution);
+    window.initialize();
+    RenderGraph::Surface surface(window, instance);
+    RenderGraph::Device device(instance);
+    device.setSurface(surface);
+    device.initialize();
+    RenderGraph::MemoryAllocator allocator(device, instance);
+    RenderGraph::Swapchain swapchain(resolution, allocator, device);
+    swapchain.initialize();
+    RenderGraph::ResourceUploader uploader(allocator, device);
+    RenderGraph::Tracer tracer(device);
+    RenderGraph::Graph graph(1, 1, device, tracer);
+    graph.initialize();
+    graph.setSwapchain(swapchain);
+    graph.getGraphStorage().add(
+        "Swapchain", std::make_unique<RenderGraph::ImageViewHolder>(swapchain.getImageViews(),
+                                                                    [&] { return swapchain.getSwapchainIndex(); }));
+    auto image = std::make_unique<RenderGraph::Image>(allocator, device);
+    image->createImage(VK_FORMAT_R8G8B8A8_UNORM, {4, 4}, 1, 1, VK_IMAGE_ASPECT_COLOR_BIT,
+                       VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+    auto view = std::make_shared<RenderGraph::ImageView>(std::move(image), device);
+    view->createImageView(VK_IMAGE_VIEW_TYPE_2D, 0, 0);
+    graph.getGraphStorage().add("Uploaded",
+                                std::make_unique<RenderGraph::ImageViewHolder>(std::vector{view}, [] { return 0; }),
+                                RenderGraph::ImageResizePolicy::SWAPCHAIN);
+    auto& draw = graph.createPassGraphic("Draw");
+    draw.addColorTarget("Swapchain");
+    draw.addTextureInput("Uploaded");
+    graph.calculate();
+    const std::vector<std::byte> pixels(4 * 4 * 4, std::byte{42});
+    const std::array<VkDeviceSize, 1> offsets{0};
+    uploader.upload(view->getImage(), pixels, offsets);
+    graph.addResourceWait(view->getImage(), uploader.submit());
+    view.reset();  // Storage owns the view; reset recreates its VkImage at swapchain resolution.
+    ASSERT_FALSE(graph.render());
+    graph.reset({96, 64});
+    ASSERT_FALSE(graph.render());
+    ASSERT_EQ(vkDeviceWaitIdle(device.getLogicalDevice()), VK_SUCCESS);
+    // Also cover reset before a newly registered image ticket has been consumed.
+    auto& current = graph.getGraphStorage().getImageViewHolder("Uploaded").getImageView().getImage();
+    const auto size = current.getResolution();
+    EXPECT_EQ(size, swapchain.getImage(0).getResolution());
+    const std::vector<std::byte> replacement(size.x * size.y * 4, std::byte{17});
+    uploader.upload(current, replacement, offsets);
+    graph.addResourceWait(current, uploader.submit());
+    graph.reset(resolution);
+    ASSERT_FALSE(graph.render());
+    ASSERT_EQ(vkDeviceWaitIdle(device.getLogicalDevice()), VK_SUCCESS);
+  }
+  EXPECT_TRUE(errors.getErrors().empty()) << joinErrors(errors.getErrors());
+}
+
+TEST(ValidationTest, ResourceTicketDoesNotBlockEarlierSubmission) {
+  ValidationErrorCollector errors;
+  RenderGraph::Instance instance("ResourceTicketGate", true);
+  if (!instance.isDebug()) GTEST_SKIP() << "Vulkan validation layers are unavailable";
+  ValidationMessenger messenger(instance.getInstance().instance, errors);
+  {
+    RenderGraph::Device device(instance);
+    device.initialize();
+    RenderGraph::MemoryAllocator allocator(device, instance);
+    RenderGraph::Semaphore ready(VK_SEMAPHORE_TYPE_TIMELINE, device);
+    RenderGraph::Tracer tracer(device);
+    RenderGraph::Graph graph(1, 1, device, tracer);
+    graph.initialize();
+    auto input = std::make_shared<RenderGraph::Buffer>(4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 0, allocator, device);
+    graph.getGraphStorage().add("Input",
+                                std::make_unique<RenderGraph::BufferHandler>(std::vector{input}, [] { return 0; }));
+    graph.createPassCompute("Background", RenderGraph::QueueType::GENERAL);
+    auto& consume = graph.createPassCompute("Consume", RenderGraph::QueueType::GENERAL);
+    consume.addStorageBufferInput("Input");
+    consume.addStorageBufferOutput("Input");
+    graph.calculate();
+    consume.registerGraphElement(std::make_shared<ValidationGraphElement>([&, pending = true]() mutable {
+      if (std::exchange(pending, false)) graph.addResourceWait(*input, {ready.getSemaphore(), 1});
+    }));
+    VkFence firstDone;
+    const VkFenceCreateInfo fenceInfo{.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+    ASSERT_EQ(vkCreateFence(device.getLogicalDevice(), &fenceInfo, nullptr, &firstDone), VK_SUCCESS);
+    {
+      GraphCommandRecorder recorder;
+      recorder.firstSubmissionFence = firstDone;
+      EXPECT_FALSE(graph.render());
+      // Background must finish while Consume still waits for an unsignaled ticket.
+      const auto independent = vkWaitForFences(device.getLogicalDevice(), 1, &firstDone, VK_TRUE, 5'000'000'000);
+      const VkSemaphoreSignalInfo signal{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO,
+                                         .semaphore = ready.getSemaphore(),
+                                         .value = 1};
+      EXPECT_EQ(vkSignalSemaphore(device.getLogicalDevice(), &signal), VK_SUCCESS);
+      EXPECT_EQ(vkDeviceWaitIdle(device.getLogicalDevice()), VK_SUCCESS);
+      EXPECT_EQ(independent, VK_SUCCESS);
+      EXPECT_EQ(recorder.submissionBuffers.size(), 2u);
+      EXPECT_TRUE(recorder.submissionWaits.front().empty());
+    }
+    vkDestroyFence(device.getLogicalDevice(), firstDone, nullptr);
+    GraphCommandRecorder next;
+    EXPECT_FALSE(graph.render());
+    EXPECT_EQ(vkDeviceWaitIdle(device.getLogicalDevice()), VK_SUCCESS);
+    EXPECT_EQ(next.submissionBuffers.size(), 1u);  // The graph's WRITE replaced external readiness.
+    EXPECT_TRUE(next.submissionWaits.front().empty());
+  }
+  EXPECT_TRUE(errors.getErrors().empty()) << joinErrors(errors.getErrors());
+}
+
+TEST(ValidationTest, NewResourceWaitsReplaceUnusedUploads) {
+  ValidationErrorCollector errors;
+  RenderGraph::Instance instance("ReplaceUnusedUploads", true);
+  if (!instance.isDebug()) GTEST_SKIP() << "Vulkan validation layers are unavailable";
+  ValidationMessenger messenger(instance.getInstance().instance, errors);
+  {
+    RenderGraph::Device device(instance);
+    device.initialize();
+    RenderGraph::MemoryAllocator allocator(device, instance);
+    RenderGraph::Semaphore oldReady(VK_SEMAPHORE_TYPE_TIMELINE, device);
+    RenderGraph::Semaphore newReady(VK_SEMAPHORE_TYPE_TIMELINE, device);
+    RenderGraph::Tracer tracer(device);
+    RenderGraph::Graph graph(2, 1, device, tracer);
+    graph.initialize();
+    auto buffer = std::make_shared<RenderGraph::Buffer>(4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 0, allocator, device);
+    auto image = std::make_unique<RenderGraph::Image>(allocator, device);
+    image->createImage(VK_FORMAT_R32_UINT, {1, 1}, 1, 1, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_USAGE_STORAGE_BIT);
+    auto view = std::make_shared<RenderGraph::ImageView>(std::move(image), device);
+    view->createImageView(VK_IMAGE_VIEW_TYPE_2D, 0, 0);
+    graph.getGraphStorage().add("Buffer",
+                                std::make_unique<RenderGraph::BufferHandler>(std::vector{buffer}, [] { return 0; }));
+    graph.getGraphStorage().add("Image",
+                                std::make_unique<RenderGraph::ImageViewHolder>(std::vector{view}, [] { return 0; }));
+    graph.createPassCompute("Background", RenderGraph::QueueType::GENERAL);
+    graph.addResourceWait(*buffer, {oldReady.getSemaphore(), 1});
+    graph.addResourceWait(view->getImage(), {oldReady.getSemaphore(), 1});
+    graph.calculate();
+    EXPECT_FALSE(graph.render());  // Neither uploaded resource was consumed.
+
+    auto& consume = graph.createPassCompute("Consume", RenderGraph::QueueType::GENERAL);
+    consume.addStorageBufferInput("Buffer");
+    consume.addStorageTextureInput("Image");
+    consume.registerGraphElement(std::make_shared<ValidationGraphElement>([&] {
+      graph.addResourceWait(*buffer, {newReady.getSemaphore(), 1});
+      graph.addResourceWait(view->getImage(), {newReady.getSemaphore(), 1});
+    }));
+    graph.calculate();  // Preserve the unused old tickets until update() supplies replacements.
+    const VkSemaphoreSignalInfo signalNew{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO,
+                                          .semaphore = newReady.getSemaphore(),
+                                          .value = 1};
+    EXPECT_EQ(vkSignalSemaphore(device.getLogicalDevice(), &signalNew), VK_SUCCESS);
+    GraphCommandRecorder recorder;
+    EXPECT_FALSE(graph.render());
+    std::size_t replacementWaits = 0;
+    for (const auto& waits : recorder.submissionWaits) {
+      EXPECT_EQ(std::ranges::count(waits, oldReady.getSemaphore(), &VkSemaphoreSubmitInfo::semaphore), 0);
+      replacementWaits += std::ranges::count(waits, newReady.getSemaphore(), &VkSemaphoreSubmitInfo::semaphore);
+    }
+    EXPECT_EQ(replacementWaits, 1u);
+    // Release even an incorrectly retained old wait before waiting for GPU completion.
+    const VkSemaphoreSignalInfo signalOld{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO,
+                                          .semaphore = oldReady.getSemaphore(),
+                                          .value = 1};
+    EXPECT_EQ(vkSignalSemaphore(device.getLogicalDevice(), &signalOld), VK_SUCCESS);
+    EXPECT_EQ(vkDeviceWaitIdle(device.getLogicalDevice()), VK_SUCCESS);
+  }
+  EXPECT_TRUE(errors.getErrors().empty()) << joinErrors(errors.getErrors());
+}
+
+TEST(ValidationTest, ResourceTicketSplitsOnlyForUncoveredDestinationStages) {
+  ValidationErrorCollector errors;
+  RenderGraph::Instance instance("ResourceTicketStages", true);
+  if (!instance.isDebug()) GTEST_SKIP() << "Vulkan validation layers are unavailable";
+  ValidationMessenger messenger(instance.getInstance().instance, errors);
+  {
+    RenderGraph::Device device(instance);
+    device.initialize();
+    RenderGraph::MemoryAllocator allocator(device, instance);
+    RenderGraph::ResourceUploader uploader(allocator, device);
+    RenderGraph::Tracer tracer(device);
+    RenderGraph::Graph graph(1, 1, device, tracer);
+    graph.initialize();
+    auto buffer = std::make_shared<RenderGraph::Buffer>(
+        16,
+        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT, 0,
+        allocator, device);
+    auto image = std::make_unique<RenderGraph::Image>(allocator, device);
+    image->createImage(VK_FORMAT_R8G8B8A8_UNORM, {4, 4}, 1, 1, VK_IMAGE_ASPECT_COLOR_BIT,
+                       VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
+    auto color = std::make_shared<RenderGraph::ImageView>(std::move(image), device);
+    color->createImageView(VK_IMAGE_VIEW_TYPE_2D, 0, 0);
+    for (const auto* name : {"Input", "Alias"}) {
+      graph.getGraphStorage().add(name,
+                                  std::make_unique<RenderGraph::BufferHandler>(std::vector{buffer}, [] { return 0; }));
+    }
+    graph.getGraphStorage().add("Color",
+                                std::make_unique<RenderGraph::ImageViewHolder>(std::vector{color}, [] { return 0; }));
+    for (const auto* name : {"Background", "Vertex", "Shader", "SameShader", "Indirect"}) {
+      graph.createPassGraphic(name).addColorTarget("Color");
+    }
+    graph.getPassGraphic("Vertex")->addVertexBufferInput("Input");
+    graph.getPassGraphic("Shader")->addStorageBufferInput("Alias");
+    graph.getPassGraphic("SameShader")->addStorageBufferInput("Input");
+    graph.getPassGraphic("Indirect")->addIndirectBufferInput("Alias");
+    graph.calculate();
+    const std::array<uint32_t, 4> data{1, 2, 3, 4};
+    uploader.upload(*buffer, std::as_bytes(std::span(data)));
+    const auto ticket = uploader.submit();
+    graph.addResourceWait(*buffer, ticket);
+    {
+      GraphCommandRecorder recorder;
+      ASSERT_FALSE(graph.render());
+      ASSERT_EQ(vkDeviceWaitIdle(device.getLogicalDevice()), VK_SUCCESS);
+      ASSERT_EQ(recorder.submissionBuffers.size(), 3u);
+      EXPECT_EQ(recorder.submissionBuffers[0].size(), 2u);
+      EXPECT_EQ(recorder.submissionBuffers[1].size(), 2u);
+      EXPECT_EQ(recorder.submissionBuffers[2].size(), 6u);
+      EXPECT_TRUE(recorder.submissionWaits[0].empty());
+      ASSERT_EQ(recorder.submissionWaits[1].size(), 1u);
+      EXPECT_EQ(recorder.submissionWaits[1][0].stageMask, VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT);
+      ASSERT_EQ(recorder.submissionWaits[2].size(), 1u);
+      EXPECT_EQ(recorder.submissionWaits[2][0].stageMask, VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT);
+    }
+    GraphCommandRecorder recorder;
+    ASSERT_FALSE(graph.render());
+    ASSERT_EQ(vkDeviceWaitIdle(device.getLogicalDevice()), VK_SUCCESS);
+    ASSERT_EQ(recorder.submissionBuffers.size(), 1u);
+    EXPECT_TRUE(recorder.submissionWaits[0].empty());
+  }
+  EXPECT_TRUE(errors.getErrors().empty()) << joinErrors(errors.getErrors());
+}
+
+TEST_P(ValidationScenarioTest, ResourceUploadTicketsFollowPhysicalInstancesAcrossFrames) {
+  ValidationErrorCollector errors;
+  RenderGraph::Instance instance("ResourceTickets", true);
+  if (!instance.isDebug()) GTEST_SKIP() << "Vulkan validation layers are unavailable";
+  ValidationMessenger messenger(instance.getInstance().instance, errors);
+  {
+    RenderGraph::Device device(instance);
+    device.initialize();
+    RenderGraph::MemoryAllocator allocator(device, instance);
+    RenderGraph::ResourceUploader uploader(allocator, device, RenderGraph::QueueType::TRANSFER);
+    RenderGraph::Tracer tracer(device);
+    RenderGraph::Graph graph(2, 2, device, tracer);
+    graph.initialize();
+    RenderGraph::CommandPool pool(RenderGraph::QueueType::GENERAL, device);
+    RenderGraph::CommandBuffer initialize(pool, device);
+    initialize.beginCommands();
+    std::vector<std::shared_ptr<RenderGraph::Buffer>> inputs, audits;
+    std::vector<std::shared_ptr<RenderGraph::ImageView>> images;
+    std::vector<std::shared_ptr<RenderGraph::Texture>> textures;
+    for (int slot = 0; slot < 2; ++slot) {
+      inputs.push_back(
+          std::make_shared<RenderGraph::Buffer>(4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 0, allocator, device));
+      audits.push_back(std::make_shared<RenderGraph::Buffer>(
+          48, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+          VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT, allocator, device));
+      auto image = std::make_unique<RenderGraph::Image>(allocator, device);
+      image->createImage(VK_FORMAT_R32_UINT, {1, 1}, 1, 1, VK_IMAGE_ASPECT_COLOR_BIT,
+                         VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+      auto view = std::make_shared<RenderGraph::ImageView>(std::move(image), device);
+      view->createImageView(VK_IMAGE_VIEW_TYPE_2D, 0, 0);
+      images.push_back(view);
+      textures.push_back(std::make_shared<RenderGraph::Texture>(view, nullptr));
+    }
+    for (const auto* name : {"Input", "Alias"}) {
+      graph.getGraphStorage().add(
+          name, std::make_unique<RenderGraph::BufferHandler>(inputs, [&] { return graph.getFrameInFlight(); }));
+      graph.getGraphStorage().add(std::string(name) + "Image", std::make_unique<RenderGraph::ImageViewHolder>(
+                                                                   images, [&] { return graph.getFrameInFlight(); }));
+    }
+    graph.getGraphStorage().add(
+        "Audit", std::make_unique<RenderGraph::BufferHandler>(audits, [&] { return graph.getFrameInFlight(); }));
+    graph.createPassCompute("Background", RenderGraph::QueueType::GENERAL);
+    auto& first = graph.createPassCompute("FirstRead", RenderGraph::QueueType::GENERAL);
+    first.addStorageBufferInput("Input");
+    first.addStorageTextureInput("InputImage");
+    first.addStorageBufferOutput("Audit");
+    graph.createPassCompute("Gap", RenderGraph::QueueType::GENERAL);
+    auto& second = graph.createPassCompute("SecondRead", GetParam());
+    second.addStorageBufferInput("Alias");
+    second.addStorageTextureInput("AliasImage");
+    second.addStorageBufferOutput("Audit");
+    auto& third = graph.createPassCompute("ThirdRead", GetParam());
+    third.addStorageBufferInput("Alias");
+    third.addStorageTextureInput("AliasImage");
+    first.registerGraphElement(std::make_shared<PhysicalResourceElement>(graph, initialize, "Input", "Input", 0, 0, 2,
+                                                                         textures, allocator, device, false));
+    second.registerGraphElement(std::make_shared<PhysicalResourceElement>(graph, initialize, "Alias", "Alias", 1, 0, 2,
+                                                                          textures, allocator, device, false));
+    initialize.endCommands();
+    std::array<uint32_t, 2> values{10, 20}, pixels{100, 200};
+    std::array<RenderGraph::GpuTicket, 2> tickets;
+    auto upload = [&](int slot) {
+      uploader.upload(*inputs[slot], std::as_bytes(std::span(&values[slot], 1)));
+      const std::array<VkDeviceSize, 1> offsets{0};
+      uploader.upload(images[slot]->getImage(), std::as_bytes(std::span(&pixels[slot], 1)), offsets);
+      tickets[slot] = uploader.submit();
+      graph.addResourceWait(*inputs[slot], tickets[slot]);
+      graph.addResourceWait(images[slot]->getImage(), tickets[slot]);
+    };
+    upload(0);
+    upload(1);  // This instance is unused in frame 0, including across the following calculate().
+    RenderGraph::Semaphore extraReady(VK_SEMAPHORE_TYPE_TIMELINE, device);
+    const VkSemaphoreSignalInfo extraSignal{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO,
+                                            .semaphore = extraReady.getSemaphore(),
+                                            .value = 1};
+    ASSERT_EQ(vkSignalSemaphore(device.getLogicalDevice(), &extraSignal), VK_SUCCESS);
+    graph.addResourceWait(*inputs[1], {extraReady.getSemaphore(), 1});
+    ASSERT_FALSE(graph.render());  // Not calculated yet: pending dependencies must survive.
+    graph.calculate();
+    const bool separate = device.getQueue(RenderGraph::QueueType::GENERAL) != device.getQueue(GetParam());
+    for (int frame = 0; frame < 5; ++frame) {
+      SCOPED_TRACE(frame);
+      const int slot = graph.getFrameInFlight();
+      if (frame == 1) graph.calculate();
+      if (frame == 2 || frame == 3) {
+        values[slot] += 7;
+        pixels[slot] += 11;
+        const auto older = tickets[slot];
+        upload(slot);
+        graph.addResourceWait(*inputs[slot], older);  // Duplicate/older values cannot replace newer readiness.
+      }
+      if (frame == 3) {
+        graph.addFrameWait(tickets[0]);
+        graph.addFrameWait(tickets[slot]);  // A global wait already covers this frame's resource waits.
+      }
+      GraphCommandRecorder recorder;
+      ASSERT_FALSE(graph.render());
+      const bool scopedWait = frame < 3;
+      ASSERT_EQ(recorder.submissionQueues.size(), (separate ? 2u : 1u) + (scopedWait ? 1u : 0u));
+      EXPECT_EQ(recorder.submissionBuffers.front().front(),
+                graph.getPassCompute("Background")->getCommandBuffer(slot).getCommandBuffer());
+      for (std::size_t submit = 0; submit < recorder.submissionWaits.size(); ++submit) {
+        const auto& waits = recorder.submissionWaits[submit];
+        const auto wait = std::ranges::find(waits, tickets[slot].semaphore, &VkSemaphoreSubmitInfo::semaphore);
+        const auto extra = std::ranges::find(waits, extraReady.getSemaphore(), &VkSemaphoreSubmitInfo::semaphore);
+        EXPECT_EQ(extra != waits.end(), frame == 1 && submit > 0);
+        const bool expected = frame == 3 || (scopedWait && submit > 0);
+        EXPECT_EQ(wait != waits.end(), expected);
+        if (wait != waits.end()) {
+          EXPECT_EQ(wait->value, tickets[slot].value);
+          EXPECT_EQ(wait->stageMask,
+                    frame == 3 ? VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT : VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
+        }
+      }
+      if (scopedWait) {
+        EXPECT_EQ(recorder.submissionBuffers.front().size(), 1u);
+        EXPECT_EQ(recorder.submissionBuffers[1].front(), first.getCommandBuffer(slot).getCommandBuffer());
+      }
+      ASSERT_EQ(vkDeviceWaitIdle(device.getLogicalDevice()), VK_SUCCESS);
+      ASSERT_EQ(vmaInvalidateAllocation(allocator.getAllocator(), audits[slot]->getAllocation(), 0, VK_WHOLE_SIZE),
+                VK_SUCCESS);
+      const auto* actual = static_cast<const uint32_t*>(audits[slot]->getAllocationInfo().pMappedData);
+      ASSERT_NE(actual, nullptr);
+      EXPECT_EQ(actual[0], values[slot]);
+      EXPECT_EQ(actual[1], pixels[slot]);
+      EXPECT_EQ(actual[2], values[slot]);
+      EXPECT_EQ(actual[3], pixels[slot]);
+      uploader.reclaim();
+    }
+  }
+  EXPECT_TRUE(errors.getErrors().empty()) << joinErrors(errors.getErrors());
+}
 
 class PhysicalResourceTest : public testing::TestWithParam<std::tuple<int, int, bool, bool>> {};
 
@@ -2653,9 +3397,10 @@ TEST_P(PhysicalResourceTest, GpuResultsAndSynchronization) {
                                    .pSignalSemaphoreInfos = &initSignal};
     ASSERT_EQ(vkQueueSubmit2(device.getQueue(RenderGraph::QueueType::GENERAL), 1, &initSubmit, nullptr), VK_SUCCESS);
     const RenderGraph::GpuTicket ticket{ready.getSemaphore(), 1};
-    graph.calculate({&ticket, 1});
+    graph.addFrameWait(ticket);
+    graph.calculate();
     std::vector<std::array<uint32_t, 12>> expected(iterations);
-    RenderGraph::GpuTicket completion{};
+    std::vector<RenderGraph::GpuTicket> recalculationCompletions;
     for (int iteration = 0; iteration < iterations; ++iteration) {
       SCOPED_TRACE(iteration);
       if (mode == 2) {
@@ -2682,20 +3427,20 @@ TEST_P(PhysicalResourceTest, GpuResultsAndSynchronization) {
       ASSERT_FALSE(graph.render());
       EXPECT_EQ(graph.getFrameNumber(), iteration + 1);
       EXPECT_EQ(recorder.submissionQueues.size(), separateQueues ? 6 : 1);
-      if (completion.semaphore) {
+      if (iteration == iterations / 2 + 1) {
         std::vector<VkQueue> waitedQueues;
         for (std::size_t index = 0; index < recorder.submissionWaits.size(); ++index) {
           const auto queue = recorder.submissionQueues[index];
           const bool first = !std::ranges::contains(waitedQueues, queue);
           waitedQueues.push_back(queue);
           const auto& waits = recorder.submissionWaits[index];
-          const auto wait = std::ranges::find(waits, completion.semaphore, &VkSemaphoreSubmitInfo::semaphore);
-          if (iteration == iterations / 2 + 1 && first) {
-            ASSERT_NE(wait, waits.end());
-            EXPECT_EQ(wait->value, completion.value);
-            EXPECT_EQ(wait->stageMask, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
-          } else {
-            EXPECT_EQ(wait, waits.end());
+          if (first) {
+            for (const auto& completion : recalculationCompletions) {
+              const auto wait = std::ranges::find(waits, completion.semaphore, &VkSemaphoreSubmitInfo::semaphore);
+              ASSERT_NE(wait, waits.end());
+              EXPECT_GE(wait->value, completion.value);
+              EXPECT_NE(wait->stageMask & VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0);
+            }
           }
         }
       }
@@ -2712,8 +3457,15 @@ TEST_P(PhysicalResourceTest, GpuResultsAndSynchronization) {
       }
       if (iteration == iterations / 2) {
         ASSERT_EQ(vkDeviceWaitIdle(device.getLogicalDevice()), VK_SUCCESS);
-        const auto& signal = recorder.submissionSignals.back().back();
-        completion = {signal.semaphore, signal.value};
+        for (const auto& signals : recorder.submissionSignals) {
+          const auto& signal = signals.front();
+          const auto existing = std::ranges::find(recalculationCompletions, signal.semaphore,
+                                                  &RenderGraph::GpuTicket::semaphore);
+          if (existing == recalculationCompletions.end())
+            recalculationCompletions.push_back({signal.semaphore, signal.value});
+          else
+            existing->value = signal.value;
+        }
         graph.calculate();
       }
     }
@@ -2784,6 +3536,78 @@ INSTANTIATE_TEST_SUITE_P(
              (descriptorBuffer ? "_DescriptorBuffer" : "_DescriptorSet");
     }));
 
+TEST(ValidationTest, FrameSlotsWaitForTheirOwnQueueCompletions) {
+  ValidationErrorCollector errors;
+  RenderGraph::Instance instance("FrameSlotCompletions", true);
+  if (!instance.isDebug()) GTEST_SKIP() << "Vulkan validation layers are unavailable";
+  ValidationMessenger messenger(instance.getInstance().instance, errors);
+  {
+    RenderGraph::Device device(instance);
+    device.initialize();
+    RenderGraph::MemoryAllocator allocator(device, instance);
+    RenderGraph::Tracer tracer(device);
+    for (const int frames : {2, 3}) {
+      SCOPED_TRACE(frames);
+      RenderGraph::Graph graph(2, frames, device, tracer);
+      graph.initialize();
+      auto buffer = std::make_shared<RenderGraph::Buffer>(4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 0, allocator, device);
+      graph.getGraphStorage().add("Input",
+                                  std::make_unique<RenderGraph::BufferHandler>(std::vector{buffer}, [] { return 0; }));
+      graph.createPassCompute("Background", RenderGraph::QueueType::GENERAL);
+      graph.createPassCompute("Consume", RenderGraph::QueueType::COMPUTE).addStorageBufferOutput("Input");
+      graph.calculate();
+      RenderGraph::Semaphore ready(VK_SEMAPHORE_TYPE_TIMELINE, device);
+      const VkSemaphoreSignalInfo signal{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO,
+                                         .semaphore = ready.getSemaphore(),
+                                         .value = 1};
+      ASSERT_EQ(vkSignalSemaphore(device.getLogicalDevice(), &signal), VK_SUCCESS);
+      graph.addResourceWait(*buffer, {ready.getSemaphore(), 1});
+      std::vector<std::vector<RenderGraph::GpuTicket>> submittedCompletions;
+      for (int frame = 0; frame < frames * 2 + 1; ++frame) {
+        SCOPED_TRACE(frame);
+        GraphCommandRecorder recorder;
+        ASSERT_FALSE(graph.render());
+        if (frame < frames) {
+          EXPECT_TRUE(recorder.cpuWaits.empty());
+        } else {
+          ASSERT_EQ(recorder.cpuWaits.size(), 1u);
+          const auto& expected = submittedCompletions[frame - frames];
+          ASSERT_EQ(recorder.cpuWaits.front().size(), expected.size());
+          for (const auto& completion : expected) {
+            const auto actual = std::ranges::find(recorder.cpuWaits.front(), completion.semaphore,
+                                                  &RenderGraph::GpuTicket::semaphore);
+            ASSERT_NE(actual, recorder.cpuWaits.front().end());
+            EXPECT_EQ(actual->value, completion.value);
+          }
+        }
+        auto& completions = submittedCompletions.emplace_back();
+        for (const auto& signals : recorder.submissionSignals) {
+          ASSERT_EQ(signals.size(), 1u);
+          const auto& completion = signals.front();
+          const auto existing = std::ranges::find(completions, completion.semaphore,
+                                                  &RenderGraph::GpuTicket::semaphore);
+          if (existing == completions.end())
+            completions.push_back({completion.semaphore, completion.value});
+          else
+            existing->value = completion.value;
+        }
+        if (frame > 0) {
+          for (const auto& waits : recorder.submissionWaits) EXPECT_TRUE(waits.empty());
+        }
+        // Queue values advance per submission; print() must still show the actual frame number.
+        testing::internal::CaptureStdout();
+        graph.print();
+        const auto plan = testing::internal::GetCapturedStdout();
+        EXPECT_NE(
+            plan.find("prepared frame " + std::to_string(frame) + " (slot " + std::to_string(frame % frames) + ")"),
+            std::string::npos);
+      }
+      ASSERT_EQ(vkDeviceWaitIdle(device.getLogicalDevice()), VK_SUCCESS);
+    }
+  }
+  EXPECT_TRUE(errors.getErrors().empty()) << joinErrors(errors.getErrors());
+}
+
 TEST(ValidationTest, IndependentQueuesRetireFrameTogether) {
   ValidationErrorCollector errors;
   RenderGraph::Instance instance("IndependentQueueCompletion", true);
@@ -2817,35 +3641,37 @@ TEST(ValidationTest, IndependentQueuesRetireFrameTogether) {
       ASSERT_EQ(vkQueueSubmit2(device.getQueue(RenderGraph::QueueType::COMPUTE), 1, &blocked, nullptr), VK_SUCCESS);
 
       GraphCommandRecorder recorder;
-      const bool reset = graph.render();
-      VkResult independentResult = VK_ERROR_UNKNOWN, completionResult = VK_ERROR_UNKNOWN;
-      if (recorder.submissionSignals.size() == 4 && !recorder.submissionSignals[1].empty() &&
-          recorder.submissionSignals.back().size() == 2) {
-        const auto& independent = recorder.submissionSignals[1].front();
+      bool reset = false;
+      for (int frame = 0; frame < frames; ++frame) reset |= graph.render();
+      VkResult independentResult = VK_ERROR_UNKNOWN;
+      if (recorder.submissionSignals.size() == frames * 4 && recorder.submissionSignals.back().size() == 1) {
+        const auto& independent = recorder.submissionSignals.back().front();
         const VkSemaphoreWaitInfo independentWait{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
                                                   .semaphoreCount = 1,
                                                   .pSemaphores = &independent.semaphore,
                                                   .pValues = &independent.value};
-        // Unrelated work on GENERAL must complete while COMPUTE remains blocked.
+        // Even the last GENERAL submission of frame 1 must finish while frame 0's COMPUTE is blocked.
         independentResult = vkWaitSemaphores(device.getLogicalDevice(), &independentWait, 1'000'000'000);
-        const auto& completion = recorder.submissionSignals.back().back();
-        const VkSemaphoreWaitInfo completionWait{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
-                                                 .semaphoreCount = 1,
-                                                 .pSemaphores = &completion.semaphore,
-                                                 .pValues = &completion.value};
-        completionResult = vkWaitSemaphores(device.getLogicalDevice(), &completionWait, 10'000'000);
       }
+      // Reusing slot 0 must wait for COMPUTE too, although GENERAL has already finished.
+      auto reuseSlot = std::async(std::launch::async, [&] { return graph.render(); });
+      const auto reuseStatus = reuseSlot.wait_for(std::chrono::milliseconds(100));
       // Release the gated queue before assertions so a failure cannot leave GPU work blocked.
       const VkSemaphoreSignalInfo release{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO,
                                           .semaphore = gate.getSemaphore(),
                                           .value = 1};
       ASSERT_EQ(vkSignalSemaphore(device.getLogicalDevice(), &release), VK_SUCCESS);
+      EXPECT_FALSE(reuseSlot.get());
       ASSERT_EQ(vkDeviceWaitIdle(device.getLogicalDevice()), VK_SUCCESS);
       EXPECT_FALSE(reset);
-      EXPECT_EQ(graph.getFrameNumber(), 1);
-      EXPECT_EQ(recorder.submissionQueues.size(), 4);
+      EXPECT_EQ(graph.getFrameNumber(), frames + 1);
+      EXPECT_EQ(recorder.submissionQueues.size(), (frames + 1) * 4);
       EXPECT_EQ(independentResult, VK_SUCCESS);
-      EXPECT_EQ(completionResult, VK_TIMEOUT);
+      EXPECT_EQ(reuseStatus, std::future_status::timeout);
+      ASSERT_FALSE(recorder.cpuWaits.empty());
+      ASSERT_EQ(recorder.cpuWaits.back().size(), 2u);
+      for (const auto& completion : recorder.cpuWaits.back()) EXPECT_EQ(completion.value, 2u);
+      for (const auto& waits : recorder.submissionWaits) EXPECT_TRUE(waits.empty());
     }
   }
   EXPECT_TRUE(errors.getErrors().empty()) << joinErrors(errors.getErrors());
