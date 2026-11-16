@@ -143,33 +143,25 @@ class GraphCommandRecorder final {
     recorder._pipelineBarrier(commandBuffer, dependency);
   }
 
-  static VKAPI_ATTR VkResult VKAPI_CALL recordSubmit(VkQueue queue,
-                                                     uint32_t submitCount,
-                                                     const VkSubmitInfo2* submits,
-                                                     VkFence fence) {
-    auto& recorder = *_active;
+  VkResult recordSubmit(VkQueue queue, uint32_t submitCount, const VkSubmitInfo2* submits, VkFence fence) {
     VkFence submissionFence = fence;
     {
-      std::scoped_lock lock(recorder._mutex);
-      if (recorder.submissionQueues.empty() && recorder.firstSubmissionFence)
-        submissionFence = recorder.firstSubmissionFence;
-      for (uint32_t index = 0; index < submitCount; ++index) recorder._recordSubmission(queue, submits[index]);
+      std::scoped_lock lock(_mutex);
+      if (submissionQueues.empty() && firstSubmissionFence) submissionFence = firstSubmissionFence;
+      for (uint32_t index = 0; index < submitCount; ++index) _recordSubmission(queue, submits[index]);
     }
-    return recorder._queueSubmit(queue, submitCount, submits, submissionFence);
+    return _queueSubmit(queue, submitCount, submits, submissionFence);
   }
 
-  static VKAPI_ATTR VkResult VKAPI_CALL recordCpuWait(VkDevice device,
-                                                      const VkSemaphoreWaitInfo* wait,
-                                                      uint64_t timeout) {
-    auto& recorder = *_active;
+  VkResult recordCpuWait(VkDevice device, const VkSemaphoreWaitInfo* wait, uint64_t timeout) {
     {
-      std::scoped_lock lock(recorder._mutex);
-      auto& completions = recorder.cpuWaits.emplace_back();
+      std::scoped_lock lock(_mutex);
+      auto& completions = cpuWaits.emplace_back();
       for (uint32_t index = 0; index < wait->semaphoreCount; ++index) {
         completions.push_back({wait->pSemaphores[index], wait->pValues[index]});
       }
     }
-    return recorder._waitSemaphores(device, wait, timeout);
+    return _waitSemaphores(device, wait, timeout);
   }
 
   void _recordSubmission(VkQueue queue, const VkSubmitInfo2& submit) {
@@ -201,8 +193,12 @@ class GraphCommandRecorder final {
   GraphCommandRecorder() {
     _active = this;
     vkCmdPipelineBarrier2 = recordBarrier;
-    vkQueueSubmit2 = recordSubmit;
-    vkWaitSemaphores = recordCpuWait;
+    vkQueueSubmit2 = [](VkQueue queue, uint32_t submitCount, const VkSubmitInfo2* submits, VkFence fence) {
+      return _active->recordSubmit(queue, submitCount, submits, fence);
+    };
+    vkWaitSemaphores = [](VkDevice device, const VkSemaphoreWaitInfo* wait, uint64_t timeout) {
+      return _active->recordCpuWait(device, wait, timeout);
+    };
   }
   GraphCommandRecorder(const GraphCommandRecorder&) = delete;
   GraphCommandRecorder& operator=(const GraphCommandRecorder&) = delete;

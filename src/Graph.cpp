@@ -118,6 +118,18 @@ QueueType GraphPass::getQueueType() const noexcept { return _commandPool->getTyp
 
 CommandBuffer& GraphPass::getCommandBuffer(int frame) const { return *_commandBuffers.at(frame); }
 
+CommandBuffer* GraphPass::recordBarriers(int frame, const Barrier& barriers, const Device& device) {
+  if (barriers.getBufferBarriers().empty() && barriers.getImageBarriers().empty()) return nullptr;
+
+  _barrierCommandBuffers.resize(_commandBuffers.size());
+  auto& commands = _barrierCommandBuffers.at(frame);
+  if (!commands) commands = std::make_unique<CommandBuffer>(*_commandPool, device);
+  commands->beginCommands();
+  barriers.execute(commands->getCommandBuffer());
+  commands->endCommands();
+  return commands.get();
+}
+
 std::vector<CommandBuffer*> GraphPass::getCommandBuffers() const {
   return _commandBuffers | std::views::transform([](auto& p) { return p.get(); }) | std::ranges::to<std::vector>();
 }
@@ -995,7 +1007,6 @@ bool Graph::render() {
       auto* currentPass = graphPass.get();
       auto* passCommandBuffer = &currentPass->getCommandBuffer(frameSlot);
       if (!passCommandBuffer->getActive()) passCommandBuffer->beginCommands();
-      currentPass->_barrierCommandBuffers.resize(_maxFramesInFlight);
       const QueueType passQueueType = currentPass->getQueueType();
       if (_firstPassesPerQueue.contains(currentPass)) _tracer->collect(passQueueType, *passCommandBuffer);
       passRecordingTasks.push_back(
@@ -1047,13 +1058,8 @@ bool Graph::render() {
     for (auto passIndex = currentSubmission.firstPassIndex; passIndex < currentSubmission.endPassIndex; ++passIndex) {
       auto& pass = *_passes[passIndex];
       const auto& barriers = _barriersBeforePass.at(&pass);
-      if (!barriers.getBufferBarriers().empty() || !barriers.getImageBarriers().empty()) {
+      if (auto* commands = pass.recordBarriers(frameSlot, barriers, *_device)) {
         // Execute graph barriers before commands recorded by both update() and draw().
-        auto& commands = pass._barrierCommandBuffers[frameSlot];
-        if (!commands) commands = std::make_unique<CommandBuffer>(*pass._commandPool, *_device);
-        commands->beginCommands();
-        barriers.execute(commands->getCommandBuffer());
-        commands->endCommands();
         submissionCommandBuffers.push_back(
             {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = commands->getCommandBuffer()});
       }

@@ -89,8 +89,6 @@ enum class RenderTargetLoadAction { CLEAR, KEEP, DONT_CARE };
 enum class RenderTargetStoreAction { STORE, DONT_CARE };
 
 class GraphPass {
-  friend class Graph;
-
  protected:
   std::string _name;
   GraphPassType _graphPassType;
@@ -112,6 +110,7 @@ class GraphPass {
   GraphPassType getGraphPassType() const noexcept;
   QueueType getQueueType() const noexcept;
   CommandBuffer& getCommandBuffer(int frame) const;
+  CommandBuffer* recordBarriers(int frame, const Barrier& barriers, const Device& device);
   std::vector<CommandBuffer*> getCommandBuffers() const;
   std::string getName() const;
   virtual void execute(int currentFrame, const CommandBuffer& commandBuffer) = 0;
