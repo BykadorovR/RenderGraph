@@ -2676,7 +2676,7 @@ TEST_P(ValidationScenarioTest, ComputeElementsPreserveUpdateBindingsAcrossFrames
   EXPECT_TRUE(errors.getErrors().empty()) << joinErrors(errors.getErrors());
 }
 
-TEST(ValidationTest, PassUpdatesRunInParallelBeforeDependencyPlanning) {
+TEST(ValidationTest, PassRecordingOverlapsDependencyPlanning) {
   ValidationErrorCollector errors;
   RenderGraph::Instance instance("ParallelPassUpdates", true);
   if (!instance.isDebug()) GTEST_SKIP() << "Vulkan validation layers are unavailable";
@@ -2696,14 +2696,22 @@ TEST(ValidationTest, PassUpdatesRunInParallelBeforeDependencyPlanning) {
     ASSERT_EQ(vkSignalSemaphore(device.getLogicalDevice(), &signal), VK_SUCCESS);
     const auto renderThread = std::this_thread::get_id();
     std::atomic<int> updatesStarted = 0, updatesFinished = 0, draws = 0;
-    std::promise<void> allUpdatesStarted;
+    std::promise<void> allUpdatesStarted, firstPassPlanned, lateWaitRegistered;
     const auto started = allUpdatesStarted.get_future().share();
+    const auto planned = firstPassPlanned.get_future().share();
+    const auto registered = lateWaitRegistered.get_future().share();
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
     for (int passIndex = 0; passIndex < passCount; ++passIndex) {
       const auto name = "Input" + std::to_string(passIndex);
       auto buffer = std::make_shared<RenderGraph::Buffer>(4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 0, allocator, device);
-      graph.getGraphStorage().add(name, std::make_unique<RenderGraph::BufferHandler>(std::vector{buffer}, [&] {
-                                    EXPECT_EQ(updatesFinished.load(), passCount);
+      graph.getGraphStorage().add(name,
+                                  std::make_unique<RenderGraph::BufferHandler>(std::vector{buffer}, [&, passIndex] {
+                                    EXPECT_GE(updatesFinished.load(), passIndex + 1);
+                                    if (passIndex == 0) {
+                                      EXPECT_EQ(updatesFinished.load(), 1);
+                                      firstPassPlanned.set_value();
+                                      EXPECT_EQ(registered.wait_until(deadline), std::future_status::ready);
+                                    }
                                     return 0;
                                   }));
       auto& pass = graph.createPassCompute("Read" + std::to_string(passIndex), RenderGraph::QueueType::GENERAL);
@@ -2711,13 +2719,15 @@ TEST(ValidationTest, PassUpdatesRunInParallelBeforeDependencyPlanning) {
       pass.registerGraphElement(std::make_shared<ValidationGraphElement>(
           [&, buffer, passIndex] {
             EXPECT_NE(std::this_thread::get_id(), renderThread);
+            if (++updatesStarted == passCount) allUpdatesStarted.set_value();
+            EXPECT_EQ(started.wait_until(deadline), std::future_status::ready);
+            if (passIndex != 0) EXPECT_EQ(planned.wait_until(deadline), std::future_status::ready);
             const RenderGraph::GpuTicket ticket{ready.getSemaphore(), static_cast<uint64_t>(passIndex + 1)};
             for (int registration = 0; registration < 32; ++registration) {
               graph.addResourceWait(*buffer, ticket);
               graph.addFrameWait(ticket);
             }
-            if (++updatesStarted == passCount) allUpdatesStarted.set_value();
-            EXPECT_EQ(started.wait_until(deadline), std::future_status::ready);
+            if (passIndex == 1) lateWaitRegistered.set_value();
             ++updatesFinished;
           },
           [&] {

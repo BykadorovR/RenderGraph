@@ -3,9 +3,11 @@ module;
 #include "BS_thread_pool.hpp"
 
 #include <cstddef>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -75,8 +77,6 @@ class GraphStorage final {
 class GraphElement {
  public:
   virtual void draw(int currentFrame, const CommandBuffer& commandBuffer) = 0;
-  // Different passes record in parallel after frame-slot reuse is safe, before dependency planning.
-  // Compute elements keep update(A), draw(A), update(B), draw(B) on the same worker/command buffer.
   virtual void update(int currentFrame, const CommandBuffer& commandBuffer) = 0;
   virtual void reset(const std::vector<std::shared_ptr<RenderGraph::ImageView>>& swapchain) = 0;
   virtual ~GraphElement() = default;
@@ -95,7 +95,6 @@ class GraphPass {
   const GraphStorage* _graphStorage;
   std::unique_ptr<CommandPool> _commandPool;
   std::vector<std::unique_ptr<CommandBuffer>> _commandBuffers;
-  std::vector<std::unique_ptr<CommandBuffer>> _barrierCommandBuffers;
   std::vector<std::shared_ptr<GraphElement>> _graphElements;
 
  public:
@@ -110,7 +109,6 @@ class GraphPass {
   GraphPassType getGraphPassType() const noexcept;
   QueueType getQueueType() const noexcept;
   CommandBuffer& getCommandBuffer(int frame) const;
-  CommandBuffer* recordBarriers(int frame, const Barrier& barriers, const Device& device);
   std::vector<CommandBuffer*> getCommandBuffers() const;
   std::string getName() const;
   virtual void execute(int currentFrame, const CommandBuffer& commandBuffer) = 0;
@@ -272,16 +270,17 @@ class Graph final {
   std::unordered_map<VkBuffer, ResourceHistory> _bufferHistory;
   std::unordered_map<VkImage, ResourceHistory> _imageHistory;
 
-  // Global waits from addFrameWait() for the next submitted frame.
-  // Applied to the first submission of each queue, then cleared.
-  std::vector<GpuTicket> _pendingFrameWaits;
-  // Upload registrations between planning steps form one batch; its first write replaces old history.
+  // Registrations from recording tasks; a missing resource denotes a frame wait.
+  std::vector<Access> _pendingWaits;
+  // Upload registrations for one frame share a batch; its first write replaces old history.
   uint64_t _uploadBatch = 1;
-  // Parallel updates may register waits; dependency planning starts after all pass recording finishes.
+  // Protects only appending and taking pending registrations; planning runs without this lock.
   std::mutex _pendingWaitsMutex;
 
   // Same-queue dependencies rebuilt after pass recording and submitted before the pass commands.
   std::unordered_map<GraphPass*, Barrier> _barriersBeforePass;
+  std::unordered_map<VkQueue, std::unique_ptr<CommandPool>> _barrierCommandPools;
+  std::unordered_map<GraphPass*, std::vector<std::unique_ptr<CommandBuffer>>> _barrierCommandBuffers;
 
   // One semaphore per real queue; its counter increases per submission, not per frame.
   struct QueueTimeline {
@@ -304,8 +303,8 @@ class Graph final {
   bool _hasReadAccess(VkAccessFlags2 accessMask) const noexcept;
   bool _hasWriteAccess(VkAccessFlags2 accessMask) const noexcept;
   void _setResourceNames();
-  void _addResourceWait(Access externalWrite);
-  void _preparePhysicalAccesses();
+  void _applyWait(Access externalWrite, std::vector<GpuTicket>& frameWaits);
+  void _preparePhysicalAccesses(std::span<std::future<void>> passRecordingTasks = {});
   bool _waitCoversCurrentStages(VkPipelineStageFlags2 waitStages, VkPipelineStageFlags2 currentStages) const noexcept;
   void _addSemaphoreWait(std::vector<VkSemaphoreSubmitInfo>& semaphoreWaits,
                          VkSemaphore waitSemaphore,
@@ -332,7 +331,8 @@ class Graph final {
 
   // Register GPU waits without recalculating the graph. Producers must outlive their pending dependencies.
   // Frame waits gate all queues once; resource waits follow the selected physical Buffer/Image across frames.
-  // Concurrent registrations from GraphElement::update() are included in that frame's submissions.
+  // Concurrent registrations from GraphElement::update() are supported.
+  // Register resource waits in or before the first pass that consumes the uploaded data.
   void addFrameWait(GpuTicket ticket);
   // Update only a resource whose previous GPU uses have finished; these waits cover upload -> graph.
   void addResourceWait(Buffer& buffer, GpuTicket ticket);

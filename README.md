@@ -96,10 +96,6 @@ int main() {
 
 This minimal example submits only one frame. In a real application, call `render()` for every frame from a dedicated rendering thread.
 
-Passes record in parallel after the current frame slot is free. In `update()`, prepare the slot's CPU data and record commands into the supplied command buffer. Compute passes keep each element's `update()` immediately before its `draw()` on the same worker; graphics passes run all updates before beginning rendering and drawing their elements. The graph waits for all pass recording to finish, then builds resource dependencies and submits graph barriers before commands recorded by both `update()` and `draw()`.
-
-Use separate resources per frame slot, or ensure their earlier GPU uses have finished before overwriting them. Register tickets from external uploads and mipmap generation with `addFrameWait()` or `addResourceWait()` before rendering or from a pass's `update()`. Registrations from parallel updates and the selected physical resources are resolved for the same `render()` call. Command submission stays in `render()`; keep the producers and destination resources alive until GPU use completes.
-
 ## Window and Swapchain Example
 
 This example creates a window and runs a small two-pass rendering graph:

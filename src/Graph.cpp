@@ -13,6 +13,7 @@ module;
 #include <mutex>
 #include <optional>
 #include <ranges>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -117,18 +118,6 @@ GraphPassType GraphPass::getGraphPassType() const noexcept { return _graphPassTy
 QueueType GraphPass::getQueueType() const noexcept { return _commandPool->getType(); }
 
 CommandBuffer& GraphPass::getCommandBuffer(int frame) const { return *_commandBuffers.at(frame); }
-
-CommandBuffer* GraphPass::recordBarriers(int frame, const Barrier& barriers, const Device& device) {
-  if (barriers.getBufferBarriers().empty() && barriers.getImageBarriers().empty()) return nullptr;
-
-  _barrierCommandBuffers.resize(_commandBuffers.size());
-  auto& commands = _barrierCommandBuffers.at(frame);
-  if (!commands) commands = std::make_unique<CommandBuffer>(*_commandPool, device);
-  commands->beginCommands();
-  barriers.execute(commands->getCommandBuffer());
-  commands->endCommands();
-  return commands.get();
-}
 
 std::vector<CommandBuffer*> GraphPass::getCommandBuffers() const {
   return _commandBuffers | std::views::transform([](auto& p) { return p.get(); }) | std::ranges::to<std::vector>();
@@ -592,24 +581,29 @@ void Graph::print() const {
 
 void Graph::addFrameWait(GpuTicket ticket) {
   const std::scoped_lock lock(_pendingWaitsMutex);
-  const auto existingFrameWait = std::ranges::find(_pendingFrameWaits, ticket.semaphore, &GpuTicket::semaphore);
-  if (existingFrameWait == _pendingFrameWaits.end()) {
-    _pendingFrameWaits.push_back(ticket);
-  } else {
-    existingFrameWait->value = std::max(existingFrameWait->value, ticket.value);
-  }
+  _pendingWaits.push_back({.completion = ticket});
 }
 
 void Graph::addResourceWait(Buffer& buffer, GpuTicket ticket) {
-  _addResourceWait({.accessMask = VK_ACCESS_2_MEMORY_WRITE_BIT, .completion = ticket, .buffer = &buffer});
+  const std::scoped_lock lock(_pendingWaitsMutex);
+  _pendingWaits.push_back({.accessMask = VK_ACCESS_2_MEMORY_WRITE_BIT, .completion = ticket, .buffer = &buffer});
 }
 
 void Graph::addResourceWait(Image& image, GpuTicket ticket) {
-  _addResourceWait({.accessMask = VK_ACCESS_2_MEMORY_WRITE_BIT, .completion = ticket, .image = &image});
+  const std::scoped_lock lock(_pendingWaitsMutex);
+  _pendingWaits.push_back({.accessMask = VK_ACCESS_2_MEMORY_WRITE_BIT, .completion = ticket, .image = &image});
 }
 
-void Graph::_addResourceWait(Access externalWrite) {
-  const std::scoped_lock lock(_pendingWaitsMutex);
+void Graph::_applyWait(Access externalWrite, std::vector<GpuTicket>& frameWaits) {
+  if (!externalWrite.buffer && !externalWrite.image) {
+    const auto ticket = externalWrite.completion;
+    const auto existingFrameWait = std::ranges::find(frameWaits, ticket.semaphore, &GpuTicket::semaphore);
+    if (existingFrameWait == frameWaits.end())
+      frameWaits.push_back(ticket);
+    else
+      existingFrameWait->value = std::max(existingFrameWait->value, ticket.value);
+    return;
+  }
   auto& resource = externalWrite.buffer ? _bufferHistory[externalWrite.buffer->getBuffer()]
                                         : _imageHistory[externalWrite.image->getImage()];
   auto& history = resource.accesses;
@@ -725,6 +719,13 @@ void Graph::calculate() {
   std::unordered_set<VkQueue> uniqueQueues;
   for (const auto& graphPass : _passes) {
     const auto graphQueue = _device->getQueue(graphPass->getQueueType());
+    auto& pool = _barrierCommandPools[graphQueue];
+    if (!pool) pool = std::make_unique<CommandPool>(graphPass->getQueueType(), *_device);
+    auto& buffers = _barrierCommandBuffers[graphPass.get()];
+    buffers.resize(_maxFramesInFlight);
+    for (auto& commands : buffers) {
+      if (!commands) commands = std::make_unique<CommandBuffer>(*pool, *_device);
+    }
     if (!uniqueQueues.insert(graphQueue).second) continue;
     _firstPassesPerQueue.insert(graphPass.get());
     auto& timeline = _queueTimelines[graphQueue];
@@ -762,9 +763,10 @@ bool Graph::_waitCoversCurrentStages(VkPipelineStageFlags2 waitStages,
   return (waitStages & VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT) || (waitStages & currentStages) == currentStages;
 }
 
-void Graph::_preparePhysicalAccesses() {
-  ++_uploadBatch;
+void Graph::_preparePhysicalAccesses(std::span<std::future<void>> passRecordingTasks) {
   _frameSubmissions.clear();
+  std::vector<Access> pendingWaits;
+  std::vector<GpuTicket> frameWaits;
   // Physical accesses of the current pass, with aliases merged.
   std::vector<Access> currentPassAccesses;
   // External waits still needed by this pass; may require a new submission.
@@ -774,6 +776,13 @@ void Graph::_preparePhysicalAccesses() {
   const VkImage swapchainImage = _swapchain ? _swapchain->getImage(_swapchain->getSwapchainIndex()).getImage()
                                             : VK_NULL_HANDLE;
   for (std::size_t currentPassIndex = 0; currentPassIndex < _passes.size(); ++currentPassIndex) {
+    if (!passRecordingTasks.empty()) passRecordingTasks[currentPassIndex].get();
+    {
+      const std::scoped_lock lock(_pendingWaitsMutex);
+      pendingWaits = _pendingWaits;
+      _pendingWaits.clear();
+    }
+    for (const auto& wait : pendingWaits) _applyWait(wait, frameWaits);
     auto* currentPass = _passes[currentPassIndex].get();
     const auto currentQueue = _device->getQueue(currentPass->getQueueType());
     auto& currentPassBarriers = _barriersBeforePass[currentPass];
@@ -824,7 +833,7 @@ void Graph::_preparePhysicalAccesses() {
         const auto ticket = previous.completion;
         // A frame wait or a wait already scheduled on this queue may cover another resource from the same upload.
         VkPipelineStageFlags2 scheduledStages = 0;
-        for (const auto& frameWait : _pendingFrameWaits) {
+        for (const auto& frameWait : frameWaits) {
           if (frameWait.semaphore == ticket.semaphore && frameWait.value >= ticket.value)
             scheduledStages = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
         }
@@ -847,12 +856,6 @@ void Graph::_preparePhysicalAccesses() {
         !currentPassExternalWaits.empty()) {
       _frameSubmissions.push_back({.queue = currentQueue, .firstPassIndex = currentPassIndex});
       auto& currentSubmission = _frameSubmissions.back();
-      if (_firstPassesPerQueue.contains(currentPass)) {
-        for (const auto& frameWait : _pendingFrameWaits) {
-          _addSemaphoreWait(currentSubmission.semaphoreWaits, frameWait.semaphore, frameWait.value,
-                            VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
-        }
-      }
       // Assign completion values after splitting: two G submissions signal G=1 and G=2.
       currentSubmission.semaphoreSignals.push_back({.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
                                                     .semaphore = currentQueueTimeline.semaphore->getSemaphore(),
@@ -929,6 +932,15 @@ void Graph::_preparePhysicalAccesses() {
       }
     }
   }
+  ++_uploadBatch;
+  // Later updates may register frame waits after a queue's first submission has been planned.
+  for (auto& submission : _frameSubmissions) {
+    if (!_firstPassesPerQueue.contains(_passes[submission.firstPassIndex].get())) continue;
+    for (const auto& frameWait : frameWaits) {
+      _addSemaphoreWait(submission.semaphoreWaits, frameWait.semaphore, frameWait.value,
+                        VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
+    }
+  }
   if (!_swapchain) return;
   // Prepare swapchain acquire waits and presentation/completion signals.
   auto& lastSubmission = _frameSubmissions.back();
@@ -998,8 +1010,7 @@ bool Graph::render() {
       throw std::runtime_error("failed to acquire swap chain image");
   }
 
-  // Record independent passes in parallel, preserving each pass's update/draw ordering.
-  // Updates may register uploads; resolve their dependencies after all recording finishes.
+  // Record independent passes in parallel; plan each pass once its recording finishes.
   std::vector<std::future<void>> passRecordingTasks;
   passRecordingTasks.reserve(_passes.size());
   try {
@@ -1017,7 +1028,7 @@ bool Graph::render() {
             currentPass->execute(frameSlot, *passCommandBuffer);
           }));
     }
-    for (auto& recordingTask : passRecordingTasks) recordingTask.get();
+    _preparePhysicalAccesses(passRecordingTasks);
   } catch (...) {
     // Also cover failures while scheduling tasks; no recording task may outlive render().
     for (auto& recordingTask : passRecordingTasks) {
@@ -1026,7 +1037,6 @@ bool Graph::render() {
     throw;
   }
 
-  _preparePhysicalAccesses();
   if (_swapchain) {
     auto& commands = _passes.back()->getCommandBuffer(frameSlot);
     const auto transitionTrace = _tracer->traceGPU("Graph.transition.present", _passes.back()->getQueueType(),
@@ -1058,7 +1068,11 @@ bool Graph::render() {
     for (auto passIndex = currentSubmission.firstPassIndex; passIndex < currentSubmission.endPassIndex; ++passIndex) {
       auto& pass = *_passes[passIndex];
       const auto& barriers = _barriersBeforePass.at(&pass);
-      if (auto* commands = pass.recordBarriers(frameSlot, barriers, *_device)) {
+      if (!barriers.getBufferBarriers().empty() || !barriers.getImageBarriers().empty()) {
+        auto& commands = _barrierCommandBuffers.at(&pass).at(frameSlot);
+        commands->beginCommands();
+        barriers.execute(commands->getCommandBuffer());
+        commands->endCommands();
         // Execute graph barriers before commands recorded by both update() and draw().
         submissionCommandBuffers.push_back(
             {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = commands->getCommandBuffer()});
@@ -1088,8 +1102,6 @@ bool Graph::render() {
   for (const auto& [graphQueue, queueTimeline] : _queueTimelines) {
     frameSlotCompletions.push_back({queueTimeline.semaphore->getSemaphore(), queueTimeline.lastSignalValue});
   }
-  // Frame waits apply only to this submitted frame; resource readiness remains in physical history.
-  _pendingFrameWaits.clear();
   ++_frameNumber;
   if (!_swapchain) return false;
 
@@ -1123,6 +1135,10 @@ void Graph::reset(glm::ivec2 resolution) {
   if (resolution.x == 0 || resolution.y == 0) throw std::runtime_error("Can't reset if resolution is 0");
 
   // Images may be destroyed by storage reset. Keep their readiness as global waits, without old Image pointers.
+  {
+    const std::scoped_lock lock(_pendingWaitsMutex);
+    for (auto& wait : _pendingWaits) wait.image = nullptr;
+  }
   for (const auto& [imageHandle, resourceHistory] : _imageHistory) {
     for (const auto& previousAccess : resourceHistory.accesses) {
       if (previousAccess.queue == VK_NULL_HANDLE) addFrameWait(previousAccess.completion);
