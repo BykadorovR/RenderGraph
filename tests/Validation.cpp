@@ -127,6 +127,7 @@ class GraphCommandRecorder final {
   PFN_vkCmdPipelineBarrier2 _pipelineBarrier = vkCmdPipelineBarrier2;
   PFN_vkQueueSubmit2 _queueSubmit = vkQueueSubmit2;
   PFN_vkWaitSemaphores _waitSemaphores = vkWaitSemaphores;
+  PFN_vkAllocateCommandBuffers _allocateCommandBuffers = vkAllocateCommandBuffers;
   std::mutex _mutex;
 
   static VKAPI_ATTR void VKAPI_CALL recordBarrier(VkCommandBuffer commandBuffer, const VkDependencyInfo* dependency) {
@@ -181,6 +182,7 @@ class GraphCommandRecorder final {
   }
 
  public:
+  std::atomic<uint32_t> allocatedCommandBuffers = 0;
   VkFence firstSubmissionFence = VK_NULL_HANDLE;
   std::vector<std::pair<VkCommandBuffer, VkImageMemoryBarrier2>> imageBarriers;
   std::vector<VkBufferMemoryBarrier2> bufferBarriers;
@@ -192,6 +194,11 @@ class GraphCommandRecorder final {
 
   GraphCommandRecorder() {
     _active = this;
+    vkAllocateCommandBuffers = [](VkDevice device, const VkCommandBufferAllocateInfo* info, VkCommandBuffer* commands) {
+      auto& recorder = *_active;
+      recorder.allocatedCommandBuffers += info->commandBufferCount;
+      return recorder._allocateCommandBuffers(device, info, commands);
+    };
     vkCmdPipelineBarrier2 = recordBarrier;
     vkQueueSubmit2 = [](VkQueue queue, uint32_t submitCount, const VkSubmitInfo2* submits, VkFence fence) {
       return _active->recordSubmit(queue, submitCount, submits, fence);
@@ -203,6 +210,7 @@ class GraphCommandRecorder final {
   GraphCommandRecorder(const GraphCommandRecorder&) = delete;
   GraphCommandRecorder& operator=(const GraphCommandRecorder&) = delete;
   ~GraphCommandRecorder() {
+    vkAllocateCommandBuffers = _allocateCommandBuffers;
     vkCmdPipelineBarrier2 = _pipelineBarrier;
     vkQueueSubmit2 = _queueSubmit;
     vkWaitSemaphores = _waitSemaphores;
@@ -303,7 +311,8 @@ class ValidationGraphElement final : public RenderGraph::GraphElement {
 
  public:
   explicit ValidationGraphElement(std::function<void()> update = {}, std::function<void()> draw = {})
-      : _update(std::move(update)), _draw(std::move(draw)) {}
+      : _update(std::move(update)),
+        _draw(std::move(draw)) {}
   void draw(int currentFrame, const RenderGraph::CommandBuffer& commandBuffer) override {
     if (_draw) _draw();
     ++_drawCount;
@@ -549,13 +558,13 @@ TEST_P(UploadQueueTest, ReuploadsAllImageMipLevels) {
       // The caller waits for earlier image consumers before uploading the base level again.
       ASSERT_EQ(vkDeviceWaitIdle(device.getLogicalDevice()), VK_SUCCESS);
       uploader.upload(buffer, std::as_bytes(std::span(data)));
-      const auto beforeMipmaps = uploader.submit();
+      const auto beforeMipmaps = uploader.submit().value();
       // Exercise both repeated writes in one command buffer and writes across submissions.
       uploader.upload(image, pixels, offsets);
       uploader.upload(image, pixels, offsets);
-      const auto copied = uploader.submit();
+      const auto copied = uploader.submit().value();
       uploader.upload(buffer, std::as_bytes(std::span(data)));
-      const auto afterMipmaps = uploader.submit();
+      const auto afterMipmaps = uploader.submit().value();
       EXPECT_GT(copied.value, beforeMipmaps.value);
       EXPECT_GT(afterMipmaps.value, copied.value);
 
@@ -652,6 +661,7 @@ TEST_P(UploadQueueTest, UploadedBuffersAndMipmapsReachComputeGraph) {
     RenderGraph::ResourceUploader uploader(allocator, device, GetParam());
     RenderGraph::MipmapGenerator generator(device);
     GraphCommandRecorder recorder;
+    EXPECT_FALSE(uploader.submit().has_value());
     std::array<uint32_t, 4> data{};
     std::array<std::byte, 64> pixels{};
     const std::array<VkDeviceSize, 1> offsets{0};
@@ -661,12 +671,20 @@ TEST_P(UploadQueueTest, UploadedBuffersAndMipmapsReachComputeGraph) {
       ASSERT_EQ(vkDeviceWaitIdle(device.getLogicalDevice()), VK_SUCCESS);
       data = {frame * 10, frame * 10 + 1, frame * 10 + 2, frame * 10 + 3};
       pixels.fill(static_cast<std::byte>(frame * 11));
-      uploader.upload(*source, std::as_bytes(std::span(data)));
-      uploader.upload(view->getImage(), pixels, offsets);
+      const auto allocationCount = recorder.allocatedCommandBuffers.load();
       const auto submissionCount = recorder.submissionQueues.size();
-      const auto ticket = uploader.submit();
-      EXPECT_GT(ticket.value, previousTicketValue);
+      uploader.upload(*source, std::as_bytes(std::span(data)));
+      if (mapped) {
+        EXPECT_EQ(recorder.allocatedCommandBuffers.load(), allocationCount);
+        EXPECT_FALSE(uploader.submit().has_value());
+        EXPECT_EQ(recorder.submissionQueues.size(), submissionCount);
+      }
+      uploader.upload(view->getImage(), pixels, offsets);
+      if (mapped) uploader.upload(*source, std::as_bytes(std::span(data)));
+      const auto ticket = uploader.submit().value();
+      EXPECT_EQ(ticket.value, previousTicketValue + 1);
       previousTicketValue = ticket.value;
+      EXPECT_FALSE(uploader.submit().has_value());
       ASSERT_EQ(recorder.submissionQueues.size(), submissionCount + 1);
       EXPECT_EQ(recorder.submissionQueues.back(), device.getQueue(GetParam()));
       generator.generate(view->getImage());
@@ -712,7 +730,7 @@ TEST_P(UploadQueueTest, RejectsInvalidQueuesAndImageOffsets) {
       const std::array<VkDeviceSize, 1> offsets{1};
       EXPECT_THROW(uploader.upload(image, pixels, offsets), std::invalid_argument);
       EXPECT_EQ(image.getImageLayout(), VK_IMAGE_LAYOUT_UNDEFINED);
-      EXPECT_THROW(uploader.submit(), std::logic_error);
+      EXPECT_FALSE(uploader.submit().has_value());
     }
     GraphCommandRecorder recorder;
     RenderGraph::Buffer buffer(16, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 0, allocator, device);
@@ -860,7 +878,7 @@ TEST_P(UploadQueueTest, IntegerMipmapsPreserveUploadedPixels) {
     const std::vector<std::byte> pixels(64, std::byte{42});
     const std::array<VkDeviceSize, 1> offsets{0};
     uploader.upload(image, pixels, offsets);
-    const auto uploaded = uploader.submit();
+    const auto uploaded = uploader.submit().value();
     RenderGraph::MipmapGenerator generator(device);
     if (!device.isFormatFeatureSupported(format, VK_IMAGE_TILING_OPTIMAL,
                                          VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT)) {
@@ -1626,7 +1644,7 @@ TEST_P(ValidationScenarioTest, GpuTicketsGateGraphExecution) {
           allocator, device));
       auto& sourceUploader = std::string_view(name) == "First" ? uploader : transferUploader;
       sourceUploader.upload(*buffers.front(), std::as_bytes(std::span(data)));
-      tickets.push_back(sourceUploader.submit());
+      tickets.push_back(sourceUploader.submit().value());
       graph.getGraphStorage().add(name, std::make_unique<RenderGraph::BufferHandler>(
                                             std::move(buffers), [&graph] { return graph.getFrameInFlight(); }));
     }
@@ -1641,7 +1659,7 @@ TEST_P(ValidationScenarioTest, GpuTicketsGateGraphExecution) {
     };
     const std::array<VkDeviceSize, 1> offsets{0};
     uploader.upload(image, pixels, offsets);
-    tickets.push_back(uploader.submit());
+    tickets.push_back(uploader.submit().value());
     generator.generate(image);
     const auto generated = generator.submit({&tickets.back(), 1});
     tickets.push_back(generated);
@@ -1714,7 +1732,7 @@ TEST_P(ValidationScenarioTest, GpuTicketsGateGraphExecution) {
     graph.calculate();
     // Recalculation before submission must retain pending uploads; later recalculations must not repeat waits.
     uploader.upload(graph.getGraphStorage().getBufferHandler("First").getBuffer(), std::as_bytes(std::span(firstData)));
-    const auto updateTicket = uploader.submit();
+    const auto updateTicket = uploader.submit().value();
     firstPass.registerGraphElement(std::make_shared<ValidationGraphElement>([&, pending = true]() mutable {
       if (!std::exchange(pending, false)) return;
       graph.addFrameWait(updateTicket);
@@ -1926,7 +1944,7 @@ TEST(ValidationTest, SampledImageLayoutsPreserveUploadedContentsAcrossFrames) {
     const std::vector<std::byte> pixels(4 * 4 * 4, std::byte{42});
     const std::array<VkDeviceSize, 1> offsets{0};
     uploader.upload(inputs[0]->getImage(), pixels, offsets);
-    const auto ticket = uploader.submit();
+    const auto ticket = uploader.submit().value();
     auto& sample = graph.createPassGraphic("Sample");
     sample.addTextureInput("Input");
     sample.addColorTarget("Color");
@@ -2028,7 +2046,7 @@ TEST(ValidationTest, ImageUploadAfterCalculationPreservesContents) {
     {
       GraphCommandRecorder recorder;
       uploader.upload(view->getImage(), pixels, offsets);
-      ticket = uploader.submit();
+      ticket = uploader.submit().value();
       ASSERT_FALSE(graph.render());
       ASSERT_EQ(recorder.imageBarriers.size(), 1u);  // Only the uploader transitions the fresh image.
       EXPECT_EQ(recorder.imageBarriers.front().second.oldLayout, VK_IMAGE_LAYOUT_UNDEFINED);
@@ -2917,7 +2935,7 @@ TEST(ValidationTest, ResourceImageTicketsDoNotRetainRecreatedImages) {
     const std::vector<std::byte> pixels(4 * 4 * 4, std::byte{42});
     const std::array<VkDeviceSize, 1> offsets{0};
     uploader.upload(view->getImage(), pixels, offsets);
-    graph.addResourceWait(view->getImage(), uploader.submit());
+    graph.addResourceWait(view->getImage(), uploader.submit().value());
     view.reset();  // Storage owns the view; reset recreates its VkImage at swapchain resolution.
     ASSERT_FALSE(graph.render());
     graph.reset({96, 64});
@@ -2929,7 +2947,7 @@ TEST(ValidationTest, ResourceImageTicketsDoNotRetainRecreatedImages) {
     EXPECT_EQ(size, swapchain.getImage(0).getResolution());
     const std::vector<std::byte> replacement(size.x * size.y * 4, std::byte{17});
     uploader.upload(current, replacement, offsets);
-    graph.addResourceWait(current, uploader.submit());
+    graph.addResourceWait(current, uploader.submit().value());
     graph.reset(resolution);
     ASSERT_FALSE(graph.render());
     ASSERT_EQ(vkDeviceWaitIdle(device.getLogicalDevice()), VK_SUCCESS);
@@ -3086,7 +3104,7 @@ TEST(ValidationTest, ResourceTicketSplitsOnlyForUncoveredDestinationStages) {
     graph.calculate();
     const std::array<uint32_t, 4> data{1, 2, 3, 4};
     uploader.upload(*buffer, std::as_bytes(std::span(data)));
-    const auto ticket = uploader.submit();
+    const auto ticket = uploader.submit().value();
     graph.addResourceWait(*buffer, ticket);
     {
       GraphCommandRecorder recorder;
@@ -3176,7 +3194,7 @@ TEST_P(ValidationScenarioTest, ResourceUploadTicketsFollowPhysicalInstancesAcros
       uploader.upload(*inputs[slot], std::as_bytes(std::span(&values[slot], 1)));
       const std::array<VkDeviceSize, 1> offsets{0};
       uploader.upload(images[slot]->getImage(), std::as_bytes(std::span(&pixels[slot], 1)), offsets);
-      tickets[slot] = uploader.submit();
+      tickets[slot] = uploader.submit().value();
       graph.addResourceWait(*inputs[slot], tickets[slot]);
       graph.addResourceWait(images[slot]->getImage(), tickets[slot]);
     };
