@@ -7,6 +7,7 @@ module;
 #include <cstdint>
 #include <deque>
 #include <memory>
+#include <optional>
 #include <span>
 #include <vector>
 #include <vk_mem_alloc.h>
@@ -64,8 +65,8 @@ class ResourceUploader final {
   void upload(Buffer& destination, std::span<const std::byte> data, VkDeviceSize offset = 0);
   // Upload the base level for every layer; mipmaps are generated separately.
   void upload(Image& destination, std::span<const std::byte> data, std::span<const VkDeviceSize> bufferOffsets);
-  // The returned ticket covers this batch's uploads on the selected queue.
-  GpuTicket submit();
+  // Returns nullopt when no GPU copies were recorded; mapped writes are already copied and flushed.
+  std::optional<GpuTicket> submit();
   void reclaim();
 
   ~ResourceUploader();

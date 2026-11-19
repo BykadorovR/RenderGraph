@@ -8,6 +8,7 @@ module;
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -87,8 +88,6 @@ void ResourceUploader::upload(Buffer& destination, std::span<const std::byte> da
       throw std::runtime_error("Can't upload data to host-visible buffer: " + std::to_string(result));
     }
 
-    // Create a batch and begin its command buffer for the subsequent submit().
-    _getRecordingBatch();
     return;
   }
 
@@ -224,9 +223,9 @@ void ResourceUploader::upload(Image& destination,
                          static_cast<uint32_t>(copyRegions.size()), copyRegions.data());
 }
 
-GpuTicket ResourceUploader::submit() {
+std::optional<GpuTicket> ResourceUploader::submit() {
   if (_recordingBatch == nullptr) {
-    throw std::logic_error("Can't submit an empty upload batch");
+    return std::nullopt;
   }
 
   const VkQueue queue = _device->getQueue(_commandPool.getType());
@@ -257,7 +256,7 @@ GpuTicket ResourceUploader::submit() {
     throw std::runtime_error("Resource upload submission failed: " + std::to_string(result));
   }
   batch._completionValue = _nextCompletionValue++;
-  return {
+  return GpuTicket{
       .semaphore = _timelineSemaphore.getSemaphore(),
       .value = batch._completionValue,
   };

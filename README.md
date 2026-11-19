@@ -65,7 +65,7 @@ void buildGraph(RenderGraph::Graph& graph) {
   graph.initialize();
   // GENERAL shares the graphics queue; COMPUTE prefers a separate compute queue with fallback to GENERAL.
   graph.createPassCompute("Compute", RenderGraph::QueueType::GENERAL);
-  // Uploads and mipmap generation can be synchronized via graph.calculate(gpuTickets).
+  // Register upload completion with addFrameWait(ticket) or addResourceWait(resource, ticket).
   graph.calculate();
 }
 
@@ -138,7 +138,7 @@ void buildGraph(RenderGraph::Graph& graph, RenderGraph::Swapchain& swapchain) {
   uiPass.addColorTarget("Swapchain", RenderGraph::RenderTargetLoadAction::KEEP);
   // uiPass.registerGraphElement(uiElement);
 
-  // Uploads and mipmap generation can be synchronized via graph.calculate(gpuTickets).
+  // Register upload completion with addFrameWait(ticket) or addResourceWait(resource, ticket).
   graph.calculate();
 }
 

@@ -3,7 +3,9 @@ module;
 #include "BS_thread_pool.hpp"
 
 #include <cstddef>
+#include <future>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <string>
@@ -221,12 +223,12 @@ class Graph final {
   // Passes execute in declaration order; grouping submissions does not reorder them.
   std::vector<std::unique_ptr<GraphPass>> _passes;
   // First pass per VkQueue, used for ticket waits and GPU profiling: G0 G1 C0 G2 -> {G0, C0}.
-  std::unordered_set<GraphPass*> _queueFirstPasses;
+  std::unordered_set<GraphPass*> _firstPassesPerQueue;
   std::unique_ptr<GraphStorage> _graphStorage;
   // Acquire: one binary semaphore per frame slot. Present-ready: one per swapchain image.
-  std::vector<std::shared_ptr<Semaphore>> _semaphoreRenderFinished, _semaphoreImageAvailable;
-  // Separate timeline for CPU frame-slot reuse; its signal must cover all graph queues.
-  std::unique_ptr<Semaphore> _semaphoreInFlight;
+  std::vector<std::shared_ptr<Semaphore>> _swapchainRenderFinishedSemaphores, _swapchainImageAvailableSemaphores;
+  // Completion points of every queue that used a frame slot; the CPU waits before reusing that slot.
+  std::vector<std::vector<GpuTicket>> _frameSlotCompletions;
   uint64_t _frameNumber = 0;
   int _maxFramesInFlight;
 
@@ -238,65 +240,76 @@ class Graph final {
     VkAccessFlags2 accessMask = 0;
   };
 
-  class Resources {
-   private:
-    std::vector<Resource> _resources;
-
-   public:
-    void add(Resource resource);
-    const std::vector<Resource>& getResources() const noexcept;
-  };
-
   // One description per name in each pass, shared by all frame slots.
-  std::unordered_map<GraphPass*, Resources> _resources;
-
-  // Upload/mipmap readiness, plus the previous frame when calculate() rebuilds history; consumed once.
-  std::vector<GpuTicket> _pendingTickets;
+  std::unordered_map<GraphPass*, std::vector<Resource>> _resourcesByPass;
 
   // A selected physical access and its submission's completion point.
   struct Access {
+    // Where the access runs; VK_NULL_HANDLE means an external producer.
     VkQueue queue = VK_NULL_HANDLE;
+
+    // What the resource is used for: pipeline stages and memory accesses.
     VkPipelineStageFlags2 stageMask = 0;
     VkAccessFlags2 accessMask = 0;
-    // Queue timeline completion value; zero when only one queue is used and no queue timeline is needed.
-    uint64_t value = 0;
+
+    // How to wait: graph submission completion or an external upload ticket.
+    GpuTicket completion{};
+
+    // Which physical resource is accessed.
     Buffer* buffer = nullptr;
     Image* image = nullptr;
   };
-  // Per physical handle: optional last writer, then readers (one per queue).
+  // Per physical handle: last writer (or external readiness tickets), then readers (one per queue).
   // READ keeps the writer and merges reader masks/max value; WRITE replaces the history.
-  // Shared across names and frames, including repeated slots like [A,A,B]; cleared by calculate().
-  std::unordered_map<VkBuffer, std::vector<Access>> _bufferHistory;
-  std::unordered_map<VkImage, std::vector<Access>> _imageHistory;
-  // Same-queue dependencies rebuilt from physical history before recording commands in each render().
-  std::unordered_map<GraphPass*, Barrier> _physicalBarriers;
+  // Shared across names and frames, including repeated slots like [A,A,B].
+  // calculate() clears graph accesses while preserving external readiness.
+  struct ResourceHistory {
+    std::vector<Access> accesses;
+    uint64_t uploadBatch = 0;
+  };
+  std::unordered_map<VkBuffer, ResourceHistory> _bufferHistory;
+  std::unordered_map<VkImage, ResourceHistory> _imageHistory;
+
+  // Registrations from recording tasks; a missing resource denotes a frame wait.
+  std::vector<Access> _pendingWaits;
+  // Upload registrations for one frame share a batch; its first write replaces old history.
+  uint64_t _uploadBatch = 1;
+  // Protects only appending and taking pending registrations; planning runs without this lock.
+  std::mutex _pendingWaitsMutex;
+
+  // Same-queue dependencies rebuilt after pass recording and submitted before the pass commands.
+  std::unordered_map<GraphPass*, Barrier> _barriersBeforePass;
+  std::unordered_map<VkQueue, std::unique_ptr<CommandPool>> _barrierCommandPools;
+  std::unordered_map<GraphPass*, std::vector<std::unique_ptr<CommandBuffer>>> _barrierCommandBuffers;
 
   // One semaphore per real queue; its counter increases per submission, not per frame.
   struct QueueTimeline {
     std::unique_ptr<Semaphore> semaphore;
-    uint64_t value = 0;
+    // Last value reserved on the CPU; the GPU signals it when the submission finishes.
+    uint64_t lastSignalValue = 0;
   };
   std::unordered_map<VkQueue, QueueTimeline> _queueTimelines;
 
-  // calculate() groups adjacent passes on one VkQueue; render() submits their current-slot command buffers.
-  // [firstPass, endPass) excludes endPass: [0,3) contains passes 0,1,2.
-  // waits/signals describe existing semaphores; adding an entry does not create a semaphore or submission.
+  // render() groups adjacent passes on one VkQueue, splitting before new resource ticket waits.
+  // [firstPassIndex, endPassIndex) excludes endPassIndex: [0,3) contains passes 0,1,2.
+  // semaphoreWaits/semaphoreSignals refer to existing semaphores; entries do not create semaphores or submissions.
   struct Submission {
     VkQueue queue;
-    std::size_t firstPass = 0, endPass = 0;
-    std::vector<VkSemaphoreSubmitInfo> waits, signals;
-    uint64_t value = 0;
+    std::size_t firstPassIndex = 0, endPassIndex = 0;
+    std::vector<VkSemaphoreSubmitInfo> semaphoreWaits, semaphoreSignals;
   };
-  std::vector<Submission> _submissions;
+  std::vector<Submission> _frameSubmissions;
 
-  bool _hasReadAccess(VkAccessFlags2 mask) const noexcept;
-  bool _hasWriteAccess(VkAccessFlags2 mask) const noexcept;
+  bool _hasReadAccess(VkAccessFlags2 accessMask) const noexcept;
+  bool _hasWriteAccess(VkAccessFlags2 accessMask) const noexcept;
   void _setResourceNames();
-  void _preparePhysicalAccesses();
-  void _addWait(std::vector<VkSemaphoreSubmitInfo>& waits,
-                VkSemaphore semaphore,
-                uint64_t value,
-                VkPipelineStageFlags2 stages);
+  void _applyWait(Access externalWrite, std::vector<GpuTicket>& frameWaits);
+  void _preparePhysicalAccesses(std::span<std::future<void>> passRecordingTasks = {});
+  bool _waitCoversCurrentStages(VkPipelineStageFlags2 waitStages, VkPipelineStageFlags2 currentStages) const noexcept;
+  void _addSemaphoreWait(std::vector<VkSemaphoreSubmitInfo>& semaphoreWaits,
+                         VkSemaphore waitSemaphore,
+                         uint64_t requiredValue,
+                         VkPipelineStageFlags2 waitStages);
 
  public:
   Graph(int threadsNumber, int maxFramesInFlight, const Device& device, Tracer& tracer);
@@ -316,8 +329,16 @@ class Graph final {
   int getFrameInFlight() const noexcept;
   uint64_t getFrameNumber() const noexcept;
 
-  // Keep ticket producers and Buffer/Image objects alive until their last GPU use completes; tickets are copied here.
-  void calculate(std::span<const GpuTicket> tickets = {});
+  // Register GPU waits without recalculating the graph. Producers must outlive their pending dependencies.
+  // Frame waits gate all queues once; resource waits follow the selected physical Buffer/Image across frames.
+  // Concurrent registrations from GraphElement::update() are supported.
+  // Register resource waits in or before the first pass that consumes the uploaded data.
+  void addFrameWait(GpuTicket ticket);
+  // Update only a resource whose previous GPU uses have finished; these waits cover upload -> graph.
+  void addResourceWait(Buffer& buffer, GpuTicket ticket);
+  void addResourceWait(Image& image, GpuTicket ticket);
+
+  void calculate();
   // true -> need to call reset; an empty graph returns false without submitting work.
   bool render();
   void reset(glm::ivec2 resolution);

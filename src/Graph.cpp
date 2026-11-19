@@ -10,6 +10,7 @@ module;
 #include <iterator>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <ranges>
 #include <span>
@@ -27,18 +28,19 @@ module Graph;
 using namespace RenderGraph;
 
 // Access bits emitted by graph declarations and its layout transitions.
-bool Graph::_hasReadAccess(VkAccessFlags2 mask) const noexcept {
-  constexpr VkAccessFlags2 reads = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_INDEX_READ_BIT |
-                                   VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_2_SHADER_READ_BIT |
-                                   VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT |
-                                   VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_MEMORY_READ_BIT;
-  return (mask & reads) != 0;
+bool Graph::_hasReadAccess(VkAccessFlags2 accessMask) const noexcept {
+  constexpr VkAccessFlags2 readAccessBits = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_INDEX_READ_BIT |
+                                            VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_2_SHADER_READ_BIT |
+                                            VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT |
+                                            VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_MEMORY_READ_BIT;
+  return (accessMask & readAccessBits) != 0;
 }
 
-bool Graph::_hasWriteAccess(VkAccessFlags2 mask) const noexcept {
-  constexpr VkAccessFlags2 writes = VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT |
-                                    VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
-  return (mask & writes) != 0;
+bool Graph::_hasWriteAccess(VkAccessFlags2 accessMask) const noexcept {
+  constexpr VkAccessFlags2 writeAccessBits = VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT |
+                                             VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
+                                             VK_ACCESS_2_MEMORY_WRITE_BIT;
+  return (accessMask & writeAccessBits) != 0;
 }
 
 void GraphStorage::add(std::string_view name,
@@ -340,23 +342,25 @@ void GraphPassCompute::execute(int currentFrame, const CommandBuffer& commandBuf
 }
 
 void Graph::_setResourceNames() {
-  for (const auto& resourceEntry : _resources) {
-    for (const Resource& resource : resourceEntry.second.getResources()) {
-      if (resource.type == Resource::Type::BUFFER) {
-        const auto buffers = _graphStorage->getBufferHandler(resource.name).getBuffers();
-        for (std::size_t index = 0; index < buffers.size(); ++index) {
-          _tracer->setObjectName(VK_OBJECT_TYPE_BUFFER, std::bit_cast<uint64_t>(buffers[index]->getBuffer()),
-                                 resource.name + ".buffer[" + std::to_string(index) + "]");
+  for (const auto& passResourcesEntry : _resourcesByPass) {
+    for (const Resource& declaredResource : passResourcesEntry.second) {
+      if (declaredResource.type == Resource::Type::BUFFER) {
+        const auto bufferInstances = _graphStorage->getBufferHandler(declaredResource.name).getBuffers();
+        for (std::size_t instanceIndex = 0; instanceIndex < bufferInstances.size(); ++instanceIndex) {
+          _tracer->setObjectName(VK_OBJECT_TYPE_BUFFER,
+                                 std::bit_cast<uint64_t>(bufferInstances[instanceIndex]->getBuffer()),
+                                 declaredResource.name + ".buffer[" + std::to_string(instanceIndex) + "]");
         }
       } else {
-        const auto imageViews = _graphStorage->getImageViewHolder(resource.name).getImageViews();
-        for (std::size_t index = 0; index < imageViews.size(); ++index) {
-          const std::string suffix = "[" + std::to_string(index) + "]";
+        const auto imageViewInstances = _graphStorage->getImageViewHolder(declaredResource.name).getImageViews();
+        for (std::size_t instanceIndex = 0; instanceIndex < imageViewInstances.size(); ++instanceIndex) {
+          const std::string suffix = "[" + std::to_string(instanceIndex) + "]";
           _tracer->setObjectName(VK_OBJECT_TYPE_IMAGE,
-                                 std::bit_cast<uint64_t>(imageViews[index]->getImage().getImage()),
-                                 resource.name + ".image" + suffix);
-          _tracer->setObjectName(VK_OBJECT_TYPE_IMAGE_VIEW, std::bit_cast<uint64_t>(imageViews[index]->getImageView()),
-                                 resource.name + ".imageView" + suffix);
+                                 std::bit_cast<uint64_t>(imageViewInstances[instanceIndex]->getImage().getImage()),
+                                 declaredResource.name + ".image" + suffix);
+          _tracer->setObjectName(VK_OBJECT_TYPE_IMAGE_VIEW,
+                                 std::bit_cast<uint64_t>(imageViewInstances[instanceIndex]->getImageView()),
+                                 declaredResource.name + ".imageView" + suffix);
         }
       }
     }
@@ -380,13 +384,13 @@ void Graph::setSwapchain(Swapchain& swapchain) {
   }
 
   _swapchain = &swapchain;
-  std::ranges::generate_n(std::back_inserter(_semaphoreImageAvailable), _maxFramesInFlight,
+  std::ranges::generate_n(std::back_inserter(_swapchainImageAvailableSemaphores), _maxFramesInFlight,
                           [&] { return std::make_shared<Semaphore>(VK_SEMAPHORE_TYPE_BINARY, *_device); });
-  std::ranges::generate_n(std::back_inserter(_semaphoreRenderFinished), _swapchain->getImageCount(),
+  std::ranges::generate_n(std::back_inserter(_swapchainRenderFinishedSemaphores), _swapchain->getImageCount(),
                           [&] { return std::make_shared<Semaphore>(VK_SEMAPHORE_TYPE_BINARY, *_device); });
 }
 
-void Graph::initialize() { _semaphoreInFlight = std::make_unique<Semaphore>(VK_SEMAPHORE_TYPE_TIMELINE, *_device); }
+void Graph::initialize() { _frameSlotCompletions.resize(_maxFramesInFlight); }
 
 GraphStorage& Graph::getGraphStorage() const noexcept { return *_graphStorage; }
 
@@ -430,47 +434,27 @@ GraphPassCompute* Graph::getPassCompute(std::string_view name) const {
   return it == _passes.end() ? nullptr : static_cast<GraphPassCompute*>(it->get());
 }
 
-void Graph::Resources::add(Resource resource) {
-  auto it = std::find_if(_resources.begin(), _resources.end(),
-                         [&resource](const Resource& current) { return current.name == resource.name; });
-
-  if (it == _resources.end()) {
-    _resources.push_back(resource);
-    return;
-  }
-
-  if (it->type != resource.type) {
-    throw std::logic_error("Resource with the same name has a different type: " + resource.name);
-  }
-
-  it->stageMask |= resource.stageMask;
-  it->accessMask |= resource.accessMask;
-}
-
-const std::vector<Graph::Resource>& Graph::Resources::getResources() const noexcept { return _resources; }
-
 void Graph::print() const {
-  if (_submissions.empty()) return;
+  if (_resourcesByPass.empty()) return;
 
-  const auto& signals = _submissions.back().signals;
-  const auto preparedValue = signals.empty() ? 0 : signals.back().value;
-  if (preparedValue) {
-    const auto frame = preparedValue - 1;
-    std::cout << "Synchronization: prepared frame " << frame << " (slot " << frame % _maxFramesInFlight << ")"
-              << std::endl;
+  const bool synchronizationPrepared = !_frameSubmissions.empty() && _frameNumber > 0;
+  if (synchronizationPrepared) {
+    const auto preparedFrameNumber = _frameNumber - 1;
+    std::cout << "Synchronization: prepared frame " << preparedFrameNumber << " (slot "
+              << preparedFrameNumber % _maxFramesInFlight << ")" << std::endl;
   } else {
-    std::cout << "Synchronization: not prepared; barriers and waits are resolved by render()" << std::endl;
+    std::cout << "Synchronization: not prepared; submissions, barriers and waits are resolved by render()" << std::endl;
   }
 
   auto findBufferName = [this](VkBuffer targetBuffer) -> std::string {
-    for (const auto& [pass, resources] : _resources) {
-      for (const Resource& resource : resources.getResources()) {
-        if (resource.type != Resource::Type::BUFFER) {
+    for (const auto& [graphPass, passResources] : _resourcesByPass) {
+      for (const Resource& declaredResource : passResources) {
+        if (declaredResource.type != Resource::Type::BUFFER) {
           continue;
         }
-        for (const auto* buffer : _graphStorage->getBufferHandler(resource.name).getBuffers()) {
+        for (const auto* buffer : _graphStorage->getBufferHandler(declaredResource.name).getBuffers()) {
           if (buffer->getBuffer() == targetBuffer) {
-            return resource.name;
+            return declaredResource.name;
           }
         }
       }
@@ -480,15 +464,15 @@ void Graph::print() const {
   };
 
   auto findImageName = [this](VkImage targetImage) -> std::string {
-    for (const auto& [pass, resources] : _resources) {
-      for (const Resource& resource : resources.getResources()) {
-        if (resource.type != Resource::Type::IMAGE) {
+    for (const auto& [graphPass, passResources] : _resourcesByPass) {
+      for (const Resource& declaredResource : passResources) {
+        if (declaredResource.type != Resource::Type::IMAGE) {
           continue;
         }
-        const auto& imageViews = _graphStorage->getImageViewHolder(resource.name).getImageViews();
+        const auto& imageViews = _graphStorage->getImageViewHolder(declaredResource.name).getImageViews();
         for (const auto& imageView : imageViews) {
           if (imageView->getImage().getImage() == targetImage) {
-            return resource.name;
+            return declaredResource.name;
           }
         }
       }
@@ -514,23 +498,23 @@ void Graph::print() const {
     std::cout << std::endl;
   };
 
-  auto printSemaphores = [](std::string_view label, const auto& infos) {
+  auto printSemaphores = [](std::string_view label, const auto& semaphoreOperations) {
     std::cout << label;
-    if (infos.empty()) std::cout << " <none>";
+    if (semaphoreOperations.empty()) std::cout << " <none>";
     std::cout << std::endl;
-    for (const auto& info : infos) {
-      std::cout << "  " << info.semaphore << " value=" << info.value << " stages=0x" << std::hex << info.stageMask
-                << std::dec << std::endl;
+    for (const auto& semaphoreOperation : semaphoreOperations) {
+      std::cout << "  " << semaphoreOperation.semaphore << " value=" << semaphoreOperation.value << " stages=0x"
+                << std::hex << semaphoreOperation.stageMask << std::dec << std::endl;
     }
   };
 
-  auto printBarrier = [&](const Barrier& barrier) {
-    for (const auto& bufferBarrier : barrier.getBufferBarriers()) {
+  auto printBarrier = [&](const Barrier& passBarriers) {
+    for (const auto& bufferBarrier : passBarriers.getBufferBarriers()) {
       std::cout << "  buffer " << findBufferName(bufferBarrier.buffer) << " (" << bufferBarrier.buffer << ") stages 0x"
                 << std::hex << bufferBarrier.srcStageMask << " -> 0x" << bufferBarrier.dstStageMask << ", access 0x"
                 << bufferBarrier.srcAccessMask << " -> 0x" << bufferBarrier.dstAccessMask << std::dec << std::endl;
     }
-    for (const auto& imageBarrier : barrier.getImageBarriers()) {
+    for (const auto& imageBarrier : passBarriers.getImageBarriers()) {
       std::cout << "  image " << findImageName(imageBarrier.image) << " (" << imageBarrier.image << ") stages 0x"
                 << std::hex << imageBarrier.srcStageMask << " -> 0x" << imageBarrier.dstStageMask << ", access 0x"
                 << imageBarrier.srcAccessMask << " -> 0x" << imageBarrier.dstAccessMask << std::dec;
@@ -542,134 +526,187 @@ void Graph::print() const {
     }
   };
 
-  for (std::size_t index = 0; index < _submissions.size(); ++index) {
-    const auto& submission = _submissions[index];
-    std::cout << "Submission " << index << ", queue: " << submission.queue << ", passes:";
-    for (auto pass = submission.firstPass; pass < submission.endPass; ++pass) {
-      std::cout << " " << _passes[pass]->getName();
+  for (std::size_t submissionIndex = 0; submissionIndex < _frameSubmissions.size(); ++submissionIndex) {
+    const auto& frameSubmission = _frameSubmissions[submissionIndex];
+    std::cout << "Submission " << submissionIndex << ", queue: " << frameSubmission.queue << ", passes:";
+    for (auto passIndex = frameSubmission.firstPassIndex; passIndex < frameSubmission.endPassIndex; ++passIndex) {
+      std::cout << " " << _passes[passIndex]->getName();
     }
     std::cout << std::endl;
-    if (preparedValue) {
-      printSemaphores(" waits:", submission.waits);
-      printSemaphores(" signals:", submission.signals);
+    if (synchronizationPrepared) {
+      printSemaphores(" waits:", frameSubmission.semaphoreWaits);
+      printSemaphores(" signals:", frameSubmission.semaphoreSignals);
     }
   }
 
-  for (const auto& pass : _passes) {
+  for (const auto& graphPass : _passes) {
     std::cout << "========================================" << std::endl;
-    std::cout << "Name: " << pass->getName()
-              << ", Stage: " << (pass->getGraphPassType() == GraphPassType::GRAPHIC ? "GRAPHIC" : "COMPUTE")
+    std::cout << "Name: " << graphPass->getName()
+              << ", Stage: " << (graphPass->getGraphPassType() == GraphPassType::GRAPHIC ? "GRAPHIC" : "COMPUTE")
               << std::endl;
-    std::cout << " queue: " << (pass->getQueueType() == QueueType::COMPUTE ? "COMPUTE" : "GENERAL") << std::endl;
-    for (const auto& resource : _resources.at(pass.get()).getResources()) {
-      const bool read = _hasReadAccess(resource.accessMask);
-      const bool write = _hasWriteAccess(resource.accessMask);
-      std::cout << " resource: " << resource.name << " ("
-                << (resource.type == Resource::Type::BUFFER ? "buffer" : "image") << ") "
-                << (read ? (write ? "READ|WRITE" : "READ") : "WRITE") << " stages=0x" << std::hex << resource.stageMask
-                << " access=0x" << resource.accessMask << std::dec;
-      if (resource.type == Resource::Type::BUFFER) {
-        printRange(" handles: ", _graphStorage->getBufferHandler(resource.name).getBuffers(),
+    std::cout << " queue: " << (graphPass->getQueueType() == QueueType::COMPUTE ? "COMPUTE" : "GENERAL") << std::endl;
+    for (const auto& declaredResource : _resourcesByPass.at(graphPass.get())) {
+      const bool resourceReads = _hasReadAccess(declaredResource.accessMask);
+      const bool resourceWrites = _hasWriteAccess(declaredResource.accessMask);
+      std::cout << " resource: " << declaredResource.name << " ("
+                << (declaredResource.type == Resource::Type::BUFFER ? "buffer" : "image") << ") "
+                << (resourceReads ? (resourceWrites ? "READ|WRITE" : "READ") : "WRITE") << " stages=0x" << std::hex
+                << declaredResource.stageMask << " access=0x" << declaredResource.accessMask << std::dec;
+      if (declaredResource.type == Resource::Type::BUFFER) {
+        printRange(" handles: ", _graphStorage->getBufferHandler(declaredResource.name).getBuffers(),
                    [](const auto* buffer) { return buffer->getBuffer(); });
       } else {
-        printRange(" handles: ", _graphStorage->getImageViewHolder(resource.name).getImageViews(),
+        printRange(" handles: ", _graphStorage->getImageViewHolder(declaredResource.name).getImageViews(),
                    [](const auto* view) { return view->getImage().getImage(); });
       }
     }
     std::cout << " barriers: ";
-    const auto barrier = _physicalBarriers.find(pass.get());
-    if (!preparedValue) {
+    const auto passBarriers = _barriersBeforePass.find(graphPass.get());
+    if (!synchronizationPrepared) {
       std::cout << "<resolved by render()>" << std::endl;
-    } else if (barrier != _physicalBarriers.end() &&
-               (!barrier->second.getBufferBarriers().empty() || !barrier->second.getImageBarriers().empty())) {
+    } else if (passBarriers != _barriersBeforePass.end() && (!passBarriers->second.getBufferBarriers().empty() ||
+                                                             !passBarriers->second.getImageBarriers().empty())) {
       std::cout << std::endl;
-      printBarrier(barrier->second);
+      printBarrier(passBarriers->second);
     } else {
       std::cout << "<none>" << std::endl;
     }
 
-    printRange(" command buffers: ", pass->getCommandBuffers(),
+    printRange(" command buffers: ", graphPass->getCommandBuffers(),
                [](const auto* commandBuffer) { return commandBuffer->getCommandBuffer(); });
   }
 
   std::cout << "========================================" << std::endl;
 }
 
-void Graph::calculate(std::span<const GpuTicket> tickets) {
+void Graph::addFrameWait(GpuTicket ticket) {
+  const std::scoped_lock lock(_pendingWaitsMutex);
+  _pendingWaits.push_back({.completion = ticket});
+}
+
+void Graph::addResourceWait(Buffer& buffer, GpuTicket ticket) {
+  const std::scoped_lock lock(_pendingWaitsMutex);
+  _pendingWaits.push_back({.accessMask = VK_ACCESS_2_MEMORY_WRITE_BIT, .completion = ticket, .buffer = &buffer});
+}
+
+void Graph::addResourceWait(Image& image, GpuTicket ticket) {
+  const std::scoped_lock lock(_pendingWaitsMutex);
+  _pendingWaits.push_back({.accessMask = VK_ACCESS_2_MEMORY_WRITE_BIT, .completion = ticket, .image = &image});
+}
+
+void Graph::_applyWait(Access externalWrite, std::vector<GpuTicket>& frameWaits) {
+  if (!externalWrite.buffer && !externalWrite.image) {
+    const auto ticket = externalWrite.completion;
+    const auto existingFrameWait = std::ranges::find(frameWaits, ticket.semaphore, &GpuTicket::semaphore);
+    if (existingFrameWait == frameWaits.end())
+      frameWaits.push_back(ticket);
+    else
+      existingFrameWait->value = std::max(existingFrameWait->value, ticket.value);
+    return;
+  }
+  auto& resource = externalWrite.buffer ? _bufferHistory[externalWrite.buffer->getBuffer()]
+                                        : _imageHistory[externalWrite.image->getImage()];
+  auto& history = resource.accesses;
+  // New uploads replace previous GPU accesses; registrations within one frame accumulate.
+  if (resource.uploadBatch != _uploadBatch) {
+    history.clear();
+    resource.uploadBatch = _uploadBatch;
+  }
+  auto existing = std::ranges::find(history, externalWrite.completion.semaphore,
+                                    [](const Access& access) { return access.completion.semaphore; });
+  if (existing == history.end())
+    history.push_back(externalWrite);
+  else
+    existing->completion.value = std::max(existing->completion.value, externalWrite.completion.value);
+}
+
+void Graph::calculate() {
   const auto cpuTrace = _tracer->traceCPU("Graph.calculate");
-  // Tickets from one producer share a timeline semaphore; its highest value covers all its earlier batches.
-  auto addTicket = [this](const GpuTicket& ticket) {
-    const auto pending = std::ranges::find(_pendingTickets, ticket.semaphore, &GpuTicket::semaphore);
-    if (pending == _pendingTickets.end()) {
-      _pendingTickets.push_back(ticket);
-    } else {
-      pending->value = std::max(pending->value, ticket.value);
+  // Rebuild graph dependencies while keeping external readiness in place.
+  auto clearGraphAccesses = [](auto& histories) {
+    for (auto& [handle, history] : histories) {
+      std::erase_if(history.accesses, [](const Access& access) { return access.queue != VK_NULL_HANDLE; });
     }
+    std::erase_if(histories, [](const auto& entry) { return entry.second.accesses.empty(); });
   };
-  for (const auto& ticket : tickets) addTicket(ticket);
-  // Recalculation clears history, but buffers/FIXED images can retain their contents.
-  // Wait for the last submitted frame once before using them with the rebuilt history.
-  if (_frameNumber) addTicket({_semaphoreInFlight->getSemaphore(), _frameNumber});
-  _resources.clear();
-  _queueFirstPasses.clear();
-  _physicalBarriers.clear();
-  _bufferHistory.clear();
-  _imageHistory.clear();
-  _submissions.clear();
+  clearGraphAccesses(_bufferHistory);
+  clearGraphAccesses(_imageHistory);
+  // Keep dependencies on previously submitted graph work.
+  for (const auto& frameCompletions : _frameSlotCompletions) {
+    for (const auto& completion : frameCompletions) addFrameWait(completion);
+  }
+  _resourcesByPass.clear();
+  _firstPassesPerQueue.clear();
+  _barriersBeforePass.clear();
+  _frameSubmissions.clear();
 
   if (_passes.empty()) {
     return;
   }
 
   // Prepare usage declarations only; each selected buffer/image is resolved later in render().
-  auto addResources = [this](GraphPass* pass, const auto& names, Resource::Type type, VkPipelineStageFlags2 stages,
-                             VkAccessFlags2 access) {
-    for (const auto& name : names) {
-      _resources[pass].add({.name = name, .type = type, .stageMask = stages, .accessMask = access});
+  auto addPassResources = [this](GraphPass* graphPass, const auto& resourceNames, Resource::Type resourceType,
+                                 VkPipelineStageFlags2 stageMask, VkAccessFlags2 accessMask) {
+    for (const auto& resourceName : resourceNames) {
+      auto& resources = _resourcesByPass[graphPass];
+      const auto existing = std::ranges::find(resources, resourceName, &Resource::name);
+      if (existing == resources.end()) {
+        resources.push_back(
+            {.name = resourceName, .type = resourceType, .stageMask = stageMask, .accessMask = accessMask});
+      } else {
+        if (existing->type != resourceType)
+          throw std::logic_error("Resource with the same name has a different type: " + resourceName);
+        existing->stageMask |= stageMask;
+        existing->accessMask |= accessMask;
+      }
     }
   };
 
-  for (auto&& pass : _passes) {
-    _resources.try_emplace(pass.get());
-    if (pass->getGraphPassType() == GraphPassType::COMPUTE) {
-      auto* compute = static_cast<GraphPassCompute*>(pass.get());
-      addResources(pass.get(), compute->getStorageBufferInputs(), Resource::Type::BUFFER,
-                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_READ_BIT);
-      addResources(pass.get(), compute->getIndirectBufferInputs(), Resource::Type::BUFFER,
-                   VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT, VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT);
-      addResources(pass.get(), compute->getStorageTextureInputs(), Resource::Type::IMAGE,
-                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_READ_BIT);
-      addResources(pass.get(), compute->getStorageBufferOutputs(), Resource::Type::BUFFER,
-                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_WRITE_BIT);
-      addResources(pass.get(), compute->getStorageTextureOutputs(), Resource::Type::IMAGE,
-                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_WRITE_BIT);
-    } else if (pass->getGraphPassType() == GraphPassType::GRAPHIC) {
-      auto* graphic = static_cast<GraphPassGraphic*>(pass.get());
-      addResources(pass.get(), graphic->getVertexBufferInputs(), Resource::Type::BUFFER,
-                   VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT, VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT);
-      addResources(pass.get(), graphic->getIndexBufferInputs(), Resource::Type::BUFFER,
-                   VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT, VK_ACCESS_2_INDEX_READ_BIT);
-      addResources(pass.get(), graphic->getStorageBufferInputs(), Resource::Type::BUFFER,
-                   VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT, VK_ACCESS_2_SHADER_READ_BIT);
-      addResources(pass.get(), graphic->getIndirectBufferInputs(), Resource::Type::BUFFER,
-                   VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT, VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT);
-      addResources(pass.get(), graphic->getTextureInputs(), Resource::Type::IMAGE, VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT,
-                   VK_ACCESS_2_SHADER_READ_BIT);
+  for (auto&& graphPass : _passes) {
+    _resourcesByPass.try_emplace(graphPass.get());
+    if (graphPass->getGraphPassType() == GraphPassType::COMPUTE) {
+      auto* computePass = static_cast<GraphPassCompute*>(graphPass.get());
+      addPassResources(graphPass.get(), computePass->getStorageBufferInputs(), Resource::Type::BUFFER,
+                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_READ_BIT);
+      addPassResources(graphPass.get(), computePass->getIndirectBufferInputs(), Resource::Type::BUFFER,
+                       VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT, VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT);
+      addPassResources(graphPass.get(), computePass->getStorageTextureInputs(), Resource::Type::IMAGE,
+                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_READ_BIT);
+      addPassResources(graphPass.get(), computePass->getStorageBufferOutputs(), Resource::Type::BUFFER,
+                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_WRITE_BIT);
+      addPassResources(graphPass.get(), computePass->getStorageTextureOutputs(), Resource::Type::IMAGE,
+                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_WRITE_BIT);
+    } else if (graphPass->getGraphPassType() == GraphPassType::GRAPHIC) {
+      auto* graphicsPass = static_cast<GraphPassGraphic*>(graphPass.get());
+      addPassResources(graphPass.get(), graphicsPass->getVertexBufferInputs(), Resource::Type::BUFFER,
+                       VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT, VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT);
+      addPassResources(graphPass.get(), graphicsPass->getIndexBufferInputs(), Resource::Type::BUFFER,
+                       VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT, VK_ACCESS_2_INDEX_READ_BIT);
+      addPassResources(graphPass.get(), graphicsPass->getStorageBufferInputs(), Resource::Type::BUFFER,
+                       VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT, VK_ACCESS_2_SHADER_READ_BIT);
+      addPassResources(graphPass.get(), graphicsPass->getIndirectBufferInputs(), Resource::Type::BUFFER,
+                       VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT, VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT);
+      addPassResources(graphPass.get(), graphicsPass->getTextureInputs(), Resource::Type::IMAGE,
+                       VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT, VK_ACCESS_2_SHADER_READ_BIT);
 
-      auto addTarget = [&](const auto& name, VkPipelineStageFlags2 stages, VkAccessFlags2 read, VkAccessFlags2 write) {
+      auto addAttachmentResource = [&](const auto& resourceName, VkPipelineStageFlags2 stageMask,
+                                       VkAccessFlags2 readAccessMask, VkAccessFlags2 attachmentAccessMask) {
         // KEEP loads the previous attachment contents, so the target is both read and written.
-        if (graphic->getTargetLoadAction(name) == RenderTargetLoadAction::KEEP) {
-          write |= read;
+        if (graphicsPass->getTargetLoadAction(resourceName) == RenderTargetLoadAction::KEEP) {
+          attachmentAccessMask |= readAccessMask;
         }
-        addResources(pass.get(), std::views::single(name), Resource::Type::IMAGE, stages, write);
+        addPassResources(graphPass.get(), std::views::single(resourceName), Resource::Type::IMAGE, stageMask,
+                         attachmentAccessMask);
       };
-      for (const auto& colorTarget : graphic->getColorTargets()) {
-        addTarget(colorTarget, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT,
-                  VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+      for (const auto& colorAttachmentName : graphicsPass->getColorTargets()) {
+        addAttachmentResource(colorAttachmentName, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                              VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
       }
-      if (const auto& depth = graphic->getDepthTarget()) {
-        addTarget(*depth, VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
-                  VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT, VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
+      if (const auto& depthAttachmentName = graphicsPass->getDepthTarget()) {
+        addAttachmentResource(
+            *depthAttachmentName,
+            VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+            VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT, VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
       }
     }
   }
@@ -677,363 +714,412 @@ void Graph::calculate(std::span<const GpuTicket> tickets) {
   // Debug labels enumerate all physical instances without evaluating their index callbacks.
   _setResourceNames();
 
-  // Group adjacent passes on the same real queue: G G C C G → [G G] [C C] [G].
-  std::unordered_set<VkQueue> collectionQueues;
-  for (std::size_t passIndex = 0; passIndex < _passes.size(); ++passIndex) {
-    auto* pass = _passes[passIndex].get();
-    const QueueType queueType = pass->getQueueType();
-    const auto queue = _device->getQueue(queueType);
-    // insert().second is true only on the first occurrence of this VkQueue.
-    if (collectionQueues.insert(queue).second) {
-      _queueFirstPasses.insert(pass);
+  // Keep one timeline and one profiling/frame-wait entry per physical queue.
+  // Timelines and counters survive recalculation.
+  std::unordered_set<VkQueue> uniqueQueues;
+  for (const auto& graphPass : _passes) {
+    const auto graphQueue = _device->getQueue(graphPass->getQueueType());
+    auto& pool = _barrierCommandPools[graphQueue];
+    if (!pool) pool = std::make_unique<CommandPool>(graphPass->getQueueType(), *_device);
+    auto& buffers = _barrierCommandBuffers[graphPass.get()];
+    buffers.resize(_maxFramesInFlight);
+    for (auto& commands : buffers) {
+      if (!commands) commands = std::make_unique<CommandBuffer>(*pool, *_device);
     }
-    if (_submissions.empty() || _submissions.back().queue != queue) {
-      _submissions.push_back({.queue = queue, .firstPass = passIndex});
-    }
-    _submissions.back().endPass = passIndex + 1;  // The end is excluded, so size() is a valid endPass.
-  }
-
-  // One timeline per unique queue, not per submission: G,C,G needs two semaphores.
-  // Same-queue resource dependencies use barriers; existing timelines/counters survive recalculation.
-  if (collectionQueues.size() > 1) {
-    for (const auto queue : collectionQueues) {
-      auto [timeline, added] = _queueTimelines.try_emplace(queue);
-      if (added) timeline->second.semaphore = std::make_unique<Semaphore>(VK_SEMAPHORE_TYPE_TIMELINE, *_device);
-    }
+    if (!uniqueQueues.insert(graphQueue).second) continue;
+    _firstPassesPerQueue.insert(graphPass.get());
+    auto& timeline = _queueTimelines[graphQueue];
+    if (!timeline.semaphore) timeline.semaphore = std::make_unique<Semaphore>(VK_SEMAPHORE_TYPE_TIMELINE, *_device);
   }
 }
 
 // Add a wait description for an existing semaphore; no semaphore is created here.
 // S=5 at COMPUTE + S=8 at VERTEX -> one wait for S=8 at COMPUTE|VERTEX.
 // These stages belong to the waiting submission, not the signaling queue.
-void Graph::_addWait(std::vector<VkSemaphoreSubmitInfo>& waits,
-                     VkSemaphore semaphore,
-                     uint64_t value,
-                     VkPipelineStageFlags2 stages) {
-  auto wait = std::ranges::find(waits, semaphore, &VkSemaphoreSubmitInfo::semaphore);
-  if (wait != waits.end()) {
-    wait->value = std::max(wait->value, value);
-    wait->stageMask |= stages;
+void Graph::_addSemaphoreWait(std::vector<VkSemaphoreSubmitInfo>& semaphoreWaits,
+                              VkSemaphore waitSemaphore,
+                              uint64_t requiredValue,
+                              VkPipelineStageFlags2 waitStages) {
+  auto existingWait = std::ranges::find(semaphoreWaits, waitSemaphore, &VkSemaphoreSubmitInfo::semaphore);
+  if (existingWait != semaphoreWaits.end()) {
+    existingWait->value = std::max(existingWait->value, requiredValue);
+    existingWait->stageMask |= waitStages;
   } else {
-    waits.push_back({.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
-                     .semaphore = semaphore,
-                     .value = value,
-                     .stageMask = stages});
+    semaphoreWaits.push_back({.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+                              .semaphore = waitSemaphore,
+                              .value = requiredValue,
+                              .stageMask = waitStages});
   }
 }
 
-void Graph::_preparePhysicalAccesses() {
-  // Scratch list cleared per pass; one entry per selected VkBuffer/VkImage.
-  std::vector<Access> resolvedAccesses;
-  // True only if a declared pass uses the image returned by this frame's acquire.
-  bool acquiredImageUsed = false;
-  // Rebuild this frame's wait/signal descriptions; the semaphore objects already exist.
-  for (auto& submission : _submissions) {
-    submission.waits.clear();
-    submission.signals.clear();
-    // Upload example: uploader signals S=5; the first submission on each queue waits for S=5.
-    // Tickets carry no resource list; ALL_COMMANDS also covers later submissions on this queue.
-    if (_queueFirstPasses.contains(_passes[submission.firstPass].get())) {
-      for (const auto& ticket : _pendingTickets) {
-        _addWait(submission.waits, ticket.semaphore, ticket.value, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
-      }
-    }
-    // Reserve a value on the CPU; the GPU reaches it when this submission finishes.
-    // G,C,G reuse the queue semaphores with values G=1,C=1,G=2, rather than a common frame number.
-    // push_back adds a signal description to this submission, not a new submission.
-    if (const auto timeline = _queueTimelines.find(submission.queue); timeline != _queueTimelines.end()) {
-      submission.value = ++timeline->second.value;
-      submission.signals.push_back({.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
-                                    .semaphore = timeline->second.semaphore->getSemaphore(),
-                                    .value = submission.value,
-                                    // Include copies and indirect work, not just shader stages.
-                                    .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT});
-    }
+bool Graph::_waitCoversCurrentStages(VkPipelineStageFlags2 waitStages,
+                                     VkPipelineStageFlags2 currentStages) const noexcept {
+  // ALL_GRAPHICS is a separate bit; expand it before comparing wait and current access stages.
+  if (waitStages & VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT) {
+    waitStages |= VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT | VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT |
+                  VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT |
+                  VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
   }
-  const VkImage acquiredImage = _swapchain ? _swapchain->getImage(_swapchain->getSwapchainIndex()).getImage()
-                                           : VK_NULL_HANDLE;
-  for (auto& submission : _submissions) {
-    const auto queue = submission.queue;
-    const auto value = submission.value;
-    for (auto index = submission.firstPass; index < submission.endPass; ++index) {
-      auto* pass = _passes[index].get();
-      auto& barrier = _physicalBarriers[pass];
-      barrier.clear();
-      resolvedAccesses.clear();
-      resolvedAccesses.reserve(_resources.at(pass).getResources().size());
-      // Input=READ A and Output=WRITE A become one READ|WRITE access to A in this pass.
-      // Merge these destination masks before checking earlier accesses in history.
-      for (const auto& resource : _resources.at(pass).getResources()) {
-        Access current{.queue = queue,
-                       .stageMask = resource.stageMask,
-                       .accessMask = resource.accessMask,
-                       .value = value};
-        if (resource.type == Resource::Type::BUFFER) {
-          current.buffer = &_graphStorage->getBufferHandler(resource.name).getBuffer();
-        } else {
-          current.image = &_graphStorage->getImageViewHolder(resource.name).getImageView().getImage();
-        }
-        auto existing = std::ranges::find_if(resolvedAccesses, [&](const Access& other) {
-          return current.buffer ? other.buffer && other.buffer->getBuffer() == current.buffer->getBuffer()
-                                : other.image && other.image->getImage() == current.image->getImage();
-        });
-        if (existing == resolvedAccesses.end()) {
-          resolvedAccesses.push_back(current);
-        } else {
-          existing->stageMask |= current.stageMask;
-          existing->accessMask |= current.accessMask;
-        }
-      }
+  return (waitStages & VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT) || (waitStages & currentStages) == currentStages;
+}
 
-      for (const auto& passAccess : resolvedAccesses) {
-        auto access = passAccess;
-        // A handle keeps its history across names and render() calls, including previous-frame uses.
-        auto& history = access.buffer ? _bufferHistory[access.buffer->getBuffer()]
-                                      : _imageHistory[access.image->getImage()];
-        // Acquire signals readiness, not layout; wait in the first submission that actually uses the image.
-        if (access.image && access.image->getImage() == acquiredImage && !acquiredImageUsed) {
-          acquiredImageUsed = true;
-          _addWait(submission.waits, _semaphoreImageAvailable[getFrameInFlight()]->getSemaphore(), 0,
-                   VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
+void Graph::_preparePhysicalAccesses(std::span<std::future<void>> passRecordingTasks) {
+  _frameSubmissions.clear();
+  std::vector<Access> pendingWaits;
+  std::vector<GpuTicket> frameWaits;
+  // Physical accesses of the current pass, with aliases merged.
+  std::vector<Access> currentPassAccesses;
+  // External waits still needed by this pass; may require a new submission.
+  std::vector<VkSemaphoreSubmitInfo> currentPassExternalWaits;
+  // Add the acquire semaphore wait at the first use of the current swapchain image.
+  bool swapchainImageUsed = false;
+  const VkImage swapchainImage = _swapchain ? _swapchain->getImage(_swapchain->getSwapchainIndex()).getImage()
+                                            : VK_NULL_HANDLE;
+  for (std::size_t currentPassIndex = 0; currentPassIndex < _passes.size(); ++currentPassIndex) {
+    if (!passRecordingTasks.empty()) passRecordingTasks[currentPassIndex].get();
+    {
+      const std::scoped_lock lock(_pendingWaitsMutex);
+      pendingWaits = _pendingWaits;
+      _pendingWaits.clear();
+    }
+    for (const auto& wait : pendingWaits) _applyWait(wait, frameWaits);
+    auto* currentPass = _passes[currentPassIndex].get();
+    const auto currentQueue = _device->getQueue(currentPass->getQueueType());
+    auto& currentPassBarriers = _barriersBeforePass[currentPass];
+    currentPassBarriers.clear();
+    currentPassAccesses.clear();
+    currentPassAccesses.reserve(_resourcesByPass.at(currentPass).size());
+    // Input=READ A and Output=WRITE A become one READ|WRITE access to A in this pass.
+    for (const auto& declaredResource : _resourcesByPass.at(currentPass)) {
+      Access currentAccess{.queue = currentQueue,
+                           .stageMask = declaredResource.stageMask,
+                           .accessMask = declaredResource.accessMask};
+      if (declaredResource.type == Resource::Type::BUFFER) {
+        currentAccess.buffer = &_graphStorage->getBufferHandler(declaredResource.name).getBuffer();
+      } else {
+        currentAccess.image = &_graphStorage->getImageViewHolder(declaredResource.name).getImageView().getImage();
+      }
+      auto existingPassAccess = std::ranges::find_if(currentPassAccesses, [&](const Access& passAccess) {
+        return currentAccess.buffer
+                   ? passAccess.buffer && passAccess.buffer->getBuffer() == currentAccess.buffer->getBuffer()
+                   : passAccess.image && passAccess.image->getImage() == currentAccess.image->getImage();
+      });
+      if (existingPassAccess == currentPassAccesses.end())
+        currentPassAccesses.push_back(currentAccess);
+      else {
+        existingPassAccess->stageMask |= currentAccess.stageMask;
+        existingPassAccess->accessMask |= currentAccess.accessMask;
+      }
+    }
+
+    currentPassExternalWaits.clear();
+    for (const auto& access : currentPassAccesses) {
+      const auto& history = access.buffer ? _bufferHistory[access.buffer->getBuffer()].accesses
+                                          : _imageHistory[access.image->getImage()].accesses;
+      if (history.empty() || history.front().queue != VK_NULL_HANDLE) continue;
+
+      const auto stages = access.image && access.image->getImageLayout() != VK_IMAGE_LAYOUT_GENERAL
+                              ? VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT
+                              : access.stageMask;
+      // A previous reader on this queue already waited for the external writers at its stages.
+      VkPipelineStageFlags2 readerStages = 0;
+      for (const auto& previous : history) {
+        if (previous.queue == access.queue && !_hasWriteAccess(previous.accessMask)) readerStages |= previous.stageMask;
+      }
+      if (_waitCoversCurrentStages(readerStages, stages)) continue;
+
+      for (const auto& previous : history) {
+        if (previous.queue != VK_NULL_HANDLE) continue;
+        const auto ticket = previous.completion;
+        // A frame wait or a wait already scheduled on this queue may cover another resource from the same upload.
+        VkPipelineStageFlags2 scheduledStages = 0;
+        for (const auto& frameWait : frameWaits) {
+          if (frameWait.semaphore == ticket.semaphore && frameWait.value >= ticket.value)
+            scheduledStages = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
         }
-        const bool transition = access.image && access.image->getImageLayout() != VK_IMAGE_LAYOUT_GENERAL;
-        // A layout change may write image memory even when the pass only reads.
-        // Use broad masks for that change; passAccess still holds the pass's original masks.
-        if (transition) {
-          access.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-          access.accessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
-        }
-        const bool writes = _hasWriteAccess(access.accessMask);
-        VkPipelineStageFlags2 sourceStages = 0;
-        VkAccessFlags2 sourceAccess = 0;
-        // Source masks describe earlier uses; destination masks describe this pass, including any transition.
-        // READ depends on the writer; WRITE depends on the writer and every reader.
-        // Same queue: merge sources for a barrier. Other queue: wait for its stored timeline value.
-        for (const auto& prior : history) {
-          if (!_hasWriteAccess(prior.accessMask) && !writes) continue;
-          if (prior.queue == queue) {
-            sourceStages |= prior.stageMask;
-            sourceAccess |= prior.accessMask;
-          } else {
-            _addWait(submission.waits, _queueTimelines.at(prior.queue).semaphore->getSemaphore(), prior.value,
-                     access.stageMask);
+        for (const auto& submission : _frameSubmissions) {
+          if (_waitCoversCurrentStages(scheduledStages, stages)) break;
+          if (submission.queue != access.queue) continue;
+          for (const auto& wait : submission.semaphoreWaits) {
+            if (wait.semaphore == ticket.semaphore && wait.value >= ticket.value) scheduledStages |= wait.stageMask;
           }
         }
-        if (access.buffer && sourceStages) {
-          barrier.addBuffer(access.buffer, sourceStages, sourceAccess, access.stageMask, access.accessMask);
-        } else if (access.image && (sourceStages || transition)) {
-          auto& image = *access.image;
-          barrier.addImage(image.getImage(), sourceStages ? sourceStages : VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-                           sourceAccess, access.stageMask, access.accessMask, image.getImageLayout(),
-                           VK_IMAGE_LAYOUT_GENERAL,
-                           {image.getAspectMask(), 0, static_cast<uint32_t>(image.getMipMapNumber()), 0,
-                            static_cast<uint32_t>(image.getLayerNumber())});
-          // Track the planned layout on the CPU; the GPU transition is recorded later.
-          image.setImageLayout(VK_IMAGE_LAYOUT_GENERAL);
-        }
-        // WRITE replaces history with one access; old dependencies are already in its barriers/waits.
-        // READ keeps the writer (W->R->R still needs it) and merges its queue's reader.
-        if (writes) {
-          // Keep a real WRITE's narrow masks for the next barrier, e.g. COMPUTE_SHADER/SHADER_WRITE.
-          // READ+transition keeps the combined access so later readers also wait for the transition.
-          history.assign(1, _hasWriteAccess(passAccess.accessMask) ? passAccess : access);
+        if (!_waitCoversCurrentStages(scheduledStages, stages))
+          _addSemaphoreWait(currentPassExternalWaits, ticket.semaphore, ticket.value, stages);
+      }
+    }
+
+    // Background -> Particles becomes [Background] [wait upload -> Particles].
+    // Keep grouping when previous waits already cover the resource, value and destination stages.
+    auto& currentQueueTimeline = _queueTimelines.at(currentQueue);
+    if (_frameSubmissions.empty() || _frameSubmissions.back().queue != currentQueue ||
+        !currentPassExternalWaits.empty()) {
+      _frameSubmissions.push_back({.queue = currentQueue, .firstPassIndex = currentPassIndex});
+      auto& currentSubmission = _frameSubmissions.back();
+      // Assign completion values after splitting: two G submissions signal G=1 and G=2.
+      currentSubmission.semaphoreSignals.push_back({.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+                                                    .semaphore = currentQueueTimeline.semaphore->getSemaphore(),
+                                                    .value = ++currentQueueTimeline.lastSignalValue,
+                                                    .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT});
+      for (const auto& externalWait : currentPassExternalWaits) {
+        _addSemaphoreWait(currentSubmission.semaphoreWaits, externalWait.semaphore, externalWait.value,
+                          externalWait.stageMask);
+      }
+    }
+    auto& currentSubmission = _frameSubmissions.back();
+    currentSubmission.endPassIndex = currentPassIndex + 1;
+
+    const GpuTicket currentSubmissionCompletion{currentQueueTimeline.semaphore->getSemaphore(),
+                                                currentQueueTimeline.lastSignalValue};
+    for (auto currentPassAccess : currentPassAccesses) {
+      currentPassAccess.completion = currentSubmissionCompletion;
+      // Acquire signals readiness, not layout; wait before the first use of the swapchain image.
+      if (currentPassAccess.image && currentPassAccess.image->getImage() == swapchainImage && !swapchainImageUsed) {
+        swapchainImageUsed = true;
+        _addSemaphoreWait(currentSubmission.semaphoreWaits,
+                          _swapchainImageAvailableSemaphores[getFrameInFlight()]->getSemaphore(), 0,
+                          VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
+      }
+      auto access = currentPassAccess;
+      auto& history = access.buffer ? _bufferHistory[access.buffer->getBuffer()].accesses
+                                    : _imageHistory[access.image->getImage()].accesses;
+      const bool transition = access.image && access.image->getImageLayout() != VK_IMAGE_LAYOUT_GENERAL;
+      // A layout transition may write memory even for a read-only pass.
+      if (transition) {
+        access.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+        access.accessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+      }
+      const bool writes = _hasWriteAccess(access.accessMask);
+      VkPipelineStageFlags2 sourceStages = 0;
+      VkAccessFlags2 sourceAccess = 0;
+      // External writers are covered by tickets. Graph accesses need a barrier or a queue wait.
+      for (const auto& previous : history) {
+        if (previous.queue == VK_NULL_HANDLE || (!_hasWriteAccess(previous.accessMask) && !writes)) continue;
+        if (previous.queue == access.queue) {
+          sourceStages |= previous.stageMask;
+          sourceAccess |= previous.accessMask;
         } else {
-          auto reader = std::ranges::find_if(
-              history, [&](const Access& prior) { return !_hasWriteAccess(prior.accessMask) && prior.queue == queue; });
-          if (reader == history.end()) {
-            history.push_back(access);
-          } else {
-            reader->stageMask |= access.stageMask;
-            reader->accessMask |= access.accessMask;
-            reader->value = std::max(reader->value, value);
-          }
+          _addSemaphoreWait(currentSubmission.semaphoreWaits, previous.completion.semaphore, previous.completion.value,
+                            access.stageMask);
         }
+      }
+      if (access.buffer && sourceStages) {
+        currentPassBarriers.addBuffer(access.buffer, sourceStages, sourceAccess, access.stageMask, access.accessMask);
+      } else if (access.image && (sourceStages || transition)) {
+        auto& image = *access.image;
+        currentPassBarriers.addImage(
+            image.getImage(), sourceStages ? sourceStages : VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, sourceAccess,
+            access.stageMask, access.accessMask, image.getImageLayout(), VK_IMAGE_LAYOUT_GENERAL,
+            {image.getAspectMask(), 0, static_cast<uint32_t>(image.getMipMapNumber()), 0,
+             static_cast<uint32_t>(image.getLayerNumber())});
+        image.setImageLayout(VK_IMAGE_LAYOUT_GENERAL);
+      }
+      // WRITE replaces history. A real write retains precise masks; a transition retains broad masks.
+      if (writes) {
+        history.assign(1, _hasWriteAccess(currentPassAccess.accessMask) ? currentPassAccess : access);
+        continue;
+      }
+      // READ keeps the writer and merges this queue's readers.
+      auto reader = std::ranges::find_if(history, [&](const Access& previous) {
+        return !_hasWriteAccess(previous.accessMask) && previous.queue == access.queue;
+      });
+      if (reader == history.end()) {
+        history.push_back(access);
+      } else {
+        reader->stageMask |= access.stageMask;
+        reader->accessMask |= access.accessMask;
+        reader->completion.value = std::max(reader->completion.value, access.completion.value);
       }
     }
   }
-
+  ++_uploadBatch;
+  // Later updates may register frame waits after a queue's first submission has been planned.
+  for (auto& submission : _frameSubmissions) {
+    if (!_firstPassesPerQueue.contains(_passes[submission.firstPassIndex].get())) continue;
+    for (const auto& frameWait : frameWaits) {
+      _addSemaphoreWait(submission.semaphoreWaits, frameWait.semaphore, frameWait.value,
+                        VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
+    }
+  }
+  if (!_swapchain) return;
   // Prepare swapchain acquire waits and presentation/completion signals.
-  auto& last = _submissions.back();
-  if (_swapchain) {
-    if (!acquiredImageUsed) {
-      // No declared pass used the acquired image, so the resource loop did not prepare it.
-      // render() still records GENERAL -> PRESENT; prepare GENERAL and consume acquire here.
-      auto& image = _swapchain->getImage(_swapchain->getSwapchainIndex());
-      _physicalBarriers.at(_passes.back().get())
-          .addImage(image.getImage(), VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-                    VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT, image.getImageLayout(),
-                    VK_IMAGE_LAYOUT_GENERAL,
-                    {image.getAspectMask(), 0, static_cast<uint32_t>(image.getMipMapNumber()), 0,
-                     static_cast<uint32_t>(image.getLayerNumber())});
-      image.setImageLayout(VK_IMAGE_LAYOUT_GENERAL);
-      _addWait(last.waits, _semaphoreImageAvailable[getFrameInFlight()]->getSemaphore(), 0,
-               VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
-    }
-    // Present waits for this binary semaphore, which is separate from the acquire semaphore.
-    last.signals.push_back({.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
-                            .semaphore = _semaphoreRenderFinished[_swapchain->getSwapchainIndex()]->getSemaphore(),
-                            .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT});
-  }
-  // Frame-slot reuse must wait for every graph queue, including independent passes.
-  // If G is last, it waits for C; if C is last, it waits for G. Its own queue is covered by its signal.
-  // This waits before all commands in the last submission, so it may reduce overlap.
-  for (const auto& [queue, timeline] : _queueTimelines) {
-    if (queue != last.queue) {
-      _addWait(last.waits, timeline.semaphore->getSemaphore(), timeline.value, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
+  auto& lastSubmission = _frameSubmissions.back();
+  // GENERAL -> PRESENT runs in the last command buffer and must follow every use of this image.
+  // Wait only for its users on other queues, not for unrelated work submitted after them.
+  if (const auto swapchainHistoryEntry = _imageHistory.find(swapchainImage);
+      swapchainHistoryEntry != _imageHistory.end()) {
+    for (const auto& previousAccess : swapchainHistoryEntry->second.accesses) {
+      if (previousAccess.queue != lastSubmission.queue) {
+        _addSemaphoreWait(lastSubmission.semaphoreWaits, previousAccess.completion.semaphore,
+                          previousAccess.completion.value, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
+      }
     }
   }
-  // This separate timeline tells the CPU that all graph queues finished this frame.
-  // Frame 0 signals 1; with two slots, CPU waits for 1 before starting frame 2.
-  last.signals.push_back({.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
-                          .semaphore = _semaphoreInFlight->getSemaphore(),
-                          .value = _frameNumber + 1,
-                          .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT});
+  if (!swapchainImageUsed) {
+    // No declared pass used the swapchain image, so the resource loop did not prepare it.
+    // render() still records GENERAL -> PRESENT; prepare GENERAL and consume acquire here.
+    auto& unusedSwapchainImage = _swapchain->getImage(_swapchain->getSwapchainIndex());
+    _barriersBeforePass.at(_passes.back().get())
+        .addImage(
+            unusedSwapchainImage.getImage(), VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0,
+            VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+            unusedSwapchainImage.getImageLayout(), VK_IMAGE_LAYOUT_GENERAL,
+            {unusedSwapchainImage.getAspectMask(), 0, static_cast<uint32_t>(unusedSwapchainImage.getMipMapNumber()), 0,
+             static_cast<uint32_t>(unusedSwapchainImage.getLayerNumber())});
+    unusedSwapchainImage.setImageLayout(VK_IMAGE_LAYOUT_GENERAL);
+    _addSemaphoreWait(lastSubmission.semaphoreWaits,
+                      _swapchainImageAvailableSemaphores[getFrameInFlight()]->getSemaphore(), 0,
+                      VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
+  }
+  // Present waits for this binary semaphore, which is separate from the acquire semaphore.
+  lastSubmission.semaphoreSignals.push_back(
+      {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+       .semaphore = _swapchainRenderFinishedSemaphores[_swapchain->getSwapchainIndex()]->getSemaphore(),
+       .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT});
 }
 
 bool Graph::render() {
-  if (_submissions.empty()) {
-    return false;
-  }
+  if (_resourcesByPass.empty()) return false;
 
   _tracer->markFrame();
   const auto cpuTrace = _tracer->traceCPU("Graph.render");
-  // timeline semaphore instead of fence
+  const int frameSlot = getFrameInFlight();
   if (_frameNumber >= _maxFramesInFlight) {
+    // Wait for every queue that used this slot, without joining independent GPU queues.
     const auto waitCpuTrace = _tracer->traceCPU("Graph.waitForFrame");
-    uint64_t waitValue = _frameNumber - _maxFramesInFlight + 1;
-    auto semaphoreInFlight = _semaphoreInFlight->getSemaphore();
-
-    VkSemaphoreWaitInfo waitInfo{
+    std::vector<VkSemaphore> semaphores;
+    std::vector<uint64_t> values;
+    for (const auto& completion : _frameSlotCompletions[frameSlot]) {
+      semaphores.push_back(completion.semaphore);
+      values.push_back(completion.value);
+    }
+    const VkSemaphoreWaitInfo waitInfo{
         .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
-        .flags = 0,
-        .semaphoreCount = 1,
-        .pSemaphores = &semaphoreInFlight,
-        .pValues = &waitValue,
+        .semaphoreCount = static_cast<uint32_t>(semaphores.size()),
+        .pSemaphores = semaphores.data(),
+        .pValues = values.data(),
     };
-    auto result = vkWaitSemaphores(_device->getLogicalDevice(), &waitInfo, std::numeric_limits<std::uint64_t>::max());
-    if (result != VK_SUCCESS) {
-      throw std::runtime_error("vkWaitSemaphores failed: " + std::to_string(result));
-    }
+    const auto result = vkWaitSemaphores(_device->getLogicalDevice(), &waitInfo, UINT64_MAX);
+    if (result != VK_SUCCESS) throw std::runtime_error("vkWaitSemaphores failed: " + std::to_string(result));
   }
 
-  uint32_t swapchainIndex = 0;
-  if (_swapchain != nullptr) {
-    auto status = _swapchain->acquireNextImage(*_semaphoreImageAvailable[getFrameInFlight()]);
-    if (status == VK_ERROR_OUT_OF_DATE_KHR) {
-      return true;
-    }
-    if (status != VK_SUCCESS && status != VK_SUBOPTIMAL_KHR) {
+  if (_swapchain) {
+    const auto result = _swapchain->acquireNextImage(*_swapchainImageAvailableSemaphores[frameSlot]);
+    if (result == VK_ERROR_OUT_OF_DATE_KHR) return true;
+    if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
       throw std::runtime_error("failed to acquire swap chain image");
-    }
-    swapchainIndex = _swapchain->getSwapchainIndex();
   }
 
-  // Prepare this frame's accesses and dependencies before launching parallel recording.
-  // This call builds CPU descriptions; it neither waits on the GPU nor submits commands.
-  const int frame = getFrameInFlight();
-  _preparePhysicalAccesses();
-
-  std::vector<std::future<void>> futureTasks =
-      _passes | std::views::transform([this, frame](const auto& ownedPass) {
-        auto* pass = ownedPass.get();
-        auto* commandBuffer = &pass->getCommandBuffer(frame);
-        if (!commandBuffer->getActive()) commandBuffer->beginCommands();
-        const QueueType queueType = pass->getQueueType();
-        if (_queueFirstPasses.contains(pass)) _tracer->collect(queueType, *commandBuffer);
-        return _threadPool->submit([this, pass, commandBuffer, queueType, frame]() {
-          const auto passCpuTrace = _tracer->traceCPU("Graph.pass." + pass->getName());
-          const auto passGpuTrace = _tracer->traceGPU("Graph.pass." + pass->getName(), queueType, *commandBuffer);
-          // Record resource barriers before this pass; semaphore waits belong to its submission.
-          _physicalBarriers.at(pass).execute(commandBuffer->getCommandBuffer());
-          pass->execute(frame, *commandBuffer);
-        });
-      }) |
-      std::ranges::to<std::vector<std::future<void>>>();
-  // Finish recording before submission. If get() throws, the remaining thread-pool jobs still run.
-  // Wait for valid (not yet consumed) futures before rethrowing, so these jobs cannot outlive render().
+  // Record independent passes in parallel; plan each pass once its recording finishes.
+  std::vector<std::future<void>> passRecordingTasks;
+  passRecordingTasks.reserve(_passes.size());
   try {
-    for (auto& task : futureTasks) task.get();
+    for (const auto& graphPass : _passes) {
+      auto* currentPass = graphPass.get();
+      auto* passCommandBuffer = &currentPass->getCommandBuffer(frameSlot);
+      if (!passCommandBuffer->getActive()) passCommandBuffer->beginCommands();
+      const QueueType passQueueType = currentPass->getQueueType();
+      if (_firstPassesPerQueue.contains(currentPass)) _tracer->collect(passQueueType, *passCommandBuffer);
+      passRecordingTasks.push_back(
+          _threadPool->submit([this, currentPass, passCommandBuffer, passQueueType, frameSlot]() {
+            const auto passCpuTrace = _tracer->traceCPU("Graph.pass." + currentPass->getName());
+            const auto passGpuTrace = _tracer->traceGPU("Graph.pass." + currentPass->getName(), passQueueType,
+                                                        *passCommandBuffer);
+            currentPass->execute(frameSlot, *passCommandBuffer);
+          }));
+    }
+    _preparePhysicalAccesses(passRecordingTasks);
   } catch (...) {
-    for (auto& task : futureTasks) {
-      if (task.valid()) task.wait();
+    // Also cover failures while scheduling tasks; no recording task may outlive render().
+    for (auto& recordingTask : passRecordingTasks) {
+      if (recordingTask.valid()) recordingTask.wait();
     }
     throw;
   }
 
-  if (_swapchain != nullptr) {
-    auto* commandBuffer = &_passes.back()->getCommandBuffer(frame);
-    const auto transitionGpuTrace = _tracer->traceGPU("Graph.transition.present", _passes.back()->getQueueType(),
-                                                      *commandBuffer);
-    auto& image = _swapchain->getImage(swapchainIndex);
-    // All pass accesses use GENERAL; record the final GENERAL -> PRESENT barrier in the last command buffer.
-    Barrier present;
-    present.addImage(image.getImage(), VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT,
-                     VK_PIPELINE_STAGE_2_NONE, 0, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-                     {image.getAspectMask(), 0, static_cast<uint32_t>(image.getMipMapNumber()), 0,
-                      static_cast<uint32_t>(image.getLayerNumber())});
-    present.execute(commandBuffer->getCommandBuffer());
+  if (_swapchain) {
+    auto& commands = _passes.back()->getCommandBuffer(frameSlot);
+    const auto transitionTrace = _tracer->traceGPU("Graph.transition.present", _passes.back()->getQueueType(),
+                                                   commands);
+    auto& image = _swapchain->getImage(_swapchain->getSwapchainIndex());
+    Barrier presentBarrier;
+    presentBarrier.addImage(image.getImage(), VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT,
+                            VK_PIPELINE_STAGE_2_NONE, 0, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                            {image.getAspectMask(), 0, static_cast<uint32_t>(image.getMipMapNumber()), 0,
+                             static_cast<uint32_t>(image.getLayerNumber())});
+    presentBarrier.execute(commands.getCommandBuffer());
     image.setImageLayout(VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
-    // Presentation preparation becomes the image's last write for its next acquired use.
+    // The final transition becomes the last write, so the next acquire follows it.
     if (auto history = _imageHistory.find(image.getImage()); history != _imageHistory.end()) {
-      history->second.assign(1, {.queue = _submissions.back().queue,
-                                 .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-                                 .accessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
-                                 .value = _submissions.back().value,
-                                 .image = &image});
+      const auto queue = _frameSubmissions.back().queue;
+      const auto& timeline = _queueTimelines.at(queue);
+      history->second.accesses.assign(1, {.queue = queue,
+                                          .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                                          .accessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
+                                          .completion = {timeline.semaphore->getSemaphore(), timeline.lastSignalValue},
+                                          .image = &image});
     }
   }
 
-  std::vector<VkCommandBufferSubmitInfo> commands;
-  for (auto& submission : _submissions) {
-    commands.clear();
-    commands.reserve(submission.endPass - submission.firstPass);
-    for (auto index = submission.firstPass; index < submission.endPass; ++index) {
-      auto& commandBuffer = _passes[index]->getCommandBuffer(frame);
-      commandBuffer.endCommands();
-      commands.push_back(
-          {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = commandBuffer.getCommandBuffer()});
+  std::vector<VkCommandBufferSubmitInfo> submissionCommandBuffers;
+  for (auto& currentSubmission : _frameSubmissions) {
+    submissionCommandBuffers.clear();
+    submissionCommandBuffers.reserve(2 * (currentSubmission.endPassIndex - currentSubmission.firstPassIndex));
+    for (auto passIndex = currentSubmission.firstPassIndex; passIndex < currentSubmission.endPassIndex; ++passIndex) {
+      auto& pass = *_passes[passIndex];
+      const auto& barriers = _barriersBeforePass.at(&pass);
+      if (!barriers.getBufferBarriers().empty() || !barriers.getImageBarriers().empty()) {
+        auto& commands = _barrierCommandBuffers.at(&pass).at(frameSlot);
+        commands->beginCommands();
+        barriers.execute(commands->getCommandBuffer());
+        commands->endCommands();
+        // Execute graph barriers before commands recorded by both update() and draw().
+        submissionCommandBuffers.push_back(
+            {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = commands->getCommandBuffer()});
+      }
+      auto& passCommandBuffer = _passes[passIndex]->getCommandBuffer(frameSlot);
+      passCommandBuffer.endCommands();
+      submissionCommandBuffers.push_back({.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+                                          .commandBuffer = passCommandBuffer.getCommandBuffer()});
     }
     // Waits/signals apply to this submission regardless of when their descriptions were appended above.
-    const VkSubmitInfo2 submitInfo{
+    const VkSubmitInfo2 submissionInfo{
         .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
-        .waitSemaphoreInfoCount = static_cast<uint32_t>(submission.waits.size()),
-        .pWaitSemaphoreInfos = submission.waits.data(),
-        .commandBufferInfoCount = static_cast<uint32_t>(commands.size()),
-        .pCommandBufferInfos = commands.data(),
-        .signalSemaphoreInfoCount = static_cast<uint32_t>(submission.signals.size()),
-        .pSignalSemaphoreInfos = submission.signals.data(),
+        .waitSemaphoreInfoCount = static_cast<uint32_t>(currentSubmission.semaphoreWaits.size()),
+        .pWaitSemaphoreInfos = currentSubmission.semaphoreWaits.data(),
+        .commandBufferInfoCount = static_cast<uint32_t>(submissionCommandBuffers.size()),
+        .pCommandBufferInfos = submissionCommandBuffers.data(),
+        .signalSemaphoreInfoCount = static_cast<uint32_t>(currentSubmission.semaphoreSignals.size()),
+        .pSignalSemaphoreInfos = currentSubmission.semaphoreSignals.data(),
     };
-    const auto result = vkQueueSubmit2(submission.queue, 1, &submitInfo, nullptr);
-    if (result != VK_SUCCESS) throw std::runtime_error("vkQueueSubmit2 failed: " + std::to_string(result));
+    const auto submissionResult = vkQueueSubmit2(currentSubmission.queue, 1, &submissionInfo, VK_NULL_HANDLE);
+    if (submissionResult != VK_SUCCESS)
+      throw std::runtime_error("vkQueueSubmit2 failed: " + std::to_string(submissionResult));
   }
-  // Consume external readiness points once; ordinary following frames use the retained access history.
-  _pendingTickets.clear();
-
+  // Save actual submitted completion points; later submissions may advance these queue timelines again.
+  auto& frameSlotCompletions = _frameSlotCompletions[frameSlot];
+  frameSlotCompletions.clear();
+  for (const auto& [graphQueue, queueTimeline] : _queueTimelines) {
+    frameSlotCompletions.push_back({queueTimeline.semaphore->getSemaphore(), queueTimeline.lastSignalValue});
+  }
   ++_frameNumber;
+  if (!_swapchain) return false;
 
-  if (_swapchain != nullptr) {
-    auto semaphoreRenderFinished = _semaphoreRenderFinished[swapchainIndex]->getSemaphore();
-    VkSwapchainKHR swapChains[]{
-        _swapchain->getSwapchain(),
-    };
-    VkPresentInfoKHR presentInfo{
-        .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
-        .waitSemaphoreCount = 1,
-        .pWaitSemaphores = &semaphoreRenderFinished,
-        .swapchainCount = 1,
-        .pSwapchains = swapChains,
-        .pImageIndices = &swapchainIndex,
-    };
-    auto result = vkQueuePresentKHR(_device->getQueue(QueueType::GENERAL), &presentInfo);
-
-    if (result == VK_ERROR_OUT_OF_DATE_KHR) {
-      return true;
-    }
-    if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
-      throw std::runtime_error("failed to present swap chain image: " + std::to_string(result));
-    }
-  }
-
+  const auto imageIndex = _swapchain->getSwapchainIndex();
+  const auto finished = _swapchainRenderFinishedSemaphores[imageIndex]->getSemaphore();
+  const VkSwapchainKHR swapchain = _swapchain->getSwapchain();
+  const VkPresentInfoKHR presentInfo{
+      .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+      .waitSemaphoreCount = 1,
+      .pWaitSemaphores = &finished,
+      .swapchainCount = 1,
+      .pSwapchains = &swapchain,
+      .pImageIndices = &imageIndex,
+  };
+  const auto result = vkQueuePresentKHR(_device->getQueue(QueueType::GENERAL), &presentInfo);
+  if (result == VK_ERROR_OUT_OF_DATE_KHR) return true;
+  if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
+    throw std::runtime_error("failed to present swap chain image: " + std::to_string(result));
   return false;
 }
 
@@ -1048,15 +1134,27 @@ void Graph::reset(glm::ivec2 resolution) {
 
   if (resolution.x == 0 || resolution.y == 0) throw std::runtime_error("Can't reset if resolution is 0");
 
-  auto oldSwapchain = _swapchain->reset(resolution);
-  _graphStorage->reset(oldSwapchain, _swapchain->getImageViews());
+  // Images may be destroyed by storage reset. Keep their readiness as global waits, without old Image pointers.
+  {
+    const std::scoped_lock lock(_pendingWaitsMutex);
+    for (auto& wait : _pendingWaits) wait.image = nullptr;
+  }
+  for (const auto& [imageHandle, resourceHistory] : _imageHistory) {
+    for (const auto& previousAccess : resourceHistory.accesses) {
+      if (previousAccess.queue == VK_NULL_HANDLE) addFrameWait(previousAccess.completion);
+    }
+  }
+  _imageHistory.clear();
 
-  _semaphoreRenderFinished.clear();
-  std::ranges::generate_n(std::back_inserter(_semaphoreRenderFinished), _swapchain->getImageCount(),
+  auto oldSwapchainImageViews = _swapchain->reset(resolution);
+  _graphStorage->reset(oldSwapchainImageViews, _swapchain->getImageViews());
+
+  _swapchainRenderFinishedSemaphores.clear();
+  std::ranges::generate_n(std::back_inserter(_swapchainRenderFinishedSemaphores), _swapchain->getImageCount(),
                           [&] { return std::make_shared<Semaphore>(VK_SEMAPHORE_TYPE_BINARY, *_device); });
 
-  for (const auto& pass : _passes) {
-    pass->reset(_swapchain->getImageViews());
+  for (const auto& graphPass : _passes) {
+    graphPass->reset(_swapchain->getImageViews());
   }
 
   calculate();

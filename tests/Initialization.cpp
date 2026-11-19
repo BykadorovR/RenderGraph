@@ -294,7 +294,7 @@ TEST(ResourceUploaderTest, UploadToHostVisibleBuffer) {
   RenderGraph::ResourceUploader resourceUploader(allocator, device);
   std::vector<std::byte> data(512, std::byte{1});
   EXPECT_NO_THROW(resourceUploader.upload(buffer, data));
-  EXPECT_NO_THROW(resourceUploader.submit());
+  EXPECT_FALSE(resourceUploader.submit().has_value());
   ASSERT_EQ(vkQueueWaitIdle(device.getQueue(RenderGraph::QueueType::GENERAL)), VK_SUCCESS);
   EXPECT_NO_THROW(resourceUploader.reclaim());
 }
@@ -323,7 +323,7 @@ TEST(ResourceUploaderTest, UploadToHostVisibleBufferWithOffset) {
     EXPECT_NO_THROW(resourceUploader.upload(buffer, data, offset));
     // Mapped memory is written by the CPU, so the bytes must be present before any GPU submission.
     EXPECT_TRUE(std::equal(data.begin(), data.end(), bufferData + offset));
-    EXPECT_NO_THROW(resourceUploader.submit());
+    EXPECT_FALSE(resourceUploader.submit().has_value());
     ASSERT_EQ(vkQueueWaitIdle(device.getQueue(queueType)), VK_SUCCESS);
     EXPECT_NO_THROW(resourceUploader.reclaim());
   }
